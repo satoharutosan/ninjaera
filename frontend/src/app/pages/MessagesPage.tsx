@@ -265,7 +265,7 @@ function MediaBubble({ msg, self, C, onScrollTo, onLightbox }: { msg:ChatMsg; se
   if (msg.mediaType === "image") return (
     <div>{replyBlock}
       <div className="rounded-2xl overflow-hidden max-w-[220px] cursor-zoom-in" style={{ boxShadow:SH1 }} onClick={() => msg.mediaUrl && onLightbox?.(msg.mediaUrl)}>
-        <img src={msg.mediaUrl} alt="img" className="w-full block hover:brightness-90 transition-all" />
+        <img src={msg.mediaUrl} alt="img" className="w-full block hover:brightness-90 transition-all" decoding="async" />
         {msg.msg && <div className="px-3 py-1.5 text-sm" style={{ background:bg, color:fg, fontFamily:"Roboto" }}><TextWithLinks text={msg.msg} fg={fg} /></div>}
       </div>
     </div>
@@ -359,14 +359,17 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
   const isTypingRef = useRef(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const messagesContentRef = useRef<HTMLDivElement>(null);
   const msgRefs = useRef<Map<number,HTMLDivElement>>(new Map());
   const msgsRef = useRef<ChatMsg[]>([]);
   const isNearBottomRef = useRef(true);
   const hasMoreRef = useRef(false);
   const loadingOlderRef = useRef(false);
-  const stickToBottomRef = useRef(false);
+  /** While true, keep the viewport glued to the absolute bottom across layout/media changes. */
+  const pinToBottomRef = useRef(true);
   const pendingPrependRestoreRef = useRef<{ prevHeight: number; prevTop: number } | null>(null);
   const loadGenRef = useRef(0);
+  const applyingScrollRef = useRef(false);
 
   useEffect(() => {
     if (currentUser) {
@@ -389,14 +392,18 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
     };
   }, []);
 
-  const scrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
+  const forceScrollToBottom = useCallback(() => {
     const el = messagesContainerRef.current;
-    if (el) {
-      if (behavior === "auto") el.scrollTop = el.scrollHeight;
-      else el.scrollTo({ top: el.scrollHeight, behavior });
-    } else {
-      messagesEndRef.current?.scrollIntoView({ behavior });
-    }
+    if (!el) return;
+    applyingScrollRef.current = true;
+    // Instant assignment — never use smooth here; smooth + growing layout = mid-list stop.
+    el.scrollTop = el.scrollHeight;
+    // Re-apply after paint in case fonts/media already expanded layout this frame.
+    requestAnimationFrame(() => {
+      const node = messagesContainerRef.current;
+      if (node && pinToBottomRef.current) node.scrollTop = node.scrollHeight;
+      applyingScrollRef.current = false;
+    });
     isNearBottomRef.current = true;
     setShowNewMsgBtn(false);
   }, []);
@@ -413,10 +420,12 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
     if (!current.length) return;
     const oldestId = current[0].id;
     const gen = loadGenRef.current;
+    const wasPinned = pinToBottomRef.current;
     loadingOlderRef.current = true;
     setLoadingOlder(true);
     const el = messagesContainerRef.current;
-    if (el) {
+    // Only restore scroll when the user is reading history (not when filling short viewports at bottom).
+    if (el && !wasPinned) {
       pendingPrependRestoreRef.current = { prevHeight: el.scrollHeight, prevTop: el.scrollTop };
     }
     try {
@@ -439,6 +448,7 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
       });
       setHasMoreHistory(!!r.hasMore);
       hasMoreRef.current = !!r.hasMore;
+      if (wasPinned) pinToBottomRef.current = true;
     } catch {
       pendingPrependRestoreRef.current = null;
     } finally {
@@ -448,12 +458,25 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
   }, [sel?.id, currentUserId, toChatMsg]);
 
   const handleMessagesScroll = useCallback(() => {
+    if (applyingScrollRef.current) return;
     const el = messagesContainerRef.current;
     if (!el) return;
     const near = checkNearBottom();
     isNearBottomRef.current = near;
-    if (near) setShowNewMsgBtn(false);
-    if (el.scrollTop < 80 && hasMoreRef.current && !loadingOlderRef.current) {
+    if (near) {
+      pinToBottomRef.current = true;
+      setShowNewMsgBtn(false);
+    } else {
+      pinToBottomRef.current = false;
+    }
+    // Load older only when user is actively reading upward — never during pin-to-bottom.
+    if (
+      !pinToBottomRef.current
+      && el.scrollTop < 100
+      && el.scrollHeight > el.clientHeight + 40
+      && hasMoreRef.current
+      && !loadingOlderRef.current
+    ) {
       void loadOlderMessages();
     }
   }, [checkNearBottom, loadOlderMessages]);
@@ -467,17 +490,17 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
     hasMoreRef.current = false;
     setShowNewMsgBtn(false);
     setTypingUsers([]);
-    stickToBottomRef.current = true;
+    pinToBottomRef.current = true;
     isNearBottomRef.current = true;
     pendingPrependRestoreRef.current = null;
 
     api.messages.getMessages(sel.id, { limit: MESSAGE_PAGE_SIZE })
       .then(r => {
         if (gen !== loadGenRef.current) return;
+        pinToBottomRef.current = true;
         setMsgs((r.messages as ApiMessage[]).map(m => toChatMsg(m, currentUserId)));
         setHasMoreHistory(!!r.hasMore);
         hasMoreRef.current = !!r.hasMore;
-        stickToBottomRef.current = true;
         refreshContacts();
       })
       .catch(() => {
@@ -488,6 +511,7 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
       });
   }, [sel.id, currentUserId, toChatMsg]);
 
+  // After React commits message DOM, pin instantly. Keep pin enabled so ResizeObserver can catch media.
   useLayoutEffect(() => {
     const el = messagesContainerRef.current;
     if (!el) return;
@@ -495,17 +519,42 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
     if (pendingPrependRestoreRef.current) {
       const { prevHeight, prevTop } = pendingPrependRestoreRef.current;
       pendingPrependRestoreRef.current = null;
+      applyingScrollRef.current = true;
       el.scrollTop = prevTop + (el.scrollHeight - prevHeight);
+      requestAnimationFrame(() => { applyingScrollRef.current = false; });
       return;
     }
 
-    if (stickToBottomRef.current) {
-      stickToBottomRef.current = false;
-      el.scrollTop = el.scrollHeight;
-      isNearBottomRef.current = true;
-      setShowNewMsgBtn(false);
+    if (pinToBottomRef.current) {
+      forceScrollToBottom();
     }
-  }, [msgs]);
+  }, [msgs, forceScrollToBottom]);
+
+  // Re-pin when images/avatars/voice players/reply chrome change content height after first paint.
+  useEffect(() => {
+    const container = messagesContainerRef.current;
+    const content = messagesContentRef.current;
+    if (!container || !content) return;
+
+    const ro = new ResizeObserver(() => {
+      if (pendingPrependRestoreRef.current) return;
+      if (!pinToBottomRef.current) return;
+      forceScrollToBottom();
+    });
+    ro.observe(content);
+    return () => ro.disconnect();
+  }, [sel.id, forceScrollToBottom]);
+
+  // If the newest page is shorter than the viewport and older history exists, fill upward while staying pinned.
+  useEffect(() => {
+    if (!hasMoreHistory || loadingOlder || !msgs.length) return;
+    if (!pinToBottomRef.current) return;
+    const el = messagesContainerRef.current;
+    if (!el) return;
+    if (el.scrollHeight <= el.clientHeight + 24) {
+      void loadOlderMessages();
+    }
+  }, [msgs, hasMoreHistory, loadingOlder, loadOlderMessages]);
 
   useEffect(() => {
     if (!initialConversationId) return;
@@ -551,8 +600,9 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
           const chatMsg = toChatMsg(message, currentUserId);
           setMsgs(prev => prev.some(m => m.id === chatMsg.id) ? prev : [...prev, chatMsg]);
           if (isNearBottomRef.current || chatMsg.self) {
-            stickToBottomRef.current = true;
-            setTimeout(() => scrollToBottom("smooth"), 50);
+            pinToBottomRef.current = true;
+            // Instant pin via layout/ResizeObserver; soft smooth for feel when already near bottom.
+            requestAnimationFrame(() => forceScrollToBottom());
             if (!message.self && message.userId !== currentUserId) {
               api.messages.markRead(conversationId).then(() => refreshContacts()).catch(() => {});
             }
@@ -598,7 +648,7 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
       }),
     ];
     return () => { unsubs.forEach(u => u()); };
-  }, [sel.id, currentUserId, toChatMsg, scrollToBottom]);
+  }, [sel.id, currentUserId, toChatMsg, forceScrollToBottom]);
 
   useEffect(() => {
     if (!emojiOpen || !emojiBtnRef.current) return;
@@ -676,7 +726,7 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
     if (!trimmed && !extra?.mediaUrl) return;
     setInput(""); setReplyingTo(null); setEmojiOpen(false);
     if (isTypingRef.current) { isTypingRef.current = false; emitTyping(sel.id, false); }
-    stickToBottomRef.current = true;
+    pinToBottomRef.current = true;
     isNearBottomRef.current = true;
     try {
       const { message } = await api.messages.send(sel.id, trimmed, replyingTo?.id);
@@ -693,14 +743,14 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
       };
       setMsgs(prev => [...prev, newMsg]);
     }
-    setTimeout(() => scrollToBottom("smooth"), 50);
+    requestAnimationFrame(() => forceScrollToBottom());
   };
 
   const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setReplyingTo(null); e.target.value = "";
-    stickToBottomRef.current = true;
+    pinToBottomRef.current = true;
     isNearBottomRef.current = true;
     try {
       const { message } = await api.messages.sendMedia(sel.id, file, replyingTo?.id);
@@ -720,7 +770,7 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
         mediaUrl:url, mediaType:type, fileName:file.name, fileSize:file.size,
       }]);
     }
-    setTimeout(() => scrollToBottom("smooth"), 50);
+    requestAnimationFrame(() => forceScrollToBottom());
   };
 
   const commitEdit = async (id: number) => {
@@ -1128,11 +1178,13 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
         <div className="flex-1 relative min-h-0 flex flex-col" style={{ background:C.surfaceVar }}>
           <div
             ref={messagesContainerRef}
-            className="flex-1 overflow-y-auto px-5 py-5 scroll-smooth"
+            className="flex-1 overflow-y-auto px-5 py-5"
+            style={{ scrollBehavior: "auto", overflowAnchor: "none" }}
             onClick={closeAll}
             onScroll={handleMessagesScroll}
           >
-            <div className="flex flex-col items-center justify-center min-h-[28px] mb-3 gap-1">
+            <div ref={messagesContentRef}>
+            <div className="flex flex-col items-center justify-center min-h-[28px] mb-3 gap-1" style={{ overflowAnchor: "none" }}>
               {loadingOlder ? (
                 <CircularProgress size={18} thickness={4} style={{ color: C.primary }} />
               ) : !hasMoreHistory && msgs.length > 0 ? (
@@ -1142,7 +1194,7 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
             <div className="text-center mb-4"><span className="text-xs px-3 py-1 rounded-full" style={{ background:C.surface, color:C.onSurfaceVar, fontFamily:"Roboto", boxShadow:SH1 }}>Today</span></div>
             <div className="space-y-3">
               {groups.map((grp) => (
-                <div key={`${grp.items[0]?.id ?? 0}-${grp.user}-${grp.time}`} className={`flex gap-2.5 ${grp.self?"flex-row-reverse":""}`}>
+                <div key={`${grp.items[0]?.id ?? 0}-${grp.user}-${grp.time}`} className={`flex gap-2.5 ${grp.self?"flex-row-reverse":""}`} style={{ overflowAnchor: "auto" }}>
                   {!grp.self ? (
                     <ChatAvatar name={grp.user} avatarUrl={grp.items[0]?.avatarUrl} size={32} className="self-end" />
                   ) : <div className="w-8 shrink-0" />}
@@ -1213,12 +1265,14 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
             {typingLabel() && (
               <p className="text-xs px-2 py-1 italic" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>{typingLabel()}</p>
             )}
+            </div>
           </div>
           {showNewMsgBtn && (
             <button
               type="button"
               onClick={() => {
-                scrollToBottom("smooth");
+                pinToBottomRef.current = true;
+                forceScrollToBottom();
                 if (sel?.id) api.messages.markRead(sel.id).then(() => refreshContacts()).catch(() => {});
               }}
               className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-1.5 px-4 py-2 rounded-full text-sm font-medium text-white shadow-lg hover:opacity-95 transition-all focus-visible:outline-none focus-visible:ring-2"
@@ -1259,7 +1313,7 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
                 ) : (
                   <div className="p-3 grid grid-cols-2 gap-2 max-h-52 overflow-y-auto">
                     {GIF_LIST.map(g => (
-                      <button key={g.label} onClick={() => { setMsgs(prev => [...prev, { id:Date.now(), user:"You", msg:"", time:nowTime(), self:true, mediaUrl:g.url, mediaType:"gif" }]); setEmojiOpen(false); stickToBottomRef.current = true; setTimeout(()=>scrollToBottom("smooth"),50); }} className="rounded-xl overflow-hidden border hover:opacity-80 transition-opacity" style={{ borderColor:C.outlineVar }}>
+                      <button key={g.label} onClick={() => { setMsgs(prev => [...prev, { id:Date.now(), user:"You", msg:"", time:nowTime(), self:true, mediaUrl:g.url, mediaType:"gif" }]); setEmojiOpen(false); pinToBottomRef.current = true; requestAnimationFrame(() => forceScrollToBottom()); }} className="rounded-xl overflow-hidden border hover:opacity-80 transition-opacity" style={{ borderColor:C.outlineVar }}>
                         <img src={g.url} alt={g.label} className="w-full h-16 object-cover" />
                         <p className="text-[10px] py-1 text-center" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>{g.label}</p>
                       </button>

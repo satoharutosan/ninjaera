@@ -250,6 +250,7 @@ export function initSchema() {
     );
 
     CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_messages_conversation_cursor ON messages(conversation_id, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_notifications_created ON notifications(created_at DESC);
   `);
 }

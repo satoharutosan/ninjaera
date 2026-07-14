@@ -1,0 +1,900 @@
+# Penpot AI Prompt – Official Ninja Era Website (Complete Multi-Page UI/UX Design System)
+
+Design a modern, premium-quality, responsive gaming website for **Ninja Era** using **Material Design 3** principles. Every component must be based on Material UI (MUI), and every icon must come from the Material UI Icons library. The visual style should combine modern MMORPG aesthetics with elegant anime-inspired ninja elements. The overall design should feel immersive, clean, highly usable, and suitable for both desktop and mobile devices.
+
+Use **Light Mode as the default** while also designing a complete **Dark Mode** version using the same component system.
+
+Create every page in the same design system using an 8px spacing grid, rounded corners (12–20px), subtle shadows, soft glassmorphism where appropriate, smooth animations, accessible typography, and excellent UX hierarchy.
+
+The website must include the following pages:
+
+* Home (Landing Page)
+* About
+* Resources
+* Teamwork
+* Contact
+* Login
+* Sign Up
+* Messages
+* Profile
+
+---
+
+## Global Navigation
+
+Desktop Navigation:
+
+* Ninja Era logo on the left.
+* Navigation links:
+
+  * Home
+  * About
+  * Resources
+  * Teamwork
+  * Contact
+* Theme toggle (Light/Dark).
+* Language selector.
+* Notification icon.
+* Login button.
+* Sign Up button.
+
+After login:
+
+Replace Login with **Messages**.
+
+Replace Sign Up with a circular avatar button.
+
+Messages button includes an unread badge counter.
+
+Avatar is circular.
+
+Clicking avatar opens Profile page.
+
+Navigation becomes a responsive hamburger menu on mobile.
+
+Sticky navigation while scrolling.
+
+Large hero navigation overlay effect on the landing page.
+
+---
+
+# Home Page
+
+Create a long one-page scrolling landing page.
+
+Every section should have generous spacing.
+
+Odd-numbered sections must use beautiful full-width image backgrounds.
+
+Even-numbered sections use clean Material surfaces.
+
+Sections:
+
+---
+
+## Section 1 — Hero
+
+Full-screen hero.
+
+Background image of Ninja Era world.
+
+Navigation fixed at top.
+
+Layout:
+
+Left side:
+
+* Large title
+* Subtitle
+* Description
+* Play Now button
+* Learn More button
+
+Right side:
+
+Leave mostly empty so the background artwork remains visible.
+
+Include subtle floating particles.
+
+Smooth scroll indicator.
+
+---
+
+## Section 2 — Introduction
+
+Game introduction.
+
+Two-column layout.
+
+Large illustration.
+
+Game description.
+
+Feature cards.
+
+---
+
+## Section 3 — World
+
+Beautiful background image.
+
+Explain:
+
+* Villages
+* Clans
+* Missions
+* PvP
+* Guilds
+
+Animated cards.
+
+---
+
+## Section 4 — Features
+
+Responsive grid.
+
+Cards describing:
+
+* Open World
+* Arena
+* Crafting
+* Trading
+* PvE
+* PvP
+* Guild System
+* Marketplace
+
+Material cards.
+
+Icons.
+
+Hover animations.
+
+---
+
+## Section 5 — Character Showcase
+
+Beautiful ninja-themed image background.
+
+Introduce approximately 12 major characters.
+
+Responsive grid.
+
+Each character displayed as a premium Material card.
+
+Each card contains:
+
+* Portrait
+* Name
+* Village
+* Role
+* Rarity
+
+Hover elevation.
+
+Click opens modern Material modal.
+
+Character Modal contains:
+
+Large portrait.
+
+Character name.
+
+Village.
+
+Clan.
+
+Biography.
+
+Stats.
+
+Abilities.
+
+Skill icons.
+
+Equipment section.
+
+Display equipment as image cards:
+
+* Weapon
+* Helmet
+* Armor
+* Gloves
+* Boots
+* Necklace
+* Ring
+
+Close button.
+
+Responsive layout.
+
+---
+
+## Section 6 — Gameplay
+
+Gameplay screenshots.
+
+Timeline.
+
+Cards.
+
+Statistics.
+
+---
+
+## Section 7 — Community
+
+Image background.
+
+Show:
+
+Discord
+
+Events
+
+Leaderboards
+
+Guilds
+
+News
+
+Call-to-action.
+
+---
+
+## Section 8 — Download
+
+Platform cards.
+
+Windows
+
+Android
+
+iOS
+
+Buttons.
+
+System requirements.
+
+---
+
+## Section 9 — FAQ
+
+Material accordion.
+
+Search FAQ.
+
+---
+
+## Section 10 — Footer
+
+Large footer.
+
+Quick Links.
+
+Support.
+
+Social icons.
+
+Newsletter.
+
+Copyright.
+
+Privacy.
+
+Terms.
+
+---
+
+# About Page
+
+Image hero header.
+
+Desktop:
+
+Approximately 50% viewport height.
+
+Mobile portrait:
+
+Approximately 33% viewport height.
+
+Sections:
+
+History.
+
+Lore.
+
+Development.
+
+Vision.
+
+Timeline.
+
+Gallery.
+
+Statistics.
+
+CTA.
+
+---
+
+# Resources Page
+
+Hero image header.
+
+Categories:
+
+Guides.
+
+Wiki.
+
+Downloads.
+
+Patch Notes.
+
+Media.
+
+Videos.
+
+Screenshots.
+
+Cards.
+
+Search.
+
+Filters.
+
+Pagination.
+
+---
+
+# Teamwork Page
+
+Hero image header.
+
+Show development team.
+
+Departments.
+
+Leadership.
+
+Artists.
+
+Developers.
+
+Community Managers.
+
+QA.
+
+Recruitment.
+
+Application section.
+
+Cards.
+
+Timeline.
+
+Benefits.
+
+FAQ.
+
+---
+
+# Contact Page
+
+Hero image header.
+
+Main content:
+
+Left side:
+
+Large themed illustration.
+
+Right side:
+
+Material contact form.
+
+Fields:
+
+Name
+
+Email
+
+Subject
+
+Category
+
+Message
+
+Submit button.
+
+Contact information cards.
+
+Google Map placeholder.
+
+FAQ.
+
+Responsive layout.
+
+---
+
+# Login Page
+
+Modern centered authentication card.
+
+Email.
+
+Password.
+
+Remember Me.
+
+Forgot Password.
+
+Login button.
+
+Divider.
+
+Continue with Google.
+
+Continue with Microsoft.
+
+Continue with Discord.
+
+Each provider uses official SVG icon.
+
+Link:
+
+Create Account.
+
+Forgot Password opens Material modal.
+
+Password Reset Modal:
+
+Email field.
+
+Submit button.
+
+Cancel button.
+
+Success state.
+
+---
+
+# Sign Up Page
+
+Centered Material card.
+
+Fields:
+
+Email
+
+Username (unique)
+
+Password
+
+Confirm Password
+
+Checkbox:
+
+Accept Terms.
+
+Sign Up button.
+
+Divider.
+
+Continue with Google.
+
+Continue with Microsoft.
+
+Continue with Discord.
+
+Official SVG icons.
+
+Already have account?
+
+Login link.
+
+Validation states.
+
+Password strength indicator.
+
+---
+
+# Profile Page
+
+Responsive profile dashboard.
+
+Large avatar.
+
+Click avatar to instantly upload/change image.
+
+Editable fields:
+
+Username
+
+Email
+
+Password
+
+Membership Status
+
+Bio
+
+Gender
+
+Date of Birth
+
+Ethnicity
+
+Country
+
+Language
+
+Timezone
+
+Theme preference
+
+Notification preferences
+
+Privacy settings
+
+Save Changes button.
+
+Cancel button.
+
+Statistics cards.
+
+Achievements.
+
+Inventory preview.
+
+Recent activity.
+
+Responsive tabs.
+
+---
+
+# Messages Page
+
+Modern Discord-inspired layout.
+
+Desktop:
+
+Far left sidebar:
+
+Approximately 86px width.
+
+Contains icon buttons:
+
+All
+
+Channels
+
+DMs
+
+Settings
+
+Theme
+
+Collapsed navigation.
+
+Second sidebar:
+
+Approximately 350px width.
+
+Top:
+
+Search bar.
+
+Below:
+
+Conversation list.
+
+Each item includes:
+
+Avatar.
+
+Online indicator.
+
+Name.
+
+Timestamp.
+
+Latest message.
+
+Unread badge.
+
+Pinned items.
+
+Favorite items.
+
+Hover states.
+
+Main chat area:
+
+Channel title.
+
+Members count.
+
+Search.
+
+Pinned messages.
+
+Chat messages.
+
+Typing indicator.
+
+Date separators.
+
+Images.
+
+Files.
+
+Emojis.
+
+Reactions.
+
+Reply.
+
+Thread preview.
+
+Message input:
+
+Emoji button.
+
+Attachment.
+
+GIF.
+
+Send button.
+
+Voice placeholder.
+
+Right sidebar:
+
+Approximately 350px.
+
+Automatically hides on tablet/mobile.
+
+Shows:
+
+Avatar centered.
+
+Online status badge:
+
+Online
+
+Away
+
+Busy
+
+Offline
+
+Username.
+
+Member Since.
+
+Role.
+
+Bio.
+
+Mutual guilds.
+
+Shared channels.
+
+Media gallery.
+
+Pinned files.
+
+Responsive behavior:
+
+Desktop:
+
+Three-column layout.
+
+Tablet:
+
+Hide right sidebar.
+
+Mobile:
+
+Drawer navigation.
+
+Bottom navigation.
+
+Excellent UX.
+
+Smooth transitions.
+
+---
+
+# Responsive Design
+
+Desktop
+
+Laptop
+
+Tablet
+
+Mobile portrait
+
+Mobile landscape
+
+Foldable devices
+
+Touch-friendly spacing.
+
+Accessible typography.
+
+Large tap targets.
+
+Adaptive grids.
+
+Responsive navigation.
+
+---
+
+# Material UI Components
+
+Use Material Design 3 components throughout:
+
+App Bar
+
+Navigation Drawer
+
+Cards
+
+Buttons
+
+Dialogs
+
+Modals
+
+Tabs
+
+Chips
+
+Accordions
+
+Avatars
+
+Badges
+
+Menus
+
+Lists
+
+Tooltips
+
+Snackbars
+
+Alerts
+
+Text Fields
+
+Floating Action Buttons
+
+Pagination
+
+Breadcrumbs
+
+Progress Indicators
+
+Skeleton Loaders
+
+Switches
+
+Checkboxes
+
+Radio Buttons
+
+Sliders
+
+Date Picker
+
+Autocomplete
+
+Search
+
+Tables
+
+Dividers
+
+Bottom Navigation
+
+---
+
+# Color System
+
+Primary:
+
+Deep Indigo
+
+Secondary:
+
+Crimson Red
+
+Accent:
+
+Gold
+
+Success:
+
+Green
+
+Warning:
+
+Amber
+
+Error:
+
+Red
+
+Background:
+
+Light Gray (Light Mode)
+
+Dark Slate (Dark Mode)
+
+Maintain WCAG AA accessibility contrast.
+
+---
+
+# Typography
+
+Material Design typography hierarchy.
+
+Large hero headings.
+
+Comfortable reading widths.
+
+Consistent spacing.
+
+---
+
+# Animations
+
+Smooth page transitions.
+
+Hover elevation.
+
+Fade.
+
+Slide.
+
+Scale.
+
+Material ripple effects.
+
+Skeleton loading.
+
+Micro-interactions.
+
+Lazy-loaded images.
+
+Parallax hero sections.
+
+---
+
+# Image Style
+
+High-quality anime-inspired ninja artwork.
+
+Immersive fantasy landscapes.
+
+Premium game screenshots.
+
+Dynamic lighting.
+
+Cinematic composition.
+
+No placeholders.
+
+Consistent visual language.
+
+---
+
+# Deliverables
+
+Generate a complete design system, responsive layouts for all pages, reusable Material UI components, light and dark themes, desktop/tablet/mobile variants, interactive modal designs, authentication flows, character detail dialogs with equipment galleries, Discord-inspired messaging interface, profile editing dashboard, and polished production-ready UI/UX suitable for a modern AAA MMORPG official website.

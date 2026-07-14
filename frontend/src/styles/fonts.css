@@ -1,0 +1,20 @@
+@import url('https://fonts.googleapis.com/css2?family=Roboto:ital,wght@0,300;0,400;0,500;0,700;0,900;1,400&family=Roboto+Mono:wght@400;500&family=Trade+Winds&display=swap');
+
+/* react-h5-audio-player: strip default card chrome */
+.rhap_container {
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 8px 12px !important;
+}
+.rhap_main-controls-button,
+.rhap_volume-button {
+  color: inherit !important;
+}
+.rhap_progress-filled,
+.rhap_volume-indicator {
+  background-color: currentColor !important;
+}
+.rhap_time {
+  font-family: 'Roboto Mono', monospace !important;
+  font-size: 11px !important;
+}

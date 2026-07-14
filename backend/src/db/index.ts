@@ -8,13 +8,14 @@ dotenv.config();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = path.resolve(__dirname, "../../data");
-const dbPath = process.env.DATABASE_PATH
+export const dbPath = process.env.DATABASE_PATH
   ? path.resolve(process.env.DATABASE_PATH)
   : path.join(dataDir, "ninja-era.db");
 
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
 export const db = new Database(dbPath);
+export const dataDirectory = dataDir;
 
 db.pragma("journal_mode = WAL");
 db.pragma("foreign_keys = ON");

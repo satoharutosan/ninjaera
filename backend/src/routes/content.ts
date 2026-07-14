@@ -139,4 +139,21 @@ router.get("/health", (_req, res) => {
   res.json({ status: "ok", service: "ninja-era-api" });
 });
 
+router.post("/legal/terms-viewed", optionalAuth, (req, res) => {
+  const user = req.user;
+  logActivitySync({
+    req,
+    userId: user?.id ?? null,
+    username: user?.username ?? "Guest",
+    eventType: "view_terms_of_service",
+    eventCategory: "legal",
+    description: user
+      ? `${user.username} viewed the Terms of Service`
+      : "Guest viewed the Terms of Service",
+    affectedObject: "legal:terms",
+    result: "success",
+  });
+  res.json({ ok: true });
+});
+
 export default router;

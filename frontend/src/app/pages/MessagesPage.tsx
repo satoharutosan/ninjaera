@@ -34,11 +34,12 @@ import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
 import ZoomInIcon from "@mui/icons-material/ZoomIn";
 import ZoomOutIcon from "@mui/icons-material/ZoomOut";
 import RestartAltIcon from "@mui/icons-material/RestartAlt";
+import RotateRightIcon from "@mui/icons-material/RotateRight";
 import CircularProgress from "@mui/material/CircularProgress";
 import Badge from "@mui/material/Badge";
 import { toast } from "sonner";
 import {
-  Page, AppSettings, Contact, ColorTheme, useC, SH1, FilledBtn, OutlinedBtn, Field, ChatAvatar, BADGE_BG, COUNTRY_ISO,
+  Page, AppSettings, Contact, ColorTheme, useC, useWide, SH1, FilledBtn, OutlinedBtn, Field, ChatAvatar, BADGE_BG, COUNTRY_ISO,
 } from "@/app/shared";
 import { api, ApiError, type ApiMessage } from "@/app/api";
 import { onRealtimeEvent, emitTyping, joinConversation } from "@/app/realtime";
@@ -61,6 +62,62 @@ const MESSAGE_PAGE_SIZE = 50;
 const VIRTUOSO_START_INDEX = 10_000_000;
 const MAX_RESTORE_PAGES = 30;
 const COMPOSER_MAX_HEIGHT = 160;
+
+function ConversationDetailsBody({
+  sel,
+  C,
+  presenceColor,
+  presenceLabel,
+}: {
+  sel: Contact;
+  C: ColorTheme;
+  presenceColor: (c: Contact) => string;
+  presenceLabel: (c: Contact) => string;
+}) {
+  const rows = (sel.type === "dm"
+    ? ([
+        ["Membership", sel.isTeamMember ? "Team Member" : "Member"],
+        sel.rank ? ["Rank", sel.rank] : null,
+        sel.village ? ["Village", sel.village] : null,
+        sel.clan ? ["Clan", sel.clan] : null,
+        sel.level != null ? ["Level", String(sel.level)] : null,
+        sel.memberSince ? ["Joined", sel.memberSince] : null,
+        sel.country ? ["Country", sel.country] : null,
+      ] as ([string, string] | null)[]).filter(Boolean) as [string, string][]
+    : ([
+        ["Type", "Text Channel"],
+        sel.bio ? ["About", sel.bio.slice(0, 80) + (sel.bio.length > 80 ? "…" : "")] : null,
+      ] as ([string, string] | null)[]).filter(Boolean) as [string, string][]);
+
+  return (
+    <>
+      <div className="text-center mb-5">
+        <div className="relative inline-block mb-3">
+          {sel.type === "channel" ? (
+            <ChatAvatar name={sel.name} size={80} channel className="mx-auto" />
+          ) : (
+            <ChatAvatar name={sel.name} avatarUrl={sel.avatarUrl} size={80} className="mx-auto" />
+          )}
+          {sel.type === "dm" && <FiberManualRecordIcon style={{ fontSize: 14, color: presenceColor(sel), position: "absolute", bottom: 2, right: 2 }} />}
+        </div>
+        <h3 className="font-medium" style={{ color: C.onSurface, fontFamily: "Roboto" }}>{sel.name}</h3>
+        <span className="text-xs font-medium" style={{ color: sel.type === "channel" ? C.primary : presenceColor(sel), fontFamily: "Roboto" }}>{presenceLabel(sel)}</span>
+        {sel.bio ? <p className="text-xs mt-3 leading-relaxed text-left" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>{sel.bio}</p> : null}
+      </div>
+      <div className="space-y-3 text-sm border-t pt-4" style={{ borderColor: C.outlineVar }}>
+        {rows.map(([k, v]) => (
+          <div key={k} className="flex justify-between gap-3">
+            <span className="shrink-0" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>{k}</span>
+            <span className="font-medium text-right" style={{ color: C.onSurface, fontFamily: "Roboto" }}>{v}</span>
+          </div>
+        ))}
+        {sel.type === "dm" && !sel.village && !sel.memberSince && !sel.rank && (
+          <p className="text-xs" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>No additional profile details available.</p>
+        )}
+      </div>
+    </>
+  );
+}
 
 // GIF data for picker (public Tenor-style placeholders via known Giphy public beta embeds)
 const EMOJI_TABS = ["😀","🎉","❤️","🔥","⚔️","🛡️","🎮","💀"] as const;
@@ -181,7 +238,7 @@ function VideoPlayer({ src }: { src?: string }) {
   const fullscreen = () => { vidRef.current?.requestFullscreen?.(); };
 
   return (
-    <div className="relative bg-black rounded-2xl overflow-hidden max-w-full" style={{ maxWidth:320, boxShadow:SH1 }}>
+    <div className="relative bg-black rounded-2xl overflow-hidden max-w-full" style={{ maxWidth: 320, width: "fit-content", boxShadow: SH1 }}>
       <video
         ref={vidRef}
         src={src}
@@ -276,7 +333,7 @@ function MediaBubble({ msg, self, C, onScrollTo, onLightbox }: { msg:ChatMsg; se
   /** Shrink-wrap media to content width so parent `items-end` / outgoing alignment works for all types. */
   const shell = (body: ReactNode) => (
     <div className={`flex flex-col min-w-0 max-w-full ${self ? "items-end" : "items-start"}`}>
-      <div className="w-fit max-w-full min-w-0">
+      <div style={{ width: "fit-content", maxWidth: "100%" }}>
         {replyBlock}
         {body}
       </div>
@@ -285,9 +342,19 @@ function MediaBubble({ msg, self, C, onScrollTo, onLightbox }: { msg:ChatMsg; se
 
   if (msg.mediaType === "file") return shell(<FileBubble msg={msg} self={self} C={C} />);
   if (msg.mediaType === "image") return shell(
-    <div className={`rounded-2xl overflow-hidden max-w-[min(220px,100%)] cursor-zoom-in ${corner}`} style={{ boxShadow:SH1 }} onClick={() => msg.mediaUrl && onLightbox?.(msg.mediaUrl)}>
-      <img src={msg.mediaUrl} alt="img" className="max-w-full h-auto block hover:brightness-90 transition-all" decoding="async" />
-      {msg.msg && <div className="px-3 py-1.5 text-sm min-w-0" style={{ background:bg, color:fg, fontFamily:"Roboto" }}><TextWithLinks text={msg.msg} fg={fg} /></div>}
+    <div
+      className="cursor-zoom-in overflow-hidden rounded-2xl"
+      style={{ maxWidth: 420, width: "fit-content", boxShadow: SH1 }}
+      onClick={() => msg.mediaUrl && onLightbox?.(msg.mediaUrl)}
+    >
+      <img
+        src={msg.mediaUrl}
+        alt=""
+        className="block hover:brightness-90 transition-all"
+        style={{ width: "auto", height: "auto", maxWidth: "100%", maxHeight: 360, verticalAlign: "middle" }}
+        decoding="async"
+      />
+      {msg.msg && <div className="px-3 py-1.5 text-sm min-w-0 text-left" style={{ background: bg, color: fg, fontFamily: "Roboto" }}><TextWithLinks text={msg.msg} fg={fg} /></div>}
     </div>
   );
   if (msg.mediaType === "video") return shell(
@@ -297,14 +364,14 @@ function MediaBubble({ msg, self, C, onScrollTo, onLightbox }: { msg:ChatMsg; se
     </>
   );
   if (msg.mediaType === "audio") return shell(
-    <div className={`voice-msg w-full max-w-[min(300px,100%)] rounded-2xl overflow-hidden ${corner} ${self ? "voice-msg--self" : "voice-msg--peer"}`} style={{ boxShadow:SH1, background: bg, color: voiceFg }}>
+    <div className={`voice-msg rounded-2xl overflow-hidden ${corner} ${self ? "voice-msg--self" : "voice-msg--peer"}`} style={{ boxShadow:SH1, background: bg, color: voiceFg, width: "min(300px, 100%)" }}>
       <AudioPlayer src={msg.mediaUrl} showJumpControls={false} customAdditionalControls={[]} layout="horizontal-reverse" style={{ background: "transparent", boxShadow:"none", width: "100%", color: voiceFg }} />
       {msg.msg && <div className="px-3 py-1.5 text-sm min-w-0" style={{ background:bg, color:fg, fontFamily:"Roboto" }}><TextWithLinks text={msg.msg} fg={fg} /></div>}
     </div>
   );
   if (msg.mediaType === "gif") return shell(
-    <div className={`rounded-2xl overflow-hidden max-w-[min(200px,100%)] ${corner}`} style={{ boxShadow:SH1 }}>
-      <img src={msg.mediaUrl} alt="gif" className="max-w-full h-auto block" />
+    <div className="overflow-hidden rounded-2xl" style={{ maxWidth: 320, width: "fit-content", boxShadow: SH1 }}>
+      <img src={msg.mediaUrl} alt="gif" className="block" style={{ width: "auto", height: "auto", maxWidth: "100%" }} />
     </div>
   );
   if (!msg.msg) return null;
@@ -320,9 +387,20 @@ function MediaBubble({ msg, self, C, onScrollTo, onLightbox }: { msg:ChatMsg; se
 const LIGHTBOX_MIN = 1;
 const LIGHTBOX_MAX = 5;
 
+function useScrollReveal() {
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  return useCallback((e: React.UIEvent<HTMLElement>) => {
+    const el = e.currentTarget;
+    el.classList.add("is-scrolling");
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => el.classList.remove("is-scrolling"), 900);
+  }, []);
+}
+
 function ImageLightbox({ src, onClose }: { src: string; onClose: () => void }) {
   const [scale, setScale] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const [rotation, setRotation] = useState(0);
   const dragging = useRef(false);
   const lastPos = useRef({ x: 0, y: 0 });
   const pinchStart = useRef<{ dist: number; scale: number } | null>(null);
@@ -334,6 +412,11 @@ function ImageLightbox({ src, onClose }: { src: string; onClose: () => void }) {
   const resetView = useCallback(() => {
     setScale(1);
     setOffset({ x: 0, y: 0 });
+    setRotation(0);
+  }, []);
+
+  const rotateCw = useCallback(() => {
+    setRotation(r => (r + 90) % 360);
   }, []);
 
   useEffect(() => {
@@ -342,10 +425,11 @@ function ImageLightbox({ src, onClose }: { src: string; onClose: () => void }) {
       if (e.key === "0" || e.key === "Home") resetView();
       if (e.key === "+" || e.key === "=") setScale(s => clampScale(s + 0.25));
       if (e.key === "-" || e.key === "_") setScale(s => clampScale(s - 0.25));
+      if (e.key === "r" || e.key === "R") rotateCw();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [onClose, resetView]);
+  }, [onClose, resetView, rotateCw]);
 
   useEffect(() => {
     resetView();
@@ -373,8 +457,10 @@ function ImageLightbox({ src, onClose }: { src: string; onClose: () => void }) {
 
   const onDoubleClick = (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (scale > 1) resetView();
-    else setScale(2);
+    if (scale > 1) {
+      setScale(1);
+      setOffset({ x: 0, y: 0 });
+    } else setScale(2);
   };
 
   const onPointerDown = (e: React.PointerEvent) => {
@@ -433,7 +519,10 @@ function ImageLightbox({ src, onClose }: { src: string; onClose: () => void }) {
         <button type="button" onClick={e => { e.stopPropagation(); setScale(s => clampScale(s + 0.25)); }} className="w-10 h-10 flex items-center justify-center rounded-full text-white hover:bg-white/10" aria-label="Zoom in" title="Zoom in">
           <ZoomInIcon style={{ fontSize: 22 }} />
         </button>
-        <button type="button" onClick={e => { e.stopPropagation(); resetView(); }} className="w-10 h-10 flex items-center justify-center rounded-full text-white hover:bg-white/10" aria-label="Reset zoom" title="Reset zoom">
+        <button type="button" onClick={e => { e.stopPropagation(); rotateCw(); }} className="w-10 h-10 flex items-center justify-center rounded-full text-white hover:bg-white/10" aria-label="Rotate 90 degrees" title="Rotate (R)">
+          <RotateRightIcon style={{ fontSize: 22 }} />
+        </button>
+        <button type="button" onClick={e => { e.stopPropagation(); resetView(); }} className="w-10 h-10 flex items-center justify-center rounded-full text-white hover:bg-white/10" aria-label="Reset view" title="Reset view">
           <RestartAltIcon style={{ fontSize: 22 }} />
         </button>
         <button type="button" onClick={e => { e.stopPropagation(); onClose(); }} className="w-10 h-10 flex items-center justify-center rounded-full text-white hover:bg-white/10" aria-label="Close preview">
@@ -441,7 +530,7 @@ function ImageLightbox({ src, onClose }: { src: string; onClose: () => void }) {
         </button>
       </div>
       <span className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 text-white/80 text-xs font-mono px-3 py-1 rounded-full bg-black/40" aria-live="polite">
-        {Math.round(scale * 100)}%
+        {Math.round(scale * 100)}% · {rotation}°
       </span>
       <div
         ref={viewportRef}
@@ -459,9 +548,9 @@ function ImageLightbox({ src, onClose }: { src: string; onClose: () => void }) {
           draggable={false}
           className="max-w-[90vw] max-h-[90vh] object-contain rounded-xl shadow-2xl select-none"
           style={{
-            transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`,
+            transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale}) rotate(${rotation}deg)`,
             transformOrigin: "center center",
-            transition: dragging.current ? "none" : "transform 0.15s ease-out",
+            transition: dragging.current ? "none" : "transform 0.2s ease-out",
             cursor: scale > 1 ? (dragging.current ? "grabbing" : "grab") : "zoom-in",
             willChange: "transform",
           }}
@@ -477,7 +566,7 @@ function ImageLightbox({ src, onClose }: { src: string; onClose: () => void }) {
 }
 type ListFilter = "all" | "channel" | "dm" | "dm-requests";
 
-function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setContacts, onUnreadChange, currentUserId, currentUser, onUserUpdate, initialConversationId, focusInput, onFocusHandled }: {
+function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setContacts, onUnreadChange, currentUserId, currentUser, onUserUpdate, initialConversationId, focusInput, onFocusHandled, onInitialConversationHandled }: {
   settings: AppSettings;
   showEmailToast: (title:string, body:string, page:Page)=>void;
   showPushNotif: (title:string, body:string, page:Page)=>void;
@@ -490,8 +579,12 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
   initialConversationId?: number | null;
   focusInput?: boolean;
   onFocusHandled?: () => void;
+  onInitialConversationHandled?: () => void;
 }) {
   const C = useC();
+  const isMobile = !useWide(767);
+  const onScrollReveal = useScrollReveal();
+  const virtuosoScrollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const emptyContact: Contact = { id: 0, name: "Select a conversation", msg: "", time: "", unread: 0, online: false, bio: "", type: "dm" };
   const [sel, setSel] = useState<Contact>(contacts[0] ?? emptyContact);
   const [input, setInput] = useState("");
@@ -505,6 +598,7 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
   const [lastReadMessageId, setLastReadMessageId] = useState<number | null>(null);
   const [threadReady, setThreadReady] = useState(false);
   const [showSidebar, setShowSidebar] = useState(true);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [myStatus, setMyStatus] = useState(currentUser?.status || "Online");
   const [myBio, setMyBio] = useState(currentUser?.bio || "");
@@ -738,11 +832,13 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
   useEffect(() => {
     if (!initialConversationId) return;
     const target = contacts.find(c => c.id === initialConversationId);
-    if (target) {
-      setSel(target);
-      setListFilter(target.type === "dm" ? "dm" : "all");
-    }
-  }, [initialConversationId, contacts]);
+    if (!target) return;
+    setSel(target);
+    setListFilter(target.type === "dm" ? "dm" : "all");
+    if (isMobile) setShowSidebar(false);
+    // One-shot: clear parent navigation state so later sidebar clicks are not overwritten.
+    onInitialConversationHandled?.();
+  }, [initialConversationId, contacts, onInitialConversationHandled, isMobile]);
 
   useEffect(() => {
     if (focusInput) {
@@ -872,6 +968,36 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
     if (c.type === "channel") return "Text Channel";
     return c.status || (c.online ? "Online" : "Offline");
   };
+
+  const selectConversation = useCallback((m: Contact) => {
+    setSel(m);
+    if (isMobile) setShowSidebar(false);
+  }, [isMobile]);
+
+  const openConversationDetails = useCallback(() => {
+    if (!isMobile || sel.id <= 0) return;
+    setDetailsOpen(true);
+  }, [isMobile, sel.id]);
+
+  const dismissConversationDetails = useCallback(() => {
+    if (typeof window !== "undefined" && window.history.state && (window.history.state as { msgDetails?: boolean }).msgDetails) {
+      window.history.back();
+    } else {
+      setDetailsOpen(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!detailsOpen) return;
+    window.history.pushState({ ...(window.history.state || {}), msgDetails: true }, "");
+    const onPop = () => setDetailsOpen(false);
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, [detailsOpen]);
+
+  const showLeftPanel = isMobile ? showSidebar : true;
+  const showConversationList = showSidebar;
+  const showChatPane = !isMobile || !showSidebar;
 
   const handleInputChange = (value: string) => {
     setInput(value);
@@ -1175,119 +1301,167 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
           <DropdownMenu items={makeMenuItems(ctxMenu.contact, ()=>setCtxMenu(null))} onClose={()=>setCtxMenu(null)} />
         </div>
       )}
-      {/* Icon sidebar */}
-      <div className="w-[72px] border-r flex flex-col items-center py-4 gap-2 shrink-0" style={{ background:C.surfaceVar, borderColor:C.outlineVar }}>
-        {sidebarFilters.map(({ Icon, l, id, badge }) => {
-          const active = listFilter === id;
-          return (
-            <button key={l} title={l} onClick={() => setListFilter(id)} aria-pressed={active}
-              className="relative w-12 h-12 rounded-full flex items-center justify-center transition-all hover:scale-110 focus:outline-none focus-visible:ring-2"
-              style={{
-                background: active ? C.primaryCont : C.surface,
-                color: active ? C.primary : C.onSurfaceVar,
-                boxShadow: active ? `0 0 0 2px ${C.primary}` : SH1,
-              }}>
-              <Icon style={{ fontSize:20 }} />
-              {badge != null && badge > 0 && (
-                <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-0.5 rounded-full text-white text-[9px] flex items-center justify-center font-bold" style={{ background: BADGE_BG }}>{badge}</span>
-              )}
-            </button>
-          );
-        })}
-        <button title="Settings" onClick={e => { e.stopPropagation(); setSettingsOpen(true); }} className="w-12 h-12 rounded-full flex items-center justify-center transition-all hover:scale-110 mt-auto" style={{ background:C.surface, color:C.onSurfaceVar, boxShadow:SH1 }}>
-          <SettingsIcon style={{ fontSize:20 }} />
-        </button>
-      </div>
-      {/* Conversation list */}
-      {showSidebar && (
-        <div className="w-72 border-r flex flex-col shrink-0" style={{ background:C.surface, borderColor:C.outlineVar, boxShadow:SH1 }}>
-          <div className="p-4 border-b" style={{ borderColor:C.outlineVar }}>
-            <div className="flex items-center gap-2">
-              <div className="flex items-center gap-2 px-3 py-2.5 rounded-full border flex-1" style={{ background:C.surfaceVar, borderColor:C.outlineVar }}>
-                <SearchIcon style={{ fontSize:18, color:C.onSurfaceVar }} />
-                <input placeholder="Search messages..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="flex-1 bg-transparent text-sm focus:outline-none" style={{ color:C.onSurface, fontFamily:"Roboto" }} />
-              </div>
-              <button title="New Direct Message" onClick={e => { e.stopPropagation(); setNewDmOpen(true); setNewDmError(""); setNewDmUsername(""); }}
-                className="w-10 h-10 rounded-full flex items-center justify-center shrink-0 transition-all hover:scale-105 focus:outline-none focus-visible:ring-2"
-                style={{ background: C.primaryCont, color: C.primary, boxShadow: SH1 }}>
-                <PersonAddIcon style={{ fontSize: 20 }} />
-              </button>
+      {/* Settings Modal */}
+      {settingsOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[2px] p-4" onClick={() => setSettingsOpen(false)}>
+          <div className="rounded-3xl p-6 w-full max-w-sm" style={{ background:C.surface, boxShadow:"0 8px 32px rgba(0,0,0,.24)" }} onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="font-medium text-base" style={{ color:C.onSurface, fontFamily:"Roboto" }}>My Profile</h3>
+              <button onClick={() => setSettingsOpen(false)} className="w-8 h-8 rounded-full flex items-center justify-center hover:bg-black/5" style={{ color:C.onSurfaceVar }}><CloseIcon style={{ fontSize:18 }} /></button>
             </div>
-          </div>
-          <div className="flex-1 overflow-y-auto py-2">
-            {listFilter === "dm-requests" ? (
-              <div className="px-4">
-                <div className="px-4 pt-3 pb-1">
-                  <span className="text-[10px] font-semibold uppercase tracking-widest" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>Pending Requests</span>
-                </div>
-                <div className="space-y-2">
-                  {dmRequests.length === 0 ? (
-                    <p className="text-xs px-2 py-6 text-center" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>No pending requests.</p>
-                  ) : dmRequests.map(req => (
-                    <div key={req.id} className="flex items-center gap-3 p-2.5 rounded-2xl" style={{ background: C.surfaceVar }}>
-                      <ChatAvatar name={req.requesterName} avatarUrl={req.requesterAvatar} size={36} />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium truncate" style={{ color: C.onSurface, fontFamily: "Roboto" }}>{req.requesterDisplayName || req.requesterName}</p>
-                        <p className="text-[10px] truncate" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>@{req.requesterName}</p>
-                        <p className="text-[10px]" style={{ color: C.onSurfaceVar, fontFamily: "Roboto Mono,monospace" }}>{req.time}</p>
-                      </div>
-                      <div className="flex flex-col gap-1 shrink-0">
-                        <button onClick={() => acceptDmRequest(req.id)} className="px-2.5 py-1 rounded-full text-[10px] font-medium text-white" style={{ background: C.primary, fontFamily: "Roboto" }}>Accept</button>
-                        <button onClick={() => rejectDmRequest(req.id)} className="px-2.5 py-1 rounded-full text-[10px] font-medium border" style={{ borderColor: C.outline, color: C.error, fontFamily: "Roboto" }}>Reject</button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+            <div className="flex items-center gap-4 mb-6">
+              <div className="relative">
+                <ChatAvatar name={currentUser?.username || "?"} avatarUrl={currentUser?.avatarUrl} size={64} />
+                <div className="w-4 h-4 rounded-full border-2 border-white absolute bottom-0 right-0" style={{ background:STATUS_COLORS[myStatus] || STATUS_COLORS.Online }} />
               </div>
-            ) : (
-            <>
-            {(["channel","dm"] as const).map(section => {
-              const items = filteredContacts.filter(c => c.type === section);
-              if (!items.length) return null;
-              return (
-                <div key={section}>
-                  <div className="px-4 pt-3 pb-1">
-                    <span className="text-[10px] font-semibold uppercase tracking-widest" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>{section === "channel" ? "Channels" : "Direct Messages"}</span>
-                  </div>
-                  {items.map(m => (
-                    <button key={m.id} onClick={() => setSel(m)}
-                      onContextMenu={e => { e.preventDefault(); setCtxMenu({ x:e.clientX, y:e.clientY, contact:m }); }}
-                      className="w-full flex items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-[#6750A4]/6" style={{ background:sel.id===m.id?C.primaryCont:"transparent" }}>
-                      <div className="relative shrink-0">
-                        {m.type === "channel" ? (
-                          <ChatAvatar name={m.name} size={40} channel />
-                        ) : (
-                          <ChatAvatar name={m.name} avatarUrl={m.avatarUrl} size={40} />
-                        )}
-                        {m.type === "dm" && <FiberManualRecordIcon style={{ fontSize:12, color:presenceColor(m), position:"absolute", bottom:-1, right:-1 }} />}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex justify-between items-center gap-2">
-                          <span className="text-sm font-medium truncate" style={{ color:C.onSurface, fontFamily:"Roboto" }}>{m.name}</span>
-                          {m.muted && <VolumeOffIcon style={{ fontSize:14, color:C.onSurfaceVar }} titleAccess="Muted" />}
-                        </div>
-                        {m.type === "dm" && (
-                          <p className="text-xs truncate" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>{m.msg}</p>
-                        )}
-                      </div>
-                      {m.type === "dm" && (
-                        <div className="w-5 h-5 shrink-0 flex items-center justify-center">
-                          {m.unread > 0 && (
-                            <div className="unread-badge rounded-full flex items-center justify-center text-white text-[10px] font-bold" style={{ background:BADGE_BG }}>{m.unread > 9 ? "9+" : m.unread}</div>
-                          )}
-                        </div>
-                      )}
-                    </button>
-                  ))}
-                </div>
-              );
-            })}
-            </>
-            )}
+              <div>
+                <p className="font-medium text-sm" style={{ color:C.onSurface, fontFamily:"'Trade Winds', cursive" }}>{currentUser?.username || "Shinobi"}</p>
+                <p className="text-xs mt-0.5" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>
+                  {currentUser?.isTeamMember ? "Team Member" : currentUser?.isAdmin ? "Administrator" : "Member"}
+                  {currentUser?.memberSince ? ` · since ${currentUser.memberSince}` : ""}
+                </p>
+              </div>
+            </div>
+            <p className="text-xs font-medium mb-2 uppercase tracking-widest" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>Status</p>
+            <div className="flex flex-col gap-1.5 mb-5">
+              {(["Online","Away","Do Not Disturb","Offline"] as const).map(s => {
+                const checked = myStatus === s;
+                return (
+                  <label key={s} className="flex items-center gap-3 px-3 py-2.5 rounded-2xl border cursor-pointer transition-all" style={{ borderColor:checked?STATUS_COLORS[s]:C.outlineVar, background:checked?`${STATUS_COLORS[s]}18`:"transparent" }}>
+                    <input type="radio" name="status" value={s} checked={checked} onChange={() => setMyStatus(s)} className="sr-only" />
+                    <span className="w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 transition-all" style={{ borderColor:STATUS_COLORS[s], background:checked?STATUS_COLORS[s]:"transparent" }}>
+                      {checked && <span className="w-1.5 h-1.5 rounded-full bg-white" />}
+                    </span>
+                    <span className="flex items-center gap-2 text-xs font-medium" style={{ color:checked?STATUS_COLORS[s]:C.onSurfaceVar, fontFamily:"Roboto" }}>
+                      <span className="w-2 h-2 rounded-full shrink-0" style={{ background:STATUS_COLORS[s] }} />{s}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+            <p className="text-xs font-medium mb-2 uppercase tracking-widest" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>Bio</p>
+            <textarea rows={3} value={myBio} onChange={e => setMyBio(e.target.value)} className="w-full px-4 py-3 rounded-2xl border text-sm focus:outline-none resize-none mb-5" style={{ borderColor:C.outline, color:C.onSurface, background:C.surfaceVar, fontFamily:"Roboto" }} />
+            <FilledBtn cls={`w-full justify-center ${savingProfile ? "opacity-60 pointer-events-none" : ""}`} onClick={saveMyProfile}><CheckIcon style={{ fontSize:16 }} />{savingProfile ? "Saving…" : "Save"}</FilledBtn>
           </div>
         </div>
       )}
+      {/* Left chrome: filter rail + conversation list (mobile: full-width together) */}
+      {showLeftPanel && (
+        <div className={`flex shrink-0 min-h-0 ${isMobile ? "w-full flex-1" : ""}`}>
+          <div className="w-[72px] border-r flex flex-col items-center py-4 gap-2 shrink-0" style={{ background:C.surfaceVar, borderColor:C.outlineVar }}>
+            {sidebarFilters.map(({ Icon, l, id, badge }) => {
+              const active = listFilter === id;
+              return (
+                <button key={l} title={l} onClick={() => setListFilter(id)} aria-pressed={active}
+                  className="relative w-12 h-12 rounded-full flex items-center justify-center transition-all hover:scale-110 focus:outline-none focus-visible:ring-2"
+                  style={{
+                    background: active ? C.primaryCont : C.surface,
+                    color: active ? C.primary : C.onSurfaceVar,
+                    boxShadow: active ? `0 0 0 2px ${C.primary}` : SH1,
+                  }}>
+                  <Icon style={{ fontSize:20 }} />
+                  {badge != null && badge > 0 && (
+                    <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-0.5 rounded-full text-white text-[9px] flex items-center justify-center font-bold" style={{ background: BADGE_BG }}>{badge}</span>
+                  )}
+                </button>
+              );
+            })}
+            <button title="Settings" onClick={e => { e.stopPropagation(); setSettingsOpen(true); }} className="w-12 h-12 rounded-full flex items-center justify-center transition-all hover:scale-110 mt-auto" style={{ background:C.surface, color:C.onSurfaceVar, boxShadow:SH1 }}>
+              <SettingsIcon style={{ fontSize:20 }} />
+            </button>
+          </div>
+          {showConversationList && (
+            <div className={`border-r flex flex-col shrink-0 min-h-0 ${isMobile ? "flex-1 w-auto" : "w-72"}`} style={{ background:C.surface, borderColor:C.outlineVar, boxShadow:SH1 }}>
+              <div className="p-4 border-b" style={{ borderColor:C.outlineVar }}>
+                <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 px-3 py-2.5 rounded-full border flex-1" style={{ background:C.surfaceVar, borderColor:C.outlineVar }}>
+                    <SearchIcon style={{ fontSize:18, color:C.onSurfaceVar }} />
+                    <input placeholder="Search messages..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="flex-1 bg-transparent text-sm focus:outline-none" style={{ color:C.onSurface, fontFamily:"Roboto" }} />
+                  </div>
+                  <button title="New Direct Message" onClick={e => { e.stopPropagation(); setNewDmOpen(true); setNewDmError(""); setNewDmUsername(""); }}
+                    className="w-10 h-10 rounded-full flex items-center justify-center shrink-0 transition-all hover:scale-105 focus:outline-none focus-visible:ring-2"
+                    style={{ background: C.primaryCont, color: C.primary, boxShadow: SH1 }}>
+                    <PersonAddIcon style={{ fontSize: 20 }} />
+                  </button>
+                </div>
+              </div>
+              <div className="flex-1 overflow-y-auto py-2 ninja-scroll" onScroll={onScrollReveal}>
+                {listFilter === "dm-requests" ? (
+                  <div className="px-4">
+                    <div className="px-4 pt-3 pb-1">
+                      <span className="text-[10px] font-semibold uppercase tracking-widest" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>Pending Requests</span>
+                    </div>
+                    <div className="space-y-2">
+                      {dmRequests.length === 0 ? (
+                        <p className="text-xs px-2 py-6 text-center" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>No pending requests.</p>
+                      ) : dmRequests.map(req => (
+                        <div key={req.id} className="flex items-center gap-3 p-2.5 rounded-2xl" style={{ background: C.surfaceVar }}>
+                          <ChatAvatar name={req.requesterName} avatarUrl={req.requesterAvatar} size={36} />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium truncate" style={{ color: C.onSurface, fontFamily: "Roboto" }}>{req.requesterDisplayName || req.requesterName}</p>
+                            <p className="text-[10px] truncate" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>@{req.requesterName}</p>
+                            <p className="text-[10px]" style={{ color: C.onSurfaceVar, fontFamily: "Roboto Mono,monospace" }}>{req.time}</p>
+                          </div>
+                          <div className="flex flex-col gap-1 shrink-0">
+                            <button onClick={() => acceptDmRequest(req.id)} className="px-2.5 py-1 rounded-full text-[10px] font-medium text-white" style={{ background: C.primary, fontFamily: "Roboto" }}>Accept</button>
+                            <button onClick={() => rejectDmRequest(req.id)} className="px-2.5 py-1 rounded-full text-[10px] font-medium border" style={{ borderColor: C.outline, color: C.error, fontFamily: "Roboto" }}>Reject</button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                <>
+                {(["channel","dm"] as const).map(section => {
+                  const items = filteredContacts.filter(c => c.type === section);
+                  if (!items.length) return null;
+                  return (
+                    <div key={section}>
+                      <div className="px-4 pt-3 pb-1">
+                        <span className="text-[10px] font-semibold uppercase tracking-widest" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>{section === "channel" ? "Channels" : "Direct Messages"}</span>
+                      </div>
+                      {items.map(m => (
+                        <button key={m.id} onClick={() => selectConversation(m)}
+                          onContextMenu={e => { e.preventDefault(); setCtxMenu({ x:e.clientX, y:e.clientY, contact:m }); }}
+                          className="w-full flex items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-[#6750A4]/6" style={{ background:sel.id===m.id?C.primaryCont:"transparent" }}>
+                          <div className="relative shrink-0">
+                            {m.type === "channel" ? (
+                              <ChatAvatar name={m.name} size={40} channel />
+                            ) : (
+                              <ChatAvatar name={m.name} avatarUrl={m.avatarUrl} size={40} />
+                            )}
+                            {m.type === "dm" && <FiberManualRecordIcon style={{ fontSize:12, color:presenceColor(m), position:"absolute", bottom:-1, right:-1 }} />}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex justify-between items-center gap-2">
+                              <span className="text-sm font-medium truncate" style={{ color:C.onSurface, fontFamily:"Roboto" }}>{m.name}</span>
+                              {m.muted && <VolumeOffIcon style={{ fontSize:14, color:C.onSurfaceVar }} titleAccess="Muted" />}
+                            </div>
+                            {m.type === "dm" && (
+                              <p className="text-xs truncate" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>{m.msg}</p>
+                            )}
+                          </div>
+                          {m.type === "dm" && (
+                            <div className="w-5 h-5 shrink-0 flex items-center justify-center">
+                              {m.unread > 0 && (
+                                <div className="unread-badge rounded-full flex items-center justify-center text-white text-[10px] font-bold" style={{ background:BADGE_BG }}>{m.unread > 9 ? "9+" : m.unread}</div>
+                              )}
+                            </div>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  );
+                })}
+                </>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
       {/* Chat */}
+      {showChatPane && (
       <div className="flex-1 flex flex-col min-w-0 relative">
         {listFilter === "dm-requests" ? (
           <div className="flex-1 flex items-center justify-center px-6" style={{ background: C.surfaceVar }}>
@@ -1304,14 +1478,21 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
           <button title={showSidebar?"Hide sidebar":"Show sidebar"} onClick={e => { e.stopPropagation(); setShowSidebar(!showSidebar); }} className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-black/5 shrink-0" style={{ color:C.onSurfaceVar }}>
             <MenuIcon style={{ fontSize:20 }} />
           </button>
-          <div className="relative">
+          <button
+            type="button"
+            className="relative shrink-0 rounded-full focus:outline-none focus-visible:ring-2"
+            onClick={e => { e.stopPropagation(); openConversationDetails(); }}
+            aria-label={isMobile ? `View ${sel.type === "channel" ? "channel" : "user"} details` : undefined}
+            style={{ cursor: isMobile && sel.id > 0 ? "pointer" : "default" }}
+            tabIndex={isMobile && sel.id > 0 ? 0 : -1}
+          >
             {sel.type === "channel" ? (
               <ChatAvatar name={sel.name} size={36} channel />
             ) : (
               <ChatAvatar name={sel.name} avatarUrl={sel.avatarUrl} size={36} />
             )}
             {sel.type === "dm" && <FiberManualRecordIcon style={{ fontSize:10, color:presenceColor(sel), position:"absolute", bottom:-1, right:-1 }} />}
-          </div>
+          </button>
           <div>
             <p className="font-medium text-sm" style={{ color:C.onSurface, fontFamily:"Roboto" }}>{sel.name}</p>
             <p className="text-xs" style={{ color: sel.type==="channel" ? C.onSurfaceVar : presenceColor(sel), fontFamily:"Roboto" }}>{presenceLabel(sel)}</p>
@@ -1325,50 +1506,6 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
             )}
           </div>
         </div>
-        {/* Settings Modal */}
-        {settingsOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[2px] p-4" onClick={() => setSettingsOpen(false)}>
-            <div className="rounded-3xl p-6 w-full max-w-sm" style={{ background:C.surface, boxShadow:"0 8px 32px rgba(0,0,0,.24)" }} onClick={e => e.stopPropagation()}>
-              <div className="flex items-center justify-between mb-6">
-                <h3 className="font-medium text-base" style={{ color:C.onSurface, fontFamily:"Roboto" }}>My Profile</h3>
-                <button onClick={() => setSettingsOpen(false)} className="w-8 h-8 rounded-full flex items-center justify-center hover:bg-black/5" style={{ color:C.onSurfaceVar }}><CloseIcon style={{ fontSize:18 }} /></button>
-              </div>
-              <div className="flex items-center gap-4 mb-6">
-                <div className="relative">
-                  <ChatAvatar name={currentUser?.username || "?"} avatarUrl={currentUser?.avatarUrl} size={64} />
-                  <div className="w-4 h-4 rounded-full border-2 border-white absolute bottom-0 right-0" style={{ background:STATUS_COLORS[myStatus] || STATUS_COLORS.Online }} />
-                </div>
-                <div>
-                  <p className="font-medium text-sm" style={{ color:C.onSurface, fontFamily:"'Trade Winds', cursive" }}>{currentUser?.username || "Shinobi"}</p>
-                  <p className="text-xs mt-0.5" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>
-                    {currentUser?.isTeamMember ? "Team Member" : currentUser?.isAdmin ? "Administrator" : "Member"}
-                    {currentUser?.memberSince ? ` · since ${currentUser.memberSince}` : ""}
-                  </p>
-                </div>
-              </div>
-              <p className="text-xs font-medium mb-2 uppercase tracking-widest" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>Status</p>
-              <div className="flex flex-col gap-1.5 mb-5">
-                {(["Online","Away","Do Not Disturb","Offline"] as const).map(s => {
-                  const checked = myStatus === s;
-                  return (
-                    <label key={s} className="flex items-center gap-3 px-3 py-2.5 rounded-2xl border cursor-pointer transition-all" style={{ borderColor:checked?STATUS_COLORS[s]:C.outlineVar, background:checked?`${STATUS_COLORS[s]}18`:"transparent" }}>
-                      <input type="radio" name="status" value={s} checked={checked} onChange={() => setMyStatus(s)} className="sr-only" />
-                      <span className="w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 transition-all" style={{ borderColor:STATUS_COLORS[s], background:checked?STATUS_COLORS[s]:"transparent" }}>
-                        {checked && <span className="w-1.5 h-1.5 rounded-full bg-white" />}
-                      </span>
-                      <span className="flex items-center gap-2 text-xs font-medium" style={{ color:checked?STATUS_COLORS[s]:C.onSurfaceVar, fontFamily:"Roboto" }}>
-                        <span className="w-2 h-2 rounded-full shrink-0" style={{ background:STATUS_COLORS[s] }} />{s}
-                      </span>
-                    </label>
-                  );
-                })}
-              </div>
-              <p className="text-xs font-medium mb-2 uppercase tracking-widest" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>Bio</p>
-              <textarea rows={3} value={myBio} onChange={e => setMyBio(e.target.value)} className="w-full px-4 py-3 rounded-2xl border text-sm focus:outline-none resize-none mb-5" style={{ borderColor:C.outline, color:C.onSurface, background:C.surfaceVar, fontFamily:"Roboto" }} />
-              <FilledBtn cls={`w-full justify-center ${savingProfile ? "opacity-60 pointer-events-none" : ""}`} onClick={saveMyProfile}><CheckIcon style={{ fontSize:16 }} />{savingProfile ? "Saving…" : "Save"}</FilledBtn>
-            </div>
-          </div>
-        )}
         {/* Message list */}
         <div className="flex-1 relative min-h-0 min-w-0 flex flex-col overflow-hidden" style={{ background:C.surfaceVar }} onClick={closeAll}>
           {threadReady && msgs.length > 0 ? (
@@ -1399,6 +1536,19 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
                     const newest = msgsRef.current[msgsRef.current.length - 1].id;
                     setLastReadMessageId(newest);
                     api.messages.markRead(sel.id).then(() => refreshContacts()).catch(() => {});
+                  }
+                }
+              }}
+              scrollerRef={(ref) => {
+                if (ref instanceof HTMLElement) {
+                  ref.classList.add("ninja-scroll");
+                  if (!ref.dataset.scrollBound) {
+                    ref.dataset.scrollBound = "1";
+                    ref.addEventListener("scroll", () => {
+                      ref.classList.add("is-scrolling");
+                      if (virtuosoScrollTimer.current) clearTimeout(virtuosoScrollTimer.current);
+                      virtuosoScrollTimer.current = setTimeout(() => ref.classList.remove("is-scrolling"), 900);
+                    }, { passive: true });
                   }
                 }
               }}
@@ -1447,7 +1597,18 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
                     <div className={`flex gap-2.5 min-w-0 max-w-full ${m.self ? "flex-row-reverse" : ""}`}>
                       {!m.self ? (
                         showHeader
-                          ? <ChatAvatar name={m.user} avatarUrl={m.avatarUrl} size={32} className="self-end" />
+                          ? (
+                            <button
+                              type="button"
+                              className="self-end shrink-0 rounded-full focus:outline-none focus-visible:ring-2 p-0 border-0 bg-transparent"
+                              onClick={e => { e.stopPropagation(); openConversationDetails(); }}
+                              aria-label={isMobile ? "View conversation details" : undefined}
+                              tabIndex={isMobile ? 0 : -1}
+                              style={{ cursor: isMobile ? "pointer" : "default" }}
+                            >
+                              <ChatAvatar name={m.user} avatarUrl={m.avatarUrl} size={32} />
+                            </button>
+                          )
                           : <div className="w-8 shrink-0" />
                       ) : <div className="w-8 shrink-0" />}
                       <div className={`flex flex-col gap-1 min-w-0 max-w-[min(100%,20rem)] lg:max-w-md ${m.self ? "items-end" : "items-start"}`}>
@@ -1468,7 +1629,11 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
                               <div className="relative">
                                 <button title="React" onClick={e => { e.stopPropagation(); setReactionPickerMsgId(rp => rp === m.id ? null : m.id); }} className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-black/8 transition-colors text-sm" style={{ color: C.onSurfaceVar }}>😊</button>
                                 {reactionPickerMsgId === m.id && (
-                                  <div className="absolute bottom-full mb-1 right-0 flex gap-1 px-2 py-1.5 rounded-full shadow-lg" style={{ background: C.surface, border: `1px solid ${C.outlineVar}` }} onClick={e => e.stopPropagation()}>
+                                  <div
+                                    className={`absolute bottom-full mb-1 flex gap-1 px-2 py-1.5 rounded-full shadow-lg ${m.self ? "right-0" : "left-0"}`}
+                                    style={{ background: C.surface, border: `1px solid ${C.outlineVar}` }}
+                                    onClick={e => e.stopPropagation()}
+                                  >
                                     {QUICK_REACTIONS.map(emoji => (
                                       <button key={emoji} onClick={() => addReaction(m.id, emoji)} className="text-lg hover:scale-125 transition-transform w-7 h-7 flex items-center justify-center rounded-full hover:bg-black/8">{emoji}</button>
                                     ))}
@@ -1586,11 +1751,11 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
                   ))}
                 </div>
                 {emojiTab === "emoji" ? (
-                  <div className="p-3 grid grid-cols-8 gap-1 max-h-52 overflow-y-auto">
+                  <div className="p-3 grid grid-cols-8 gap-1 max-h-52 overflow-y-auto ninja-scroll" onScroll={onScrollReveal}>
                     {EMOJI_LIST.map(e => <button key={e} onClick={() => { setInput(i => i + e); requestAnimationFrame(adjustComposerHeight); }} className="text-xl w-8 h-8 flex items-center justify-center rounded-lg hover:scale-125 transition-transform">{e}</button>)}
                   </div>
                 ) : (
-                  <div className="p-3 grid grid-cols-2 gap-2 max-h-52 overflow-y-auto">
+                  <div className="p-3 grid grid-cols-2 gap-2 max-h-52 overflow-y-auto ninja-scroll" onScroll={onScrollReveal}>
                     {GIF_LIST.map(g => (
                       <button key={g.label} onClick={() => { setMsgs(prev => [...prev, { id:Date.now(), user:"You", msg:"", time:nowTime(), self:true, mediaUrl:g.url, mediaType:"gif" }]); setEmojiOpen(false); pinToBottomRef.current = true; requestAnimationFrame(() => forceScrollToBottom("auto")); }} className="rounded-xl overflow-hidden border hover:opacity-80 transition-opacity" style={{ borderColor:C.outlineVar }}>
                         <img src={g.url} alt={g.label} className="w-full h-16 object-cover" />
@@ -1641,48 +1806,45 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
         </>
         )}
       </div>
-      {/* Right panel */}
+      )}
+      {/* Right panel — desktop/tablet lg+ */}
       {listFilter !== "dm-requests" && sel.id > 0 && (
-      <div className="hidden lg:flex w-72 border-l flex-col p-5 shrink-0 overflow-y-auto" style={{ background:C.surface, borderColor:C.outlineVar }}>
-        <div className="text-center mb-5">
-          <div className="relative inline-block mb-3">
-            {sel.type === "channel" ? (
-              <ChatAvatar name={sel.name} size={80} channel className="mx-auto" />
-            ) : (
-              <ChatAvatar name={sel.name} avatarUrl={sel.avatarUrl} size={80} className="mx-auto" />
-            )}
-            {sel.type === "dm" && <FiberManualRecordIcon style={{ fontSize:14, color:presenceColor(sel), position:"absolute", bottom:2, right:2 }} />}
-          </div>
-          <h3 className="font-medium" style={{ color:C.onSurface, fontFamily:"Roboto" }}>{sel.name}</h3>
-          <span className="text-xs font-medium" style={{ color: sel.type==="channel" ? C.primary : presenceColor(sel), fontFamily:"Roboto" }}>{presenceLabel(sel)}</span>
-          {sel.bio ? <p className="text-xs mt-3 leading-relaxed text-left" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>{sel.bio}</p> : null}
-        </div>
-        <div className="space-y-3 text-sm border-t pt-4" style={{ borderColor:C.outlineVar }}>
-          {(sel.type === "dm"
-            ? ([
-                ["Membership", sel.isTeamMember ? "Team Member" : "Member"],
-                sel.rank ? ["Rank", sel.rank] : null,
-                sel.village ? ["Village", sel.village] : null,
-                sel.clan ? ["Clan", sel.clan] : null,
-                sel.level != null ? ["Level", String(sel.level)] : null,
-                sel.memberSince ? ["Joined", sel.memberSince] : null,
-                sel.country ? ["Country", sel.country] : null,
-              ] as ([string, string] | null)[]).filter(Boolean) as [string, string][]
-            : ([
-                ["Type", "Text Channel"],
-                sel.bio ? ["About", sel.bio.slice(0, 80) + (sel.bio.length > 80 ? "…" : "")] : null,
-              ] as ([string, string] | null)[]).filter(Boolean) as [string, string][]
-          ).map(([k,v]) => (
-            <div key={k} className="flex justify-between gap-3">
-              <span className="shrink-0" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>{k}</span>
-              <span className="font-medium text-right" style={{ color:C.onSurface, fontFamily:"Roboto" }}>{v}</span>
-            </div>
-          ))}
-          {sel.type === "dm" && !sel.village && !sel.memberSince && !sel.rank && (
-            <p className="text-xs" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>No additional profile details available.</p>
-          )}
-        </div>
+      <div className="hidden lg:flex w-72 border-l flex-col p-5 shrink-0 overflow-y-auto ninja-scroll" style={{ background:C.surface, borderColor:C.outlineVar }} onScroll={onScrollReveal}>
+        <ConversationDetailsBody sel={sel} C={C} presenceColor={presenceColor} presenceLabel={presenceLabel} />
       </div>
+      )}
+      {/* Mobile conversation details modal */}
+      {detailsOpen && isMobile && sel.id > 0 && (
+        <div
+          className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-sm p-0 sm:p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Conversation details"
+          onClick={dismissConversationDetails}
+        >
+          <div
+            className="w-full sm:max-w-sm max-h-[85vh] overflow-y-auto ninja-scroll rounded-t-3xl sm:rounded-3xl p-5 shadow-2xl"
+            style={{ background: C.surface }}
+            onClick={e => e.stopPropagation()}
+            onScroll={onScrollReveal}
+          >
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-medium text-base" style={{ color: C.onSurface, fontFamily: "Roboto" }}>
+                {sel.type === "channel" ? "Channel Info" : "Profile"}
+              </h3>
+              <button
+                type="button"
+                onClick={dismissConversationDetails}
+                className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-black/5"
+                style={{ color: C.onSurfaceVar }}
+                aria-label="Close details"
+              >
+                <CloseIcon style={{ fontSize: 18 }} />
+              </button>
+            </div>
+            <ConversationDetailsBody sel={sel} C={C} presenceColor={presenceColor} presenceLabel={presenceLabel} />
+          </div>
+        </div>
       )}
     </div>
   );

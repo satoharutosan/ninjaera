@@ -20,7 +20,6 @@ import FacebookIcon from "@mui/icons-material/Facebook";
 import XIcon from "@mui/icons-material/X";
 import YouTubeIcon from "@mui/icons-material/YouTube";
 import WhatsAppIcon from "@mui/icons-material/WhatsApp";
-import AccountCircleIcon from "@mui/icons-material/AccountCircle";
 import AdminPanelSettingsIcon from "@mui/icons-material/AdminPanelSettings";
 import LogoutIcon from "@mui/icons-material/Logout";
 import PersonIcon from "@mui/icons-material/Person";
@@ -46,6 +45,7 @@ import OAuthCallbackPage from "@/app/pages/OAuthCallbackPage";
 import MessagesPage from "@/app/pages/MessagesPage";
 import AdminPage from "@/app/pages/AdminPage";
 import ProfilePage from "@/app/pages/ProfilePage";
+import TermsOfServicePage from "@/app/pages/TermsOfServicePage";
 import { pageFromLocation, setPageInLocation } from "@/app/routing";
 import { api, setToken, ApiError, type ApiUser, type ApiNotification } from "@/app/api";
 import { SOCIAL_LINKS, isSocialUrlConfigured, type SocialPlatform } from "@/app/socialLinks";
@@ -251,9 +251,56 @@ function Navbar({ page, setPage, isDark, setIsDark, loggedIn, user, userAvatar, 
             </div>
           )}
         </div>
-        <button className="md:hidden w-10 h-10 flex items-center justify-center rounded-full hover:bg-black/5" onClick={() => setMob(!mob)} style={{ color:C.onSurface }}>
-          {mob ? <CloseIcon /> : <MenuIcon />}
-        </button>
+        {/* Mobile: quick actions + hamburger */}
+        <div className="md:hidden flex items-center gap-0.5 shrink-0">
+          {loggedIn && (
+            <>
+              <button
+                type="button"
+                onClick={() => go("alarms")}
+                aria-label={`Notifications${unreadCount > 0 ? ` (${unreadCount} unread)` : ""}`}
+                className="w-10 h-10 rounded-full flex items-center justify-center relative hover:bg-black/5 transition-colors"
+                style={{ color: page === "alarms" ? C.primary : C.onSurfaceVar }}
+              >
+                <NotificationsIcon style={{ fontSize: 20 }} />
+                {unreadCount > 0 && (
+                  <span className="absolute top-1.5 right-1.5 min-w-[14px] h-3.5 px-0.5 rounded-full flex items-center justify-center text-[8px] font-bold text-white leading-none" style={{ background: BADGE_BG }}>
+                    {unreadCount > 99 ? "99+" : unreadCount}
+                  </span>
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => go("messages")}
+                aria-label={`Messages${msgUnread > 0 ? ` (${msgUnread} unread)` : ""}`}
+                className="w-10 h-10 rounded-full flex items-center justify-center relative hover:bg-black/5 transition-colors"
+                style={{ color: page === "messages" ? C.primary : C.onSurfaceVar }}
+              >
+                <ChatBubbleIcon style={{ fontSize: 20 }} />
+                {msgUnread > 0 && (
+                  <span className="absolute top-1 right-1 min-w-[14px] h-3.5 px-0.5 rounded-full text-white text-[8px] flex items-center justify-center font-bold leading-none" style={{ background: BADGE_BG }}>
+                    {msgUnread > 9 ? "9+" : msgUnread}
+                  </span>
+                )}
+                {dmRequestCount > 0 && (
+                  <span className="absolute bottom-1 right-1 min-w-[12px] h-3 px-0.5 rounded-full text-white text-[7px] flex items-center justify-center font-bold leading-none" style={{ background: BADGE_BG }}>
+                    {dmRequestCount}
+                  </span>
+                )}
+              </button>
+            </>
+          )}
+          <button
+            type="button"
+            className="w-10 h-10 flex items-center justify-center rounded-full hover:bg-black/5"
+            onClick={() => setMob(!mob)}
+            aria-label={mob ? "Close menu" : "Open menu"}
+            aria-expanded={mob}
+            style={{ color: C.onSurface }}
+          >
+            {mob ? <CloseIcon /> : <MenuIcon />}
+          </button>
+        </div>
       </div>
       {mob && (
         <div className="md:hidden border-t" style={{ background:C.surface, borderColor:C.outlineVar }}>
@@ -262,10 +309,41 @@ function Navbar({ page, setPage, isDark, setIsDark, loggedIn, user, userAvatar, 
               <l.Icon style={{ fontSize:20, color:page===l.page?C.primary:C.onSurfaceVar }} />{l.label}
             </button>
           ))}
-          <div className="flex gap-3 p-4 border-t" style={{ borderColor:C.outlineVar }}>
-            {loggedIn
-              ? <FilledBtn onClick={() => go("profile")} cls="flex-1 justify-center"><AccountCircleIcon style={{ fontSize:16 }} />Profile</FilledBtn>
-              : <><OutlinedBtn onClick={() => go("login")} cls="flex-1 justify-center">Login</OutlinedBtn><FilledBtn onClick={() => go("signup")} cls="flex-1 justify-center">Sign Up</FilledBtn></>}
+          <div className="border-t" style={{ borderColor:C.outlineVar }}>
+            {loggedIn ? (
+              <>
+                <div className="flex items-center gap-3 px-5 py-4">
+                  <div className="w-11 h-11 rounded-full overflow-hidden flex items-center justify-center text-white font-medium text-base shrink-0" style={{ background: C.primary, fontFamily: "Roboto" }}>
+                    {userAvatar ? <img src={userAvatar} alt="" className="w-full h-full object-cover" /> : (user?.username?.[0]?.toUpperCase() || "?")}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium truncate" style={{ color: C.onSurface, fontFamily: "Roboto" }}>{user?.username || "User"}</p>
+                    <p className="text-xs truncate" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
+                      {user?.isTeamMember ? "Team Member" : user?.isAdmin ? "Administrator" : "Member"}
+                    </p>
+                  </div>
+                </div>
+                {isAdmin && (
+                  <button type="button" onClick={() => go("admin")} className="flex items-center gap-3 w-full px-5 py-3.5 text-sm hover:bg-[#6750A4]/6 transition-colors" style={{ color: page === "admin" ? C.primary : C.onSurface, fontFamily: "Roboto" }}>
+                    <AdminPanelSettingsIcon style={{ fontSize: 20, color: page === "admin" ? C.primary : C.onSurfaceVar }} />
+                    Admin Dashboard
+                  </button>
+                )}
+                <button type="button" onClick={() => go("profile")} className="flex items-center gap-3 w-full px-5 py-3.5 text-sm hover:bg-[#6750A4]/6 transition-colors" style={{ color: page === "profile" ? C.primary : C.onSurface, fontFamily: "Roboto" }}>
+                  <PersonIcon style={{ fontSize: 20, color: page === "profile" ? C.primary : C.onSurfaceVar }} />
+                  Profile
+                </button>
+                <button type="button" onClick={() => { onLogout(); go("home"); }} className="flex items-center gap-3 w-full px-5 py-3.5 text-sm hover:bg-[#6750A4]/6 transition-colors border-t" style={{ color: C.error, borderColor: C.outlineVar, fontFamily: "Roboto" }}>
+                  <LogoutIcon style={{ fontSize: 20 }} />
+                  Log Out
+                </button>
+              </>
+            ) : (
+              <div className="flex gap-3 p-4">
+                <OutlinedBtn onClick={() => go("login")} cls="flex-1 justify-center">Login</OutlinedBtn>
+                <FilledBtn onClick={() => go("signup")} cls="flex-1 justify-center">Sign Up</FilledBtn>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -321,16 +399,18 @@ function Footer({ setPage }: { setPage:(p:Page)=>void }) {
                 const commonCls = "w-10 h-10 rounded-full flex items-center justify-center border transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-[#1C1B1F] focus-visible:ring-[#CAC4D0]";
                 if (!configured) {
                   return (
-                    <span
+                    <button
                       key={link.id}
+                      type="button"
                       role="listitem"
                       title="Link not configured."
                       aria-label={`${link.label} — Link not configured.`}
+                      onClick={() => toast.message(`${link.label} link is not configured.`)}
                       className={`${commonCls} opacity-40 cursor-not-allowed`}
                       style={{ borderColor: "#49454F", color: "#79747E" }}
                     >
                       <Icon style={{ fontSize: 18 }} aria-hidden />
-                    </span>
+                    </button>
                   );
                 }
                 return (
@@ -341,7 +421,7 @@ function Footer({ setPage }: { setPage:(p:Page)=>void }) {
                     target="_blank"
                     rel="noopener noreferrer"
                     title={link.label}
-                    aria-label={link.label}
+                    aria-label={`Open ${link.label} (opens in a new tab)`}
                     className={`${commonCls} hover:bg-white/10 hover:scale-110 hover:-translate-y-0.5`}
                     style={{ borderColor: "#49454F", color: brandColor }}
                   >
@@ -377,9 +457,9 @@ function Footer({ setPage }: { setPage:(p:Page)=>void }) {
         <div className="border-t pt-6 flex flex-col sm:flex-row justify-between items-center gap-3" style={{ borderColor:"#49454F" }}>
           <p className="text-xs text-center sm:text-left" style={{ color:"#79747E", fontFamily:"Roboto" }}>© 2025 Ninja Era Studio. All rights reserved.</p>
           <div className="flex flex-wrap justify-center gap-4">
-            {["Privacy Policy","Terms of Service","Cookie Policy"].map(l => (
-              <a key={l} href="#" className="text-xs hover:text-white transition-colors" style={{ color:"#79747E", fontFamily:"Roboto" }}>{l}</a>
-            ))}
+            <button type="button" onClick={() => go("terms")} className="text-xs hover:text-white transition-colors" style={{ color:"#79747E", fontFamily:"Roboto" }}>Terms of Service</button>
+            <a href="#" className="text-xs hover:text-white transition-colors" style={{ color:"#79747E", fontFamily:"Roboto" }}>Privacy Policy</a>
+            <a href="#" className="text-xs hover:text-white transition-colors" style={{ color:"#79747E", fontFamily:"Roboto" }}>Cookie Policy</a>
           </div>
         </div>
       </div>
@@ -402,6 +482,7 @@ export default function App() {
     document.documentElement.classList.toggle("dark", isDark);
   }, [isDark]);
   const [user, setUser] = useState<ApiUser | null>(null);
+  const [authReady, setAuthReady] = useState(() => !localStorage.getItem("ninja-era-token"));
   const [settings, setSettings] = useState<AppSettings>({ emailNotif:true, pushNotif:false, twoFA:false, publicProfile:true });
   const [userAvatar, setUserAvatar] = useState<string|null>(null);
   const [contacts, setContacts] = useState<Contact[]>(MSGS_DATA_INIT);
@@ -410,6 +491,8 @@ export default function App() {
   const [dmRequestCount, setDmRequestCount] = useState(0);
   const [selectedConversationId, setSelectedConversationId] = useState<number | null>(null);
   const [focusMessageInput, setFocusMessageInput] = useState(false);
+  const clearSelectedConversation = useCallback(() => setSelectedConversationId(null), []);
+  const clearFocusMessageInput = useCallback(() => setFocusMessageInput(false), []);
   const loggedIn = !!user;
   const theme = isDark ? DARK_C : LIGHT_C;
   const noNav: Page[] = ["oauth-callback"];
@@ -425,6 +508,7 @@ export default function App() {
 
   const handleLogin = useCallback((u: ApiUser) => {
     setUser(u);
+    setAuthReady(true);
     if (u.avatarUrl) setUserAvatar(u.avatarUrl);
   }, []);
 
@@ -437,29 +521,43 @@ export default function App() {
     setMsgUnread(0);
     setDmRequestCount(0);
     setSelectedConversationId(null);
+    setAuthReady(true);
     disconnectRealtime();
   }, []);
 
   useEffect(() => {
     const token = localStorage.getItem("ninja-era-token");
-    if (!token) return;
+    if (!token) {
+      setAuthReady(true);
+      return;
+    }
+    let cancelled = false;
     api.auth.me()
       .then(r => {
+        if (cancelled) return;
         setUser(r.user);
         if (r.user.avatarUrl) setUserAvatar(r.user.avatarUrl);
         return api.users.me();
       })
       .then(r => {
-        if (r) {
-          setSettings({
-            emailNotif: r.settings.emailNotif,
-            pushNotif: r.settings.pushNotif,
-            twoFA: r.settings.twoFA,
-            publicProfile: r.settings.publicProfile,
-          });
+        if (cancelled || !r) return;
+        setSettings({
+          emailNotif: r.settings.emailNotif,
+          pushNotif: r.settings.pushNotif,
+          twoFA: r.settings.twoFA,
+          publicProfile: r.settings.publicProfile,
+        });
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setToken(null);
+          setUser(null);
         }
       })
-      .catch(() => { setToken(null); });
+      .finally(() => {
+        if (!cancelled) setAuthReady(true);
+      });
+    return () => { cancelled = true; };
   }, []);
 
   const refreshConversations = useCallback(() => {
@@ -579,14 +677,20 @@ export default function App() {
   };
 
   useEffect(() => {
+    if (!authReady) return;
     if ((page === "profile" || page === "messages" || page === "admin") && !loggedIn) {
       go("login");
+      return;
+    }
+    if ((page === "login" || page === "signup") && loggedIn) {
+      go("home");
+      return;
     }
     if (page === "admin" && loggedIn && !user?.isAdmin) {
       toast.error("Administrator access required");
       go("home");
     }
-  }, [page, loggedIn, user?.isAdmin, go]);
+  }, [authReady, page, loggedIn, user?.isAdmin, go]);
 
   const showEmailToast = (title: string, body: string, targetPage: Page) => {
     if (!settings.emailNotif) return;
@@ -609,6 +713,15 @@ export default function App() {
     <ThemeCtx.Provider value={theme}>
     <div style={{ minHeight:"100vh", background:theme.bg, fontFamily:"Roboto, sans-serif" }}>
       <Toaster position="top-right" richColors />
+      {!authReady ? (
+        <div className="min-h-screen flex items-center justify-center" aria-busy="true" aria-label="Restoring session">
+          <div className="flex flex-col items-center gap-3">
+            <div className="w-10 h-10 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: theme.primary, borderTopColor: "transparent" }} />
+            <p className="text-sm" style={{ color: theme.onSurfaceVar, fontFamily: "Roboto" }}>Restoring session…</p>
+          </div>
+        </div>
+      ) : (
+        <>
       {!noNav.includes(page) && <Navbar page={page} setPage={go} isDark={isDark} setIsDark={toggleTheme} loggedIn={loggedIn} user={user} userAvatar={userAvatar} notifs={notifs} setNotifs={setNotifs} msgUnread={msgUnread} dmRequestCount={dmRequestCount} isAdmin={user?.isAdmin} onLogout={handleLogout} />}
       {page==="home"      && <HomePage setPage={go} />}
       {page==="about"     && <AboutPage />}
@@ -616,13 +729,16 @@ export default function App() {
       {page==="teamwork"  && <TeamworkPage loggedIn={loggedIn} setPage={go} onAddDM={addDM} />}
       {page==="contact"   && <ContactPage />}
       {page==="alarms"    && <AlarmsPage setPage={go} onConversationsRefresh={refreshConversations} onNotificationsRefresh={refreshNotifications} />}
-      {page==="login"     && <LoginPage setPage={go} onLogin={handleLogin} />}
-      {page==="signup"    && <SignUpPage setPage={go} onLogin={handleLogin} />}
+      {page==="login"     && !loggedIn && <LoginPage setPage={go} onLogin={handleLogin} />}
+      {page==="signup"    && !loggedIn && <SignUpPage setPage={go} onLogin={handleLogin} />}
       {page==="oauth-callback" && <OAuthCallbackPage setPage={go} onLogin={handleLogin} />}
-      {page==="messages"  && loggedIn && <MessagesPage settings={settings} showEmailToast={showEmailToast} showPushNotif={showPushNotif} contacts={contacts} setContacts={setContacts} onUnreadChange={setMsgUnread} currentUserId={user?.id ?? 0} currentUser={user} onUserUpdate={setUser} initialConversationId={selectedConversationId} focusInput={focusMessageInput} onFocusHandled={() => setFocusMessageInput(false)} />}
+      {page==="messages"  && loggedIn && <MessagesPage settings={settings} showEmailToast={showEmailToast} showPushNotif={showPushNotif} contacts={contacts} setContacts={setContacts} onUnreadChange={setMsgUnread} currentUserId={user?.id ?? 0} currentUser={user} onUserUpdate={setUser} initialConversationId={selectedConversationId} focusInput={focusMessageInput} onFocusHandled={clearFocusMessageInput} onInitialConversationHandled={clearSelectedConversation} />}
       {page==="profile"   && loggedIn && <ProfilePage setPage={go} isDark={isDark} setIsDark={toggleTheme} settings={settings} setSettings={setSettings} user={user} setUser={setUser} userAvatar={userAvatar} setUserAvatar={setUserAvatar} onLogout={handleLogout} />}
       {page==="admin"     && loggedIn && user?.isAdmin && <AdminPage setPage={go} />}
+      {page==="terms"     && <TermsOfServicePage />}
       {!noFoot.includes(page) && <Footer setPage={go} />}
+        </>
+      )}
     </div>
     </ThemeCtx.Provider>
   );

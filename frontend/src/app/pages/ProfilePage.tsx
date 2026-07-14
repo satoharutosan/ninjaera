@@ -144,8 +144,20 @@ function ProfilePage({ setPage, isDark, setIsDark, settings, setSettings, user, 
           </div>
           <div className="ml-auto mb-3"></div>
         </div>
-        <div className="flex border-b mb-8 overflow-x-auto" style={{ borderColor:C.outlineVar }}>
-          {tabs.map(t => <button key={t} onClick={() => setActiveTab(t)} className="px-5 py-3 text-sm font-medium whitespace-nowrap transition-all border-b-2" style={{ borderColor:activeTab===t?C.primary:"transparent", color:activeTab===t?C.primary:C.onSurfaceVar, fontFamily:"Roboto" }}>{t}</button>)}
+        <div className="flex w-full border-b mb-8 overflow-hidden md:overflow-visible" style={{ borderColor:C.outlineVar }}>
+          {tabs.map(t => (
+            <button
+              key={t}
+              type="button"
+              onClick={() => setActiveTab(t)}
+              className="flex-1 md:flex-none min-w-0 px-1.5 sm:px-3 md:px-5 py-3 text-[11px] sm:text-xs md:text-sm font-medium text-center md:text-left truncate md:whitespace-nowrap transition-all border-b-2"
+              style={{ borderColor:activeTab===t?C.primary:"transparent", color:activeTab===t?C.primary:C.onSurfaceVar, fontFamily:"Roboto" }}
+              aria-selected={activeTab===t}
+              role="tab"
+            >
+              {t}
+            </button>
+          ))}
         </div>
         {activeTab==="Profile" && (
           <div className="space-y-6 pb-16">

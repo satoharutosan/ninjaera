@@ -233,12 +233,12 @@
 }
 .dark .voice-msg--self {
   /* Outgoing uses light primary fill — keep dark ink via inline color */
-  color: #381E72 !important;
+  color: #2F1A5E !important;
 }
 .dark .voice-msg--self .rhap_progress-bar,
 .dark .voice-msg--self .rhap_download-progress,
 .dark .voice-msg--self .rhap_volume-bar {
-  background: rgba(56, 30, 114, 0.28) !important;
+  background: rgba(47, 26, 94, 0.28) !important;
 }
 
 /* Unread badge smooth transitions without layout shift */
@@ -246,5 +246,64 @@
   min-width: 1.25rem;
   height: 1.25rem;
   transition: transform 0.2s ease, opacity 0.2s ease;
+}
+
+/* Overlay scrollbars — hidden until hover / active scroll */
+.ninja-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+.ninja-scroll:hover,
+.ninja-scroll:focus-within,
+.ninja-scroll:active {
+  scrollbar-color: #B0AAB8 transparent;
+}
+.ninja-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.ninja-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.ninja-scroll::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.ninja-scroll:hover::-webkit-scrollbar-thumb,
+.ninja-scroll:focus-within::-webkit-scrollbar-thumb,
+.ninja-scroll.is-scrolling::-webkit-scrollbar-thumb {
+  background: #B0AAB8;
+  background-clip: padding-box;
+}
+.ninja-scroll:hover::-webkit-scrollbar-thumb:hover {
+  background: #79747E;
+  background-clip: padding-box;
+}
+
+/* Dark mode scrollbar track/thumb */
+.dark .ninja-scroll:hover,
+.dark .ninja-scroll:focus-within,
+.dark .ninja-scroll:active {
+  scrollbar-color: #6B6672 #2B2930;
+}
+.dark .ninja-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.dark .ninja-scroll:hover::-webkit-scrollbar-track,
+.dark .ninja-scroll:focus-within::-webkit-scrollbar-track,
+.dark .ninja-scroll.is-scrolling::-webkit-scrollbar-track {
+  background: #2B2930;
+}
+.dark .ninja-scroll:hover::-webkit-scrollbar-thumb,
+.dark .ninja-scroll:focus-within::-webkit-scrollbar-thumb,
+.dark .ninja-scroll.is-scrolling::-webkit-scrollbar-thumb {
+  background: #6B6672;
+  background-clip: padding-box;
+}
+.dark .ninja-scroll:hover::-webkit-scrollbar-thumb:hover {
+  background: #8E8994;
+  background-clip: padding-box;
 }
 

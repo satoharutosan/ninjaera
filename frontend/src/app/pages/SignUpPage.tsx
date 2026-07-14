@@ -76,7 +76,12 @@ function SignUpPage({ setPage, onLogin }: {
               <div className="w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 mt-0.5 transition-colors" style={{ borderColor:agreed?C.primary:C.outline, background:agreed?C.primary:"transparent" }}>
                 {agreed && <CheckIcon style={{ fontSize:12, color:"white" }} />}
               </div>
-              <span className="text-sm leading-relaxed" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>I accept the <span style={{ color:C.primary }}>Terms of Service</span> and <span style={{ color:C.primary }}>Privacy Policy</span></span>
+              <span className="text-sm leading-relaxed" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>
+                I accept the{" "}
+                <button type="button" onClick={e => { e.stopPropagation(); setPage("terms"); }} className="font-medium underline" style={{ color:C.primary }}>Terms of Service</button>
+                {" "}and{" "}
+                <span style={{ color:C.primary }}>Privacy Policy</span>
+              </span>
             </label>
           </div>
           <FilledBtn onClick={handleSignup} cls="w-full justify-center mb-4"><PersonAddIcon style={{ fontSize:16 }} />{loading ? "Creating..." : "Create Account"}</FilledBtn>

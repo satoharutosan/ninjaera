@@ -354,6 +354,51 @@ export const api = {
     getContact: (id: number) => request<{ contact: ContactTicket }>(`/admin/contacts/${id}`),
     markContactRead: (id: number) => request<{ ok: boolean }>(`/admin/contacts/${id}/read`, { method: "PATCH" }),
     replyContact: (id: number, body: string) => request<{ contact: ContactTicket }>(`/admin/contacts/${id}/reply`, { method: "POST", body: JSON.stringify({ body }) }),
+    databaseInfo: () => request<{
+      type: string; version: string; userVersion: number; path: string; sizeBytes: number; sizeLabel: string;
+      totalUsers: number; totalMessages: number; totalChannels: number; totalResources: number;
+      totalNotifications: number; totalLogs: number; lastBackupAt: string | null; lastBackupFile: string | null;
+    }>("/admin/database/info"),
+    databaseBackup: async () => {
+      const token = getToken();
+      const res = await fetch(`${API_BASE}/admin/database/backup`, {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new ApiError((err as { error?: string }).error || "Backup failed", res.status);
+      }
+      const blob = await res.blob();
+      const cd = res.headers.get("Content-Disposition") || "";
+      const match = /filename="?([^"]+)"?/.exec(cd);
+      const filename = match?.[1] || `ninja-era-backup-${Date.now()}.db`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    },
+    databaseRestore: async (file: File) => {
+      const token = getToken();
+      const form = new FormData();
+      form.append("file", file);
+      const res = await fetch(`${API_BASE}/admin/database/restore`, {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: form,
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new ApiError((err as { error?: string }).error || "Restore failed", res.status, err);
+      }
+      return res.json() as Promise<{ ok: boolean; safetyBackup: string }>;
+    },
+  },
+
+  legal: {
+    viewTerms: () => request<{ ok: boolean }>("/legal/terms-viewed", { method: "POST" }),
   },
 };
 

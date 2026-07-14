@@ -18,8 +18,14 @@ import DownloadIcon from "@mui/icons-material/Download";
 import VpnKeyIcon from "@mui/icons-material/VpnKey";
 import ContactMailIcon from "@mui/icons-material/ContactMail";
 import PersonIcon from "@mui/icons-material/Person";
-import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import StorageIcon from "@mui/icons-material/Storage";
+import CloudUploadIcon from "@mui/icons-material/CloudUpload";
+import ChatBubbleIcon from "@mui/icons-material/ChatBubble";
+import MailOutlineIcon from "@mui/icons-material/MailOutline";
+import InboxIcon from "@mui/icons-material/Inbox";
 import FiberManualRecordIcon from "@mui/icons-material/FiberManualRecord";
+import AdminPanelSettingsIcon from "@mui/icons-material/AdminPanelSettings";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import {
   ResponsiveContainer, LineChart, Line, BarChart, Bar, AreaChart, Area,
   PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
@@ -36,7 +42,7 @@ import {
 } from "@/app/api";
 import { onRealtimeEvent } from "@/app/realtime";
 
-type Section = "dashboard" | "users" | "notifications" | "contacts" | "channels" | "applications" | "resources" | "game-downloads" | "activity-logs";
+type Section = "dashboard" | "users" | "notifications" | "contacts" | "channels" | "applications" | "resources" | "game-downloads" | "activity-logs" | "database";
 
 type DashboardStats = Awaited<ReturnType<typeof api.admin.stats>>;
 
@@ -61,6 +67,7 @@ const SECTIONS: { id: Section; label: string; Icon: typeof DashboardIcon }[] = [
   { id: "resources", label: "Resources", Icon: MenuBookIcon },
   { id: "game-downloads", label: "Game Downloads", Icon: SportsEsportsIcon },
   { id: "activity-logs", label: "Activity Logs", Icon: HistoryIcon },
+  { id: "database", label: "Database", Icon: StorageIcon },
 ];
 
 function UserAvatar({ user, size = 32 }: { user: AdminUser; size?: number }) {
@@ -75,11 +82,18 @@ function UserAvatar({ user, size = 32 }: { user: AdminUser; size?: number }) {
   );
 }
 
-function StatCard({ label, value, color, hint }: { label: string; value: number; color?: string; hint?: string }) {
+function StatCard({ label, value, color, hint, Icon }: { label: string; value: number; color?: string; hint?: string; Icon?: typeof PeopleIcon }) {
   const C = useC();
   return (
-    <div className="rounded-2xl p-4 md:p-5 min-h-[96px] flex flex-col justify-between" style={{ background: C.surface, boxShadow: SH1 }} role="group" aria-label={`${label}: ${value}`}>
-      <p className="text-2xl md:text-3xl font-medium tabular-nums" style={{ color: color || C.primary, fontFamily: "Roboto" }}>{value.toLocaleString()}</p>
+    <div className="rounded-2xl p-4 md:p-5 min-h-[96px] flex flex-col justify-between gap-2" style={{ background: C.surface, boxShadow: SH1 }} role="group" aria-label={`${label}: ${value}`}>
+      <div className="flex items-start justify-between gap-2">
+        <p className="text-2xl md:text-3xl font-medium tabular-nums" style={{ color: color || C.primary, fontFamily: "Roboto" }}>{value.toLocaleString()}</p>
+        {Icon && (
+          <span className="w-9 h-9 rounded-full flex items-center justify-center shrink-0" style={{ background: C.surfaceVar }} aria-hidden>
+            <Icon style={{ fontSize: 20, color: color || C.primary }} />
+          </span>
+        )}
+      </div>
       <div>
         <p className="text-sm font-medium" style={{ color: C.onSurface, fontFamily: "Roboto" }}>{label}</p>
         {hint && <p className="text-[11px] mt-0.5" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>{hint}</p>}
@@ -198,8 +212,16 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
   const [activityLogs, setActivityLogs] = useState<ActivityLogEntry[]>([]);
   const [activityTotal, setActivityTotal] = useState(0);
   const [activityPage, setActivityPage] = useState(1);
-  const [logFilters, setLogFilters] = useState({ search: "", timeRange: "", userRole: "", eventCategory: "", result: "", isVpn: "" });
+  const [logFilters, setLogFilters] = useState({ search: "", timeRange: "", userRole: "", eventCategory: "", eventType: "", result: "", isVpn: "" });
   const [selectedLog, setSelectedLog] = useState<ActivityLogEntry | null>(null);
+
+  const [dbInfo, setDbInfo] = useState<{
+    type: string; version: string; sizeLabel: string; path: string;
+    totalUsers: number; totalMessages: number; totalChannels: number; totalResources: number;
+    totalNotifications: number; totalLogs: number; lastBackupAt: string | null; lastBackupFile: string | null;
+  } | null>(null);
+  const [dbBusy, setDbBusy] = useState<"backup" | "restore" | null>(null);
+  const [restoreFile, setRestoreFile] = useState<File | null>(null);
 
   const [confirm, setConfirm] = useState<{ title: string; body: string; onOk: () => void } | null>(null);
 
@@ -247,11 +269,15 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
         if (logFilters.timeRange) params.timeRange = logFilters.timeRange;
         if (logFilters.userRole) params.userRole = logFilters.userRole;
         if (logFilters.eventCategory) params.eventCategory = logFilters.eventCategory;
+        if (logFilters.eventType) params.eventType = logFilters.eventType;
         if (logFilters.result) params.result = logFilters.result;
         if (logFilters.isVpn) params.isVpn = logFilters.isVpn;
         const r = await api.admin.activityLogs(params);
         setActivityLogs(r.logs);
         setActivityTotal(r.total);
+      } else if (section === "database") {
+        const info = await api.admin.databaseInfo();
+        setDbInfo(info);
       }
     } catch (e) {
       toast.error(e instanceof ApiError ? e.message : "Failed to load data");
@@ -428,16 +454,18 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                   <button type="button" onClick={() => loadSection()} className="text-xs font-medium px-3 py-1.5 rounded-full hover:bg-black/5" style={{ color: C.primary, fontFamily: "Roboto" }}>Refresh</button>
                 }>
                   <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
-                    <StatCard label="Total Users" value={stats.totalUsers} />
-                    <StatCard label="Online Users" value={stats.onlineUsers} color="#386A20" />
-                    <StatCard label="Team Members" value={stats.teamMembers} />
-                    <StatCard label="Pending Applications" value={stats.pendingApplications} color="#B3261E" />
-                    <StatCard label="Pending DM Requests" value={stats.pendingDmRequests} color="#B3261E" />
-                    <StatCard label="Unread Contacts" value={stats.unreadContacts} color="#B3261E" />
-                    <StatCard label="Resources" value={stats.totalResources} />
-                    <StatCard label="Total Downloads" value={stats.totalDownloads} />
-                    <StatCard label="Total Messages" value={stats.totalMessages} />
-                    <StatCard label="Active Channels" value={stats.totalChannels} />
+                    <StatCard label="Total Users" value={stats.totalUsers} Icon={PeopleIcon} />
+                    <StatCard label="Online Users" value={stats.onlineUsers} color="#386A20" Icon={FiberManualRecordIcon} />
+                    <StatCard label="Administrators" value={stats.userDistribution.find(d => d.name === "Administrators")?.value ?? 0} Icon={AdminPanelSettingsIcon} />
+                    <StatCard label="Team Members" value={stats.teamMembers} Icon={WorkIcon} />
+                    <StatCard label="Pending Applications" value={stats.pendingApplications} color="#B3261E" Icon={InboxIcon} />
+                    <StatCard label="Pending DM Requests" value={stats.pendingDmRequests} color="#B3261E" Icon={ChatBubbleIcon} />
+                    <StatCard label="Unread Contacts" value={stats.unreadContacts} color="#B3261E" Icon={MailOutlineIcon} />
+                    <StatCard label="Notifications" value={stats.unreadNotifications} Icon={NotificationsIcon} />
+                    <StatCard label="Resources" value={stats.totalResources} Icon={MenuBookIcon} />
+                    <StatCard label="Total Downloads" value={stats.totalDownloads} Icon={DownloadIcon} />
+                    <StatCard label="Total Messages" value={stats.totalMessages} Icon={ChatBubbleIcon} />
+                    <StatCard label="Active Channels" value={stats.totalChannels} Icon={TagIcon} />
                   </div>
                 </DashSection>
 
@@ -896,7 +924,7 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                 </div>
                 <div className="flex flex-wrap gap-2 mb-4">
                   <input value={logFilters.search} onChange={e => setLogFilters(f => ({ ...f, search: e.target.value }))} placeholder="Search logs…" className="px-3 py-2 rounded-full border text-sm flex-1 min-w-[12rem]" style={{ borderColor: C.outlineVar, background: C.surface, color: C.onSurface, fontFamily: "Roboto" }} />
-                  {[{ k: "timeRange", opts: [["", "All time"], ["today", "Today"], ["7d", "Last 7 days"], ["30d", "Last 30 days"]] }, { k: "userRole", opts: [["", "All roles"], ["guest", "Guest"], ["registered_user", "Registered"], ["team_member", "Team"], ["administrator", "Admin"]] }, { k: "eventCategory", opts: [["", "All categories"], ["authentication", "Auth"], ["messaging", "Messaging"], ["teamwork", "Teamwork"], ["resources", "Resources"], ["downloads", "Downloads"], ["administration", "Admin"], ["security", "Security"]] }, { k: "result", opts: [["", "All results"], ["success", "Success"], ["failure", "Failure"]] }].map(({ k, opts }) => (
+                  {[{ k: "timeRange", opts: [["", "All time"], ["today", "Today"], ["7d", "Last 7 days"], ["30d", "Last 30 days"]] }, { k: "userRole", opts: [["", "All roles"], ["guest", "Guest"], ["registered_user", "Registered"], ["team_member", "Team"], ["administrator", "Admin"]] }, { k: "eventCategory", opts: [["", "All categories"], ["authentication", "Auth"], ["messaging", "Messaging"], ["teamwork", "Teamwork"], ["resources", "Resources"], ["downloads", "Downloads"], ["administration", "Admin"], ["legal", "Legal"], ["security", "Security"]] }, { k: "eventType", opts: [["", "All events"], ["view_terms_of_service", "Viewed Terms of Service"], ["database_backup", "Database Backup"], ["database_restore", "Database Restore"], ["login", "Login"], ["register", "Register"]] }, { k: "result", opts: [["", "All results"], ["success", "Success"], ["failure", "Failure"]] }].map(({ k, opts }) => (
                     <select key={k} value={(logFilters as Record<string, string>)[k]} onChange={e => setLogFilters(f => ({ ...f, [k]: e.target.value }))} className="px-3 py-2 rounded-full border text-xs" style={{ borderColor: C.outlineVar, background: C.surface, color: C.onSurface, fontFamily: "Roboto" }}>
                       {opts.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
                     </select>
@@ -931,6 +959,116 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                     <OutlinedBtn onClick={() => setActivityPage(p => Math.max(1, p - 1))} cls={activityPage <= 1 ? "opacity-50 pointer-events-none" : ""}>Previous</OutlinedBtn>
                     <span className="px-3 py-2">Page {activityPage}</span>
                     <OutlinedBtn onClick={() => setActivityPage(p => p + 1)} cls={activityPage * 50 >= activityTotal ? "opacity-50 pointer-events-none" : ""}>Next</OutlinedBtn>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {section === "database" && (
+              <div>
+                <h1 className="text-2xl font-medium mb-2" style={{ color: C.onSurface, fontFamily: "Roboto" }}>Database Management</h1>
+                <p className="text-sm mb-6" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
+                  Inspect the live SQLite database, download full backups, and restore from a verified backup file. All operations are audited.
+                </p>
+
+                <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3 mb-6">
+                  <div className="rounded-2xl p-4 md:p-5 min-h-[96px] flex flex-col justify-between" style={{ background: C.surface, boxShadow: SH1 }}>
+                    <p className="text-lg md:text-xl font-medium" style={{ color: C.primary, fontFamily: "Roboto" }}>{dbInfo ? `${dbInfo.type}` : "—"}</p>
+                    <p className="text-sm font-medium" style={{ color: C.onSurface, fontFamily: "Roboto" }}>Engine {dbInfo?.version ? `· ${dbInfo.version}` : ""}</p>
+                  </div>
+                  <div className="rounded-2xl p-4 md:p-5 min-h-[96px] flex flex-col justify-between" style={{ background: C.surface, boxShadow: SH1 }}>
+                    <p className="text-2xl md:text-3xl font-medium tabular-nums" style={{ color: C.primary, fontFamily: "Roboto" }}>{dbInfo?.sizeLabel || "—"}</p>
+                    <p className="text-sm font-medium" style={{ color: C.onSurface, fontFamily: "Roboto" }}>Database Size</p>
+                  </div>
+                  <StatCard label="Users" value={dbInfo?.totalUsers ?? 0} />
+                  <StatCard label="Messages" value={dbInfo?.totalMessages ?? 0} />
+                  <StatCard label="Channels" value={dbInfo?.totalChannels ?? 0} />
+                  <StatCard label="Resources" value={dbInfo?.totalResources ?? 0} />
+                  <StatCard label="Notifications" value={dbInfo?.totalNotifications ?? 0} />
+                  <StatCard label="Activity Logs" value={dbInfo?.totalLogs ?? 0} />
+                </div>
+
+                <div className="rounded-2xl border p-5 mb-5" style={{ background: C.surface, borderColor: C.outlineVar, boxShadow: SH1 }}>
+                  <h2 className="text-base font-medium mb-3" style={{ color: C.onSurface, fontFamily: "Roboto" }}>Status</h2>
+                  <dl className="grid sm:grid-cols-2 gap-3 text-sm" style={{ fontFamily: "Roboto" }}>
+                    <div>
+                      <dt className="text-xs uppercase tracking-wide mb-1" style={{ color: C.onSurfaceVar }}>File</dt>
+                      <dd style={{ color: C.onSurface }}>{dbInfo?.path || "—"}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-xs uppercase tracking-wide mb-1" style={{ color: C.onSurfaceVar }}>Last backup</dt>
+                      <dd style={{ color: C.onSurface }}>
+                        {dbInfo?.lastBackupAt ? new Date(dbInfo.lastBackupAt).toLocaleString() : "Never"}
+                        {dbInfo?.lastBackupFile ? ` · ${dbInfo.lastBackupFile}` : ""}
+                      </dd>
+                    </div>
+                  </dl>
+                </div>
+
+                <div className="grid md:grid-cols-2 gap-4">
+                  <div className="rounded-2xl border p-5" style={{ background: C.surface, borderColor: C.outlineVar, boxShadow: SH1 }}>
+                    <h2 className="text-base font-medium mb-2" style={{ color: C.onSurface, fontFamily: "Roboto" }}>Backup</h2>
+                    <p className="text-sm mb-4" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
+                      Create a complete SQLite snapshot and download it. A safety copy is also retained on the server.
+                    </p>
+                    <FilledBtn
+                      cls={dbBusy ? "opacity-60 pointer-events-none" : ""}
+                      onClick={async () => {
+                        setDbBusy("backup");
+                        try {
+                          await api.admin.databaseBackup();
+                          toast.success("Backup downloaded");
+                          const info = await api.admin.databaseInfo();
+                          setDbInfo(info);
+                        } catch (e) {
+                          toast.error(e instanceof ApiError ? e.message : "Backup failed");
+                        } finally {
+                          setDbBusy(null);
+                        }
+                      }}
+                    >
+                      <DownloadIcon style={{ fontSize: 16 }} />{dbBusy === "backup" ? "Creating…" : "Download Backup"}
+                    </FilledBtn>
+                  </div>
+
+                  <div className="rounded-2xl border p-5" style={{ background: C.surface, borderColor: C.outlineVar, boxShadow: SH1 }}>
+                    <h2 className="text-base font-medium mb-2" style={{ color: C.onSurface, fontFamily: "Roboto" }}>Restore</h2>
+                    <p className="text-sm mb-4" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
+                      Upload a `.db` backup. Compatibility is validated first. A pre-restore safety backup is created automatically.
+                    </p>
+                    <input
+                      type="file"
+                      accept=".db,application/octet-stream,application/x-sqlite3"
+                      className="block w-full text-sm mb-3"
+                      style={{ color: C.onSurface, fontFamily: "Roboto" }}
+                      onChange={e => setRestoreFile(e.target.files?.[0] || null)}
+                    />
+                    <FilledBtn
+                      cls={!restoreFile || dbBusy ? "opacity-60 pointer-events-none" : ""}
+                      onClick={() => {
+                        if (!restoreFile) return;
+                        setConfirm({
+                          title: "Restore Database?",
+                          body: `This will overwrite live data with “${restoreFile.name}”. A safety backup will be saved first. Continue?`,
+                          onOk: async () => {
+                            setDbBusy("restore");
+                            try {
+                              const r = await api.admin.databaseRestore(restoreFile);
+                              toast.success(`Database restored (safety: ${r.safetyBackup})`);
+                              setRestoreFile(null);
+                              const info = await api.admin.databaseInfo();
+                              setDbInfo(info);
+                            } catch (e) {
+                              toast.error(e instanceof ApiError ? e.message : "Restore failed — existing database preserved");
+                            } finally {
+                              setDbBusy(null);
+                            }
+                          },
+                        });
+                      }}
+                    >
+                      <CloudUploadIcon style={{ fontSize: 16 }} />{dbBusy === "restore" ? "Restoring…" : "Restore Backup"}
+                    </FilledBtn>
                   </div>
                 </div>
               </div>

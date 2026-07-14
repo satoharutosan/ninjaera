@@ -2,7 +2,8 @@ import { Router } from "express";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
-import { db } from "../db/index.js";
+import Database from "better-sqlite3";
+import { db, dbPath, dataDirectory } from "../db/index.js";
 import { requireAuth, publicUser, timeAgo } from "../middleware/auth.js";
 import { requireAdmin } from "../middleware/admin.js";
 import { logActivitySync } from "../services/activityLog.js";
@@ -863,6 +864,7 @@ router.get("/activity-logs", (req, res) => {
   if (dateTo) { sql += " AND timestamp <= ?"; params.push(dateTo); }
   if (userRole) { sql += " AND user_role = ?"; params.push(userRole); }
   if (eventCategory) { sql += " AND event_category = ?"; params.push(eventCategory); }
+  if (req.query.eventType) { sql += " AND event_type = ?"; params.push(String(req.query.eventType)); }
   if (result) { sql += " AND result = ?"; params.push(result); }
   if (country) { sql += " AND country LIKE ?"; params.push(`%${country}%`); }
   if (isVpn === "1") sql += " AND is_vpn = 1";
@@ -935,6 +937,164 @@ router.delete("/activity-logs", (req, res) => {
   const result = db.prepare("DELETE FROM activity_logs WHERE timestamp < ?").run(before);
   logActivitySync({ req, userId: req.user!.id, eventType: "logs_archive", eventCategory: "administration", description: `Archived ${result.changes} activity logs before ${before}` });
   res.json({ ok: true, deleted: result.changes });
+});
+
+// ── Database Management ───────────────────────────────────────────────────────
+const backupMetaPath = path.join(dataDirectory, "backups", "meta.json");
+const backupDir = path.join(dataDirectory, "backups");
+
+function readBackupMeta(): { lastBackupAt: string | null; lastBackupFile: string | null } {
+  try {
+    if (!fs.existsSync(backupMetaPath)) return { lastBackupAt: null, lastBackupFile: null };
+    return JSON.parse(fs.readFileSync(backupMetaPath, "utf8"));
+  } catch {
+    return { lastBackupAt: null, lastBackupFile: null };
+  }
+}
+
+function writeBackupMeta(meta: { lastBackupAt: string; lastBackupFile: string }) {
+  if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
+  fs.writeFileSync(backupMetaPath, JSON.stringify(meta, null, 2));
+}
+
+function fmtBytes(n: number) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1048576) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1048576).toFixed(2)} MB`;
+}
+
+router.get("/database/info", (_req, res) => {
+  const meta = readBackupMeta();
+  let sizeBytes = 0;
+  try { sizeBytes = fs.statSync(dbPath).size; } catch { /* */ }
+  try {
+    const wal = dbPath + "-wal";
+    if (fs.existsSync(wal)) sizeBytes += fs.statSync(wal).size;
+  } catch { /* */ }
+
+  const version = (db.pragma("user_version", { simple: true }) as number) ?? 0;
+  const sqliteVersion = (db.prepare("SELECT sqlite_version() as v").get() as { v: string }).v;
+
+  res.json({
+    type: "SQLite",
+    version: sqliteVersion,
+    userVersion: version,
+    path: path.basename(dbPath),
+    sizeBytes,
+    sizeLabel: fmtBytes(sizeBytes),
+    totalUsers: (db.prepare("SELECT COUNT(*) as c FROM users WHERE is_npc = 0 AND is_deleted = 0").get() as { c: number }).c,
+    totalMessages: (db.prepare("SELECT COUNT(*) as c FROM messages").get() as { c: number }).c,
+    totalChannels: (db.prepare("SELECT COUNT(*) as c FROM conversations WHERE type = 'channel'").get() as { c: number }).c,
+    totalResources: (db.prepare("SELECT COUNT(*) as c FROM resources").get() as { c: number }).c,
+    totalNotifications: (db.prepare("SELECT COUNT(*) as c FROM notifications").get() as { c: number }).c,
+    totalLogs: (db.prepare("SELECT COUNT(*) as c FROM activity_logs").get() as { c: number }).c,
+    lastBackupAt: meta.lastBackupAt,
+    lastBackupFile: meta.lastBackupFile,
+  });
+});
+
+router.post("/database/backup", async (req, res) => {
+  try {
+    if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
+    db.pragma("wal_checkpoint(TRUNCATE)");
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const filename = `ninja-era-backup-${stamp}.db`;
+    const dest = path.join(backupDir, filename);
+    await db.backup(dest);
+    writeBackupMeta({ lastBackupAt: new Date().toISOString(), lastBackupFile: filename });
+    logActivitySync({
+      req, userId: req.user!.id, eventType: "database_backup", eventCategory: "administration",
+      description: `Created database backup ${filename}`, affectedObject: `backup:${filename}`,
+    });
+    res.download(dest, filename);
+  } catch (e) {
+    logActivitySync({
+      req, userId: req.user!.id, eventType: "database_backup", eventCategory: "administration",
+      description: `Database backup failed: ${e instanceof Error ? e.message : "unknown error"}`,
+      result: "failure",
+    });
+    res.status(500).json({ error: e instanceof Error ? e.message : "Backup failed" });
+  }
+});
+
+const restoreUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => {
+      if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
+      cb(null, backupDir);
+    },
+    filename: (_req, file, cb) => cb(null, `restore-upload-${Date.now()}${path.extname(file.originalname) || ".db"}`),
+  }),
+  limits: { fileSize: 500 * 1024 * 1024 },
+});
+
+router.post("/database/restore", restoreUpload.single("file"), (req, res) => {
+  const file = req.file;
+  if (!file) { res.status(400).json({ error: "Backup file is required" }); return; }
+
+  const uploaded = file.path;
+  try {
+    const probe = new Database(uploaded, { readonly: true, fileMustExist: true });
+    const tables = (probe.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]).map(t => t.name);
+    probe.close();
+    const required = ["users", "messages", "conversations"];
+    const missing = required.filter(t => !tables.includes(t));
+    if (missing.length) {
+      fs.unlinkSync(uploaded);
+      res.status(400).json({ error: `Invalid backup: missing tables ${missing.join(", ")}` });
+      return;
+    }
+
+    if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
+    const safety = path.join(backupDir, `pre-restore-${Date.now()}.db`);
+    db.pragma("wal_checkpoint(TRUNCATE)");
+    void db.backup(safety).then(() => {
+      try {
+        const escaped = uploaded.replace(/'/g, "''");
+        db.exec("PRAGMA foreign_keys = OFF");
+        db.exec(`ATTACH DATABASE '${escaped}' AS bak`);
+        db.exec("BEGIN IMMEDIATE");
+        const bakTables = db.prepare("SELECT name FROM bak.sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all() as { name: string }[];
+        for (const { name } of bakTables) {
+          const exists = db.prepare("SELECT 1 FROM main.sqlite_master WHERE type='table' AND name = ?").get(name);
+          if (!exists) continue;
+          db.exec(`DELETE FROM main."${name.replace(/"/g, '""')}"`);
+          db.exec(`INSERT INTO main."${name.replace(/"/g, '""')}" SELECT * FROM bak."${name.replace(/"/g, '""')}"`);
+        }
+        db.exec("COMMIT");
+        db.exec("DETACH DATABASE bak");
+        db.exec("PRAGMA foreign_keys = ON");
+        try { fs.unlinkSync(uploaded); } catch { /* */ }
+        logActivitySync({
+          req, userId: req.user!.id, eventType: "database_restore", eventCategory: "administration",
+          description: `Restored database from uploaded backup (safety copy: ${path.basename(safety)})`,
+          affectedObject: `backup:${path.basename(safety)}`,
+        });
+        emitToAdmins("admin:stats", {});
+        res.json({ ok: true, safetyBackup: path.basename(safety) });
+      } catch (inner) {
+        try { db.exec("ROLLBACK"); } catch { /* */ }
+        try { db.exec("DETACH DATABASE bak"); } catch { /* */ }
+        try { db.exec("PRAGMA foreign_keys = ON"); } catch { /* */ }
+        logActivitySync({
+          req, userId: req.user!.id, eventType: "database_restore", eventCategory: "administration",
+          description: `Database restore failed: ${inner instanceof Error ? inner.message : "unknown error"}`,
+          result: "failure",
+        });
+        res.status(500).json({ error: inner instanceof Error ? inner.message : "Restore failed. Existing database was preserved." });
+      }
+    }).catch(err => {
+      logActivitySync({
+        req, userId: req.user!.id, eventType: "database_restore", eventCategory: "administration",
+        description: `Database restore failed during safety backup: ${err instanceof Error ? err.message : "unknown"}`,
+        result: "failure",
+      });
+      res.status(500).json({ error: "Could not create safety backup before restore" });
+    });
+  } catch (e) {
+    try { fs.unlinkSync(uploaded); } catch { /* */ }
+    res.status(400).json({ error: e instanceof Error ? e.message : "Invalid SQLite backup file" });
+  }
 });
 
 // Admin check endpoint

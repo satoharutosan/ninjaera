@@ -70,13 +70,13 @@ export async function logActivity(input: ActivityInput) {
   let countryCode: string | null = null;
   let isVpn: number | null = null;
 
-  if (req && userId) {
+  if (req) {
     try {
       const geo = await lookupGeo(req);
       country = geo.countryName;
       countryCode = geo.countryCode;
       isVpn = geo.isVpn ? 1 : 0;
-      saveUserLocation(userId, geo);
+      if (userId) saveUserLocation(userId, geo);
     } catch { /* ignore */ }
   } else if (userId) {
     const loc = db.prepare("SELECT country_name, country_code, is_vpn FROM user_locations WHERE user_id = ?").get(userId) as { country_name: string; country_code: string; is_vpn: number } | undefined;

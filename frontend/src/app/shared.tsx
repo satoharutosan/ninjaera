@@ -1,6 +1,6 @@
 import { useState, useEffect, createContext, useContext } from "react";
 
-export type Page = "home" | "about" | "resources" | "teamwork" | "contact" | "login" | "signup" | "oauth-callback" | "messages" | "profile" | "alarms" | "admin";
+export type Page = "home" | "about" | "resources" | "teamwork" | "contact" | "login" | "signup" | "oauth-callback" | "messages" | "profile" | "alarms" | "admin" | "terms";
 export type AppSettings = { emailNotif:boolean; pushNotif:boolean; twoFA:boolean; publicProfile:boolean };
 // ── MD3 Color tokens ─────────────────────────────────────────────────────────
 const LIGHT_C = {
@@ -24,9 +24,10 @@ const LIGHT_C = {
 };
 const DARK_C = {
   profileName: "rgb(231,224,236)",
-  primary: "#D0BCFF",
+  /** Slightly darkened from MD3 #D0BCFF to reduce glare while staying on-brand */
+  primary: "#B69DF8",
   primaryCont: "#4F378B",
-  onPrimary: "#381E72",
+  onPrimary: "#2F1A5E",
   onPrimaryCont: "#EADDFF",
   secondary: "#CCC2DC",
   secondaryCont: "#4A4458",

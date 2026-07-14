@@ -79,11 +79,13 @@ export type ApiNotification = {
   pinned?: boolean;
 };
 
-class ApiError extends Error {
+export class ApiError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  data: Record<string, unknown>;
+  constructor(message: string, status: number, data: Record<string, unknown> = {}) {
     super(message);
     this.status = status;
+    this.data = data;
   }
 }
 
@@ -108,7 +110,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const data = await res.json().catch(() => ({}));
 
   if (!res.ok) {
-    throw new ApiError(data.error || res.statusText, res.status);
+    throw new ApiError(data.error || res.statusText, res.status, typeof data === "object" && data ? data as Record<string, unknown> : {});
   }
   return data as T;
 }
@@ -295,6 +297,17 @@ export const api = {
       totalUsers: number; onlineUsers: number; totalChannels: number; totalDms: number;
       pendingApplications: number; teamMembers: number; unreadNotifications: number;
       unreadContacts: number; totalContacts: number; repliedContacts: number; pendingContactReplies: number;
+      totalMessages: number; pendingDmRequests: number; totalResources: number; totalDownloads: number;
+      approvedApplications: number; rejectedApplications: number;
+      userDistribution: { name: string; value: number }[];
+      userGrowth: { date: string; label: string; count: number }[];
+      activityTimeline: { date: string; label: string; messages: number; downloads: number; logins: number }[];
+      downloadsByPlatform: { platform: string; label: string; count: number }[];
+      mostDownloadedResource: { title: string; downloads: number } | null;
+      recentUsers: { id: number; username: string; avatarUrl: string | null; createdAt: string; isOnline: boolean; time: string }[];
+      recentApplications: { id: number; status: string; createdAt: string; username: string | null; position: string | null; time: string }[];
+      recentContacts: { id: number; name: string; subject: string; isRead: boolean; replyStatus: string; createdAt: string; time: string }[];
+      recentActivity: { id: number; timestamp: string; username: string | null; eventType: string; eventCategory: string; description: string; userRole: string | null; result: string; time: string }[];
     }>("/admin/stats"),
     users: (search?: string, filter?: string) => request<{ users: AdminUser[] }>(`/admin/users?${new URLSearchParams({ ...(search ? { search } : {}), ...(filter ? { filter } : {}) })}`),
     getUser: (id: number) => request<{ user: AdminUser }>(`/admin/users/${id}`),
@@ -492,4 +505,3 @@ export type ActivityLogEntry = {
   metadata?: Record<string, unknown>;
 };
 
-export { ApiError };

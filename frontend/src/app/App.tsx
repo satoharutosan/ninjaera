@@ -47,7 +47,7 @@ import MessagesPage from "@/app/pages/MessagesPage";
 import AdminPage from "@/app/pages/AdminPage";
 import ProfilePage from "@/app/pages/ProfilePage";
 import { pageFromLocation, setPageInLocation } from "@/app/routing";
-import { api, setToken, type ApiUser, type ApiNotification } from "@/app/api";
+import { api, setToken, ApiError, type ApiUser, type ApiNotification } from "@/app/api";
 import { SOCIAL_LINKS, isSocialUrlConfigured, type SocialPlatform } from "@/app/socialLinks";
 
 // ── NAVBAR ───────────────────────────────────────────────────────────────────
@@ -62,9 +62,14 @@ function Navbar({ page, setPage, isDark, setIsDark, loggedIn, user, userAvatar, 
   const [notifOpen, setNotifOpen] = useState(false);
   const [profileMenu, setProfileMenu] = useState<{ x: number; y: number } | null>(null);
   const avatarLongPress = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const notifPanelRef = useRef<HTMLDivElement>(null);
+  const notifBtnRef = useRef<HTMLButtonElement>(null);
+  const profileMenuRef = useRef<HTMLDivElement>(null);
+  const avatarBtnRef = useRef<HTMLButtonElement>(null);
   const showLabels = useWide(1392);
   const go = (p:Page) => { setPage(p); setMob(false); setNotifOpen(false); setProfileMenu(null); window.scrollTo(0,0); };
   const unreadCount = notifs.filter(n => !n.read).length;
+  const previewNotifs = notifs.slice(0, 3);
   const links = [
     { label:"Home", page:"home" as Page, Icon:HomeIcon },
     { label:"About", page:"about" as Page, Icon:InfoIcon },
@@ -72,11 +77,48 @@ function Navbar({ page, setPage, isDark, setIsDark, loggedIn, user, userAvatar, 
     { label:"Teamwork", page:"teamwork" as Page, Icon:GroupsIcon },
     { label:"Contact", page:"contact" as Page, Icon:ContactSupportIcon },
   ];
-  const openProfileMenu = (x: number, y: number) => setProfileMenu({ x, y });
+  const closeOverlays = useCallback(() => {
+    setNotifOpen(false);
+    setProfileMenu(null);
+  }, []);
+  const openProfileMenu = (x: number, y: number) => {
+    setNotifOpen(false);
+    setProfileMenu({ x, y });
+  };
   const closeProfileMenu = () => setProfileMenu(null);
+  const toggleNotifOpen = () => {
+    setProfileMenu(null);
+    setNotifOpen(o => !o);
+  };
+
+  useEffect(() => {
+    if (!notifOpen && !profileMenu) return;
+    const onPointerDown = (e: MouseEvent | TouchEvent) => {
+      const target = e.target as Node;
+      if (notifPanelRef.current?.contains(target) || notifBtnRef.current?.contains(target)) return;
+      if (profileMenuRef.current?.contains(target) || avatarBtnRef.current?.contains(target)) return;
+      closeOverlays();
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        const focusTarget = notifOpen ? notifBtnRef.current : avatarBtnRef.current;
+        closeOverlays();
+        focusTarget?.focus();
+      }
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("touchstart", onPointerDown, { passive: true });
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("touchstart", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [notifOpen, profileMenu, closeOverlays]);
 
   return (
-    <nav className="fixed top-0 left-0 right-0 z-50" style={{ background:C.surface, boxShadow:SH2 }} onClick={() => { setNotifOpen(false); closeProfileMenu(); }}>
+    <nav className="fixed top-0 left-0 right-0 z-50" style={{ background:C.surface, boxShadow:SH2 }} onClick={closeOverlays}>
       <div className="max-w-7xl mx-auto px-4 flex items-center justify-between h-16">
         <button onClick={() => go("home")} className="flex items-center gap-2.5">
           <div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold" style={{ background:C.primary, fontFamily:"Roboto" }}>NE</div>
@@ -96,18 +138,39 @@ function Navbar({ page, setPage, isDark, setIsDark, loggedIn, user, userAvatar, 
             {isDark ? <LightModeIcon style={{ fontSize:20 }} /> : <DarkModeIcon style={{ fontSize:20 }} />}
           </button>
           <div className="relative" onClick={e => e.stopPropagation()}>
-            <button onClick={() => setNotifOpen(o => !o)} className="w-10 h-10 rounded-full flex items-center justify-center relative hover:bg-black/5 transition-colors" style={{ color: notifOpen ? C.primary : C.onSurfaceVar }}>
+            <button
+              ref={notifBtnRef}
+              type="button"
+              onClick={toggleNotifOpen}
+              aria-haspopup="true"
+              aria-expanded={notifOpen}
+              aria-label={`Notifications${unreadCount > 0 ? ` (${unreadCount} unread)` : ""}`}
+              className="w-10 h-10 rounded-full flex items-center justify-center relative hover:bg-black/5 transition-colors"
+              style={{ color: notifOpen ? C.primary : C.onSurfaceVar }}
+            >
               <NotificationsIcon style={{ fontSize:20 }} />
-              {unreadCount > 0 && <span className="absolute top-1.5 right-1.5 min-w-[10px] h-2.5 px-0.5 rounded-full flex items-center justify-center text-[8px] font-bold text-white" style={{ background: BADGE_BG }}>{unreadCount > 9 ? "9+" : unreadCount}</span>}
+              {unreadCount > 0 && (
+                <span className="absolute top-1.5 right-1.5 min-w-[14px] h-3.5 px-0.5 rounded-full flex items-center justify-center text-[8px] font-bold text-white leading-none" style={{ background: BADGE_BG }}>
+                  {unreadCount > 99 ? "99+" : unreadCount}
+                </span>
+              )}
             </button>
             {notifOpen && (
-              <div className="absolute right-0 top-full mt-1 w-80 rounded-2xl border shadow-2xl overflow-hidden z-50" style={{ background:C.surface, borderColor:C.outlineVar }}>
+              <div
+                ref={notifPanelRef}
+                role="menu"
+                aria-label="Notifications"
+                className="absolute right-0 top-full mt-1 w-80 max-w-[calc(100vw-1.5rem)] rounded-2xl border shadow-2xl overflow-hidden z-50"
+                style={{ background:C.surface, borderColor:C.outlineVar }}
+              >
                 <div className="px-4 py-3 border-b flex items-center justify-between" style={{ borderColor:C.outlineVar }}>
                   <span className="font-medium text-sm" style={{ color:C.onSurface, fontFamily:"Roboto" }}>Notifications</span>
                   {unreadCount > 0 && <button onClick={async () => { try { await api.notifications.markAllRead(); } catch { /* */ } setNotifs(ns => ns.map(n => ({...n,read:true}))); }} className="text-[11px] font-medium" style={{ color:C.primary, fontFamily:"Roboto" }}>Mark all read</button>}
                 </div>
-                {notifs.map(n => (
-                  <button key={n.id} onClick={async () => { try { await api.notifications.markRead(n.id); } catch { /* */ } setNotifs(ns => ns.map(x => x.id===n.id?{...x,read:true}:x)); go("alarms"); }} className="w-full text-left flex items-start gap-3 px-4 py-3 hover:bg-black/5 transition-colors border-b last:border-0" style={{ borderColor:C.outlineVar }}>
+                {previewNotifs.length === 0 ? (
+                  <p className="px-4 py-6 text-center text-xs" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>No notifications yet</p>
+                ) : previewNotifs.map(n => (
+                  <button key={n.id} role="menuitem" onClick={async () => { try { await api.notifications.markRead(n.id); } catch { /* */ } setNotifs(ns => ns.map(x => x.id===n.id?{...x,read:true}:x)); go("alarms"); }} className="w-full text-left flex items-start gap-3 px-4 py-3 hover:bg-black/5 transition-colors border-b" style={{ borderColor:C.outlineVar }}>
                     <div className="w-8 h-8 rounded-full flex items-center justify-center shrink-0 mt-0.5" style={{ background: n.read ? C.surfaceVar : C.primaryCont }}>
                       <NotificationsIcon style={{ fontSize:16, color: n.read ? C.onSurfaceVar : C.primary }} />
                     </div>
@@ -119,7 +182,9 @@ function Navbar({ page, setPage, isDark, setIsDark, loggedIn, user, userAvatar, 
                     {!n.read && <span className="w-2 h-2 rounded-full shrink-0 mt-1.5" style={{ background:C.primary }} />}
                   </button>
                 ))}
-                <button onClick={() => go("alarms")} className="w-full text-center py-3 text-xs font-medium hover:bg-black/5 transition-colors" style={{ color:C.primary, fontFamily:"Roboto" }}>More <ChevronRightIcon style={{ fontSize:14 }} /></button>
+                <button onClick={() => go("alarms")} className="w-full text-center py-3 text-xs font-medium hover:bg-black/5 transition-colors" style={{ color:C.primary, fontFamily:"Roboto" }}>
+                  View all notifications <ChevronRightIcon style={{ fontSize:14, verticalAlign:"middle" }} />
+                </button>
               </div>
             )}
           </div>
@@ -137,10 +202,12 @@ function Navbar({ page, setPage, isDark, setIsDark, loggedIn, user, userAvatar, 
                 {dmRequestCount > 0 && <span className="absolute -bottom-0.5 -right-0.5 min-w-[14px] h-3.5 px-0.5 rounded-full text-white text-[8px] flex items-center justify-center font-bold" style={{ background: BADGE_BG }}>{dmRequestCount}</span>}
               </button>
               <button
+                ref={avatarBtnRef}
+                type="button"
                 onClick={() => go("profile")}
                 onContextMenu={e => { e.preventDefault(); openProfileMenu(e.clientX, e.clientY); }}
                 onKeyDown={e => { if (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10")) { e.preventDefault(); const r = (e.currentTarget as HTMLElement).getBoundingClientRect(); openProfileMenu(r.left, r.bottom); } }}
-                onTouchStart={() => { avatarLongPress.current = setTimeout(() => { const el = document.activeElement as HTMLElement; const r = el?.getBoundingClientRect?.(); if (r) openProfileMenu(r.left, r.bottom); }, 500); }}
+                onTouchStart={() => { avatarLongPress.current = setTimeout(() => { const el = avatarBtnRef.current; const r = el?.getBoundingClientRect?.(); if (r) openProfileMenu(r.left, r.bottom); }, 500); }}
                 onTouchEnd={() => { if (avatarLongPress.current) clearTimeout(avatarLongPress.current); }}
                 onTouchMove={() => { if (avatarLongPress.current) clearTimeout(avatarLongPress.current); }}
                 aria-haspopup="menu"
@@ -151,11 +218,18 @@ function Navbar({ page, setPage, isDark, setIsDark, loggedIn, user, userAvatar, 
                 {userAvatar ? <img src={userAvatar} alt="avatar" className="w-full h-full object-cover" /> : (user?.username?.[0] || "Y")}
               </button>
               {profileMenu && (
-                <div className="fixed z-[60] min-w-[12rem] rounded-2xl border shadow-2xl overflow-hidden py-1 animate-in fade-in" style={{ top: profileMenu.y, left: Math.min(profileMenu.x, window.innerWidth - 200), background: C.surface, borderColor: C.outlineVar }} onClick={e => e.stopPropagation()}>
-                  <button onClick={() => go("profile")} className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-left hover:bg-black/5 transition-colors" style={{ color: C.onSurface, fontFamily: "Roboto" }}>
+                <div
+                  ref={profileMenuRef}
+                  role="menu"
+                  aria-label="Profile menu"
+                  className="fixed z-[60] min-w-[12rem] rounded-2xl border shadow-2xl overflow-hidden py-1 animate-in fade-in"
+                  style={{ top: profileMenu.y, left: Math.min(profileMenu.x, window.innerWidth - 200), background: C.surface, borderColor: C.outlineVar }}
+                  onClick={e => e.stopPropagation()}
+                >
+                  <button role="menuitem" onClick={() => go("profile")} className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-left hover:bg-black/5 transition-colors" style={{ color: C.onSurface, fontFamily: "Roboto" }}>
                     <PersonIcon style={{ fontSize: 18, color: C.primary }} />Profile ({user?.username})
                   </button>
-                  <button onClick={() => { onLogout(); closeProfileMenu(); go("home"); }} className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-left hover:bg-black/5 transition-colors border-t" style={{ color: C.error, borderColor: C.outlineVar, fontFamily: "Roboto" }}>
+                  <button role="menuitem" onClick={() => { onLogout(); closeProfileMenu(); go("home"); }} className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-left hover:bg-black/5 transition-colors border-t" style={{ color: C.error, borderColor: C.outlineVar, fontFamily: "Roboto" }}>
                     <LogoutIcon style={{ fontSize: 18 }} />Logout
                   </button>
                 </div>
@@ -323,6 +397,10 @@ export default function App() {
   }, []);
   const [isDark, setIsDark] = useState(() => localStorage.getItem("ninja-era-theme") === "dark");
   const toggleTheme = (v: boolean) => { setIsDark(v); localStorage.setItem("ninja-era-theme", v ? "dark" : "light"); };
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("dark", isDark);
+  }, [isDark]);
   const [user, setUser] = useState<ApiUser | null>(null);
   const [settings, setSettings] = useState<AppSettings>({ emailNotif:true, pushNotif:false, twoFA:false, publicProfile:true });
   const [userAvatar, setUserAvatar] = useState<string|null>(null);
@@ -454,37 +532,49 @@ export default function App() {
     return [...channels, ...dms];
   };
 
-  const addDM = async (name: string, role: string, country: string, city: string) => {
+  const addDM = async (name: string, _role: string, _country: string, _city: string) => {
     if (!loggedIn) { go("login"); return; }
-    try {
-      const { conversation } = await api.messages.startDm(name, `${role} at Ninja Era. ${country}, ${city}.`);
-      const conv = conversation as Contact;
+
+    const existingLocal = contacts.find(c => c.type === "dm" && c.name.toLowerCase() === name.toLowerCase());
+    if (existingLocal) {
       setContacts(prev => {
-        const filtered = prev.filter(c => c.id !== conv.id);
-        const dms = [conv, ...filtered.filter(c => c.type === "dm")];
+        const filtered = prev.filter(c => c.id !== existingLocal.id);
+        const dms = [existingLocal, ...filtered.filter(c => c.type === "dm")];
         const channels = filtered.filter(c => c.type === "channel");
         return [...channels, ...dms];
       });
-      setSelectedConversationId(conv.id);
-      setFocusMessageInput(true);
+      setSelectedConversationId(existingLocal.id);
       go("messages");
-    } catch {
-      const existing = contacts.find(c => c.type === "dm" && c.name === name);
-      if (existing) {
-        setContacts(prev => {
-          const filtered = prev.filter(c => c.id !== existing.id);
-          const dms = [existing, ...filtered.filter(c => c.type === "dm")];
-          const channels = filtered.filter(c => c.type === "channel");
-          return [...channels, ...dms];
+      return;
+    }
+
+    try {
+      const result = await api.dm.createRequest(name);
+      if (result.conversationId) {
+        await api.messages.conversations().then(r => {
+          setContacts(r.conversations as Contact[]);
+          setMsgUnread(r.conversations.filter(c => c.type === "dm").reduce((s, c) => s + c.unread, 0));
         });
-        setSelectedConversationId(existing.id);
-      } else {
-        const fallback = { id: Date.now(), name, msg: "Start a conversation...", time: "now", unread: 0, online: false, bio: `${role} at Ninja Era. ${country}, ${city}.`, type: "dm" as const };
-        setContacts(prev => sortContacts([fallback, ...prev]));
-        setSelectedConversationId(fallback.id);
+        setSelectedConversationId(result.conversationId);
+        setFocusMessageInput(true);
+        go("messages");
+        toast.success("Conversation opened");
+        return;
       }
-      setFocusMessageInput(true);
-      go("messages");
+      toast.success("Direct message request sent");
+      void refreshNotifications();
+    } catch (e) {
+      if (e instanceof ApiError && e.data?.conversationId != null) {
+        const convId = Number(e.data.conversationId);
+        await api.messages.conversations().then(r => {
+          setContacts(r.conversations as Contact[]);
+          setMsgUnread(r.conversations.filter(c => c.type === "dm").reduce((s, c) => s + c.unread, 0));
+        }).catch(() => {});
+        setSelectedConversationId(convId);
+        go("messages");
+        return;
+      }
+      toast.error(e instanceof Error ? e.message : "Could not start a conversation");
     }
   };
 

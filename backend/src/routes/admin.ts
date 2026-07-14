@@ -39,11 +39,15 @@ router.use(requireAuth, requireAdmin);
 // ── Dashboard ────────────────────────────────────────────────────────────────
 router.get("/stats", (_req, res) => {
   const totalUsers = (db.prepare("SELECT COUNT(*) as c FROM users WHERE is_npc = 0 AND is_deleted = 0").get() as { c: number }).c;
-  const allUsers = db.prepare("SELECT is_online, last_seen_at FROM users WHERE is_npc = 0 AND is_deleted = 0").all() as { is_online: number; last_seen_at: string | null }[];
+  const allUsers = db.prepare("SELECT is_online, last_seen_at, is_admin, is_team_member FROM users WHERE is_npc = 0 AND is_deleted = 0").all() as {
+    is_online: number; last_seen_at: string | null; is_admin: number; is_team_member: number;
+  }[];
   const onlineUsers = allUsers.filter(u => isUserOnline(u)).length;
   const totalChannels = (db.prepare("SELECT COUNT(*) as c FROM conversations WHERE type = 'channel' AND archived = 0").get() as { c: number }).c;
   const totalDms = (db.prepare("SELECT COUNT(*) as c FROM conversations WHERE type = 'dm'").get() as { c: number }).c;
   const pendingApplications = (db.prepare("SELECT COUNT(*) as c FROM job_applications WHERE status = 'pending'").get() as { c: number }).c;
+  const approvedApplications = (db.prepare("SELECT COUNT(*) as c FROM job_applications WHERE status = 'approved'").get() as { c: number }).c;
+  const rejectedApplications = (db.prepare("SELECT COUNT(*) as c FROM job_applications WHERE status = 'rejected'").get() as { c: number }).c;
   const teamMembers = (db.prepare("SELECT COUNT(*) as c FROM users WHERE is_team_member = 1 AND is_deleted = 0").get() as { c: number }).c;
   const unreadNotifications = (db.prepare(`
     SELECT COUNT(*) as c FROM notifications n
@@ -55,9 +59,150 @@ router.get("/stats", (_req, res) => {
   const repliedContacts = (db.prepare("SELECT COUNT(*) as c FROM contact_tickets WHERE reply_status = 'replied'").get() as { c: number }).c;
   const pendingContactReplies = (db.prepare("SELECT COUNT(*) as c FROM contact_tickets WHERE reply_status = 'pending'").get() as { c: number }).c;
 
+  const totalMessages = (db.prepare("SELECT COUNT(*) as c FROM messages").get() as { c: number }).c;
+  const pendingDmRequests = (db.prepare("SELECT COUNT(*) as c FROM dm_requests WHERE status = 'pending'").get() as { c: number }).c;
+  const totalResources = (db.prepare("SELECT COUNT(*) as c FROM resources").get() as { c: number }).c;
+  const totalDownloads = (db.prepare(`
+    SELECT COUNT(*) as c FROM activity_logs
+    WHERE event_category = 'downloads' AND result = 'success'
+  `).get() as { c: number }).c;
+  const adminCount = allUsers.filter(u => u.is_admin === 1).length;
+  const teamCount = allUsers.filter(u => u.is_team_member === 1 && u.is_admin !== 1).length;
+  const registeredCount = Math.max(0, totalUsers - adminCount - teamCount);
+
+  const dayKeys: string[] = [];
+  for (let i = 13; i >= 0; i--) {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() - i);
+    dayKeys.push(d.toISOString().slice(0, 10));
+  }
+
+  const registrationsByDay = Object.fromEntries(
+    (db.prepare(`
+      SELECT substr(created_at, 1, 10) as d, COUNT(*) as c
+      FROM users
+      WHERE is_npc = 0 AND is_deleted = 0 AND created_at >= date('now', '-13 days')
+      GROUP BY substr(created_at, 1, 10)
+    `).all() as { d: string; c: number }[]).map(r => [r.d, r.c])
+  );
+
+  const messagesByDay = Object.fromEntries(
+    (db.prepare(`
+      SELECT substr(created_at, 1, 10) as d, COUNT(*) as c
+      FROM messages
+      WHERE created_at >= date('now', '-13 days')
+      GROUP BY substr(created_at, 1, 10)
+    `).all() as { d: string; c: number }[]).map(r => [r.d, r.c])
+  );
+
+  const loginsByDay = Object.fromEntries(
+    (db.prepare(`
+      SELECT substr(timestamp, 1, 10) as d, COUNT(*) as c
+      FROM activity_logs
+      WHERE event_type IN ('login', 'register') AND timestamp >= date('now', '-13 days')
+      GROUP BY substr(timestamp, 1, 10)
+    `).all() as { d: string; c: number }[]).map(r => [r.d, r.c])
+  );
+
+  const downloadsByDay = Object.fromEntries(
+    (db.prepare(`
+      SELECT substr(timestamp, 1, 10) as d, COUNT(*) as c
+      FROM activity_logs
+      WHERE event_category = 'downloads' AND result = 'success' AND timestamp >= date('now', '-13 days')
+      GROUP BY substr(timestamp, 1, 10)
+    `).all() as { d: string; c: number }[]).map(r => [r.d, r.c])
+  );
+
+  const userGrowth = dayKeys.map(date => ({
+    date,
+    label: date.slice(5),
+    count: registrationsByDay[date] || 0,
+  }));
+
+  const activityTimeline = dayKeys.map(date => ({
+    date,
+    label: date.slice(5),
+    messages: messagesByDay[date] || 0,
+    downloads: downloadsByDay[date] || 0,
+    logins: loginsByDay[date] || 0,
+  }));
+
+  const downloadsByPlatform = (["windows", "android", "ios"] as const).map(platform => {
+    const count = (db.prepare(`
+      SELECT COUNT(*) as c FROM activity_logs
+      WHERE event_type = 'game_download' AND result = 'success'
+        AND (description LIKE ? OR affected_object LIKE ?)
+    `).get(`%${platform}%`, `%${platform}%`) as { c: number }).c;
+    return { platform, label: platform.charAt(0).toUpperCase() + platform.slice(1), count };
+  });
+
+  const mostDownloadedResource = db.prepare(`
+    SELECT r.title as title, COUNT(*) as downloads
+    FROM activity_logs al
+    JOIN resources r ON al.affected_object = 'resource:' || r.id
+    WHERE al.event_type = 'resource_download' AND al.result = 'success'
+    GROUP BY r.id
+    ORDER BY downloads DESC
+    LIMIT 1
+  `).get() as { title: string; downloads: number } | undefined;
+
+  const recentUsers = db.prepare(`
+    SELECT id, username, avatar_url as avatarUrl, created_at as createdAt, is_online as isOnline, last_seen_at as lastSeenAt
+    FROM users WHERE is_npc = 0 AND is_deleted = 0
+    ORDER BY created_at DESC LIMIT 5
+  `).all() as { id: number; username: string; avatarUrl: string | null; createdAt: string; isOnline: number; lastSeenAt: string | null }[];
+
+  const recentApplications = db.prepare(`
+    SELECT ja.id, ja.status, ja.created_at as createdAt, u.username, jp.title as position
+    FROM job_applications ja
+    LEFT JOIN users u ON u.id = ja.user_id
+    LEFT JOIN job_postings jp ON jp.id = ja.job_id
+    ORDER BY ja.created_at DESC LIMIT 5
+  `).all() as { id: number; status: string; createdAt: string; username: string | null; position: string | null }[];
+
+  const recentContacts = db.prepare(`
+    SELECT id, name, subject, is_read as isRead, reply_status as replyStatus, created_at as createdAt
+    FROM contact_tickets
+    ORDER BY created_at DESC LIMIT 5
+  `).all() as { id: number; name: string; subject: string; isRead: number; replyStatus: string; createdAt: string }[];
+
+  const recentActivity = db.prepare(`
+    SELECT id, timestamp, username, event_type as eventType, event_category as eventCategory,
+           description, user_role as userRole, result
+    FROM activity_logs
+    ORDER BY timestamp DESC LIMIT 8
+  `).all() as {
+    id: number; timestamp: string; username: string | null; eventType: string;
+    eventCategory: string; description: string; userRole: string | null; result: string;
+  }[];
+
   res.json({
     totalUsers, onlineUsers, totalChannels, totalDms, pendingApplications, teamMembers, unreadNotifications,
     unreadContacts, totalContacts, repliedContacts, pendingContactReplies,
+    totalMessages, pendingDmRequests, totalResources, totalDownloads,
+    approvedApplications, rejectedApplications,
+    userDistribution: [
+      { name: "Administrators", value: adminCount },
+      { name: "Team Members", value: teamCount },
+      { name: "Registered Users", value: registeredCount },
+    ],
+    userGrowth,
+    activityTimeline,
+    downloadsByPlatform,
+    mostDownloadedResource: mostDownloadedResource || null,
+    recentUsers: recentUsers.map(u => ({
+      ...u,
+      isOnline: isUserOnline({ is_online: u.isOnline, last_seen_at: u.lastSeenAt }),
+      time: timeAgo(u.createdAt),
+    })),
+    recentApplications: recentApplications.map(a => ({ ...a, time: timeAgo(a.createdAt) })),
+    recentContacts: recentContacts.map(c => ({
+      ...c,
+      isRead: c.isRead === 1,
+      time: timeAgo(c.createdAt),
+    })),
+    recentActivity: recentActivity.map(a => ({ ...a, time: timeAgo(a.timestamp) })),
   });
 });
 

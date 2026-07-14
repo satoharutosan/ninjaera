@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, type ReactNode } from "react";
 import DashboardIcon from "@mui/icons-material/Dashboard";
 import PeopleIcon from "@mui/icons-material/People";
 import NotificationsIcon from "@mui/icons-material/Notifications";
@@ -18,6 +18,12 @@ import DownloadIcon from "@mui/icons-material/Download";
 import VpnKeyIcon from "@mui/icons-material/VpnKey";
 import ContactMailIcon from "@mui/icons-material/ContactMail";
 import PersonIcon from "@mui/icons-material/Person";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import FiberManualRecordIcon from "@mui/icons-material/FiberManualRecord";
+import {
+  ResponsiveContainer, LineChart, Line, BarChart, Bar, AreaChart, Area,
+  PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+} from "recharts";
 import { toast } from "sonner";
 import {
   Page, useC, SH1, SH2, FilledBtn, OutlinedBtn, TonalBtn, Field, Chip, FlagImg,
@@ -31,6 +37,19 @@ import {
 import { onRealtimeEvent } from "@/app/realtime";
 
 type Section = "dashboard" | "users" | "notifications" | "contacts" | "channels" | "applications" | "resources" | "game-downloads" | "activity-logs";
+
+type DashboardStats = Awaited<ReturnType<typeof api.admin.stats>>;
+
+const EMPTY_STATS: DashboardStats = {
+  totalUsers: 0, onlineUsers: 0, totalChannels: 0, totalDms: 0, pendingApplications: 0, teamMembers: 0, unreadNotifications: 0,
+  unreadContacts: 0, totalContacts: 0, repliedContacts: 0, pendingContactReplies: 0,
+  totalMessages: 0, pendingDmRequests: 0, totalResources: 0, totalDownloads: 0,
+  approvedApplications: 0, rejectedApplications: 0,
+  userDistribution: [], userGrowth: [], activityTimeline: [], downloadsByPlatform: [],
+  mostDownloadedResource: null, recentUsers: [], recentApplications: [], recentContacts: [], recentActivity: [],
+};
+
+const CHART_COLORS = ["#6750A4", "#386A20", "#B3261E", "#006A6A", "#7D5260", "#625B71"];
 
 const SECTIONS: { id: Section; label: string; Icon: typeof DashboardIcon }[] = [
   { id: "dashboard", label: "Dashboard", Icon: DashboardIcon },
@@ -56,14 +75,50 @@ function UserAvatar({ user, size = 32 }: { user: AdminUser; size?: number }) {
   );
 }
 
-function StatCard({ label, value, color }: { label: string; value: number; color?: string }) {
+function StatCard({ label, value, color, hint }: { label: string; value: number; color?: string; hint?: string }) {
   const C = useC();
   return (
-    <div className="rounded-2xl p-5" style={{ background: C.surface, boxShadow: SH1 }}>
-      <p className="text-3xl font-medium mb-1" style={{ color: color || C.primary, fontFamily: "Roboto" }}>{value}</p>
-      <p className="text-sm" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>{label}</p>
+    <div className="rounded-2xl p-4 md:p-5 min-h-[96px] flex flex-col justify-between" style={{ background: C.surface, boxShadow: SH1 }} role="group" aria-label={`${label}: ${value}`}>
+      <p className="text-2xl md:text-3xl font-medium tabular-nums" style={{ color: color || C.primary, fontFamily: "Roboto" }}>{value.toLocaleString()}</p>
+      <div>
+        <p className="text-sm font-medium" style={{ color: C.onSurface, fontFamily: "Roboto" }}>{label}</p>
+        {hint && <p className="text-[11px] mt-0.5" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>{hint}</p>}
+      </div>
     </div>
   );
+}
+
+function DashSection({ title, children, defaultOpen = true, action }: { title: string; children: ReactNode; defaultOpen?: boolean; action?: ReactNode }) {
+  const C = useC();
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <section className="rounded-2xl border overflow-hidden mb-5" style={{ background: C.surface, borderColor: C.outlineVar, boxShadow: SH1 }}>
+      <div className="flex items-center justify-between gap-3 px-4 py-3 border-b" style={{ borderColor: C.outlineVar }}>
+        <button type="button" onClick={() => setOpen(o => !o)} className="flex items-center gap-2 min-w-0 text-left" aria-expanded={open}>
+          <ExpandMoreIcon style={{ fontSize: 22, color: C.onSurfaceVar, transform: open ? "rotate(0deg)" : "rotate(-90deg)", transition: "transform 0.2s" }} />
+          <h2 className="text-base font-medium truncate" style={{ color: C.onSurface, fontFamily: "Roboto" }}>{title}</h2>
+        </button>
+        {action}
+      </div>
+      {open && <div className="p-4">{children}</div>}
+    </section>
+  );
+}
+
+function ChartCard({ title, children, summary }: { title: string; children: ReactNode; summary?: string }) {
+  const C = useC();
+  return (
+    <div className="rounded-2xl border p-4 h-full min-h-[280px] flex flex-col" style={{ background: C.surfaceVar, borderColor: C.outlineVar }} role="figure" aria-label={summary || title}>
+      <h3 className="text-sm font-medium mb-3" style={{ color: C.onSurface, fontFamily: "Roboto" }}>{title}</h3>
+      {summary && <p className="sr-only">{summary}</p>}
+      <div className="flex-1 min-h-[200px] w-full">{children}</div>
+    </div>
+  );
+}
+
+function EmptyNote({ text }: { text: string }) {
+  const C = useC();
+  return <p className="text-sm py-6 text-center" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>{text}</p>;
 }
 
 function LocationCell({ loc }: { loc: AdminUser["location"] }) {
@@ -111,10 +166,7 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
   const [loading, setLoading] = useState(true);
   const [authorized, setAuthorized] = useState<boolean | null>(null);
 
-  const [stats, setStats] = useState({
-    totalUsers: 0, onlineUsers: 0, totalChannels: 0, totalDms: 0, pendingApplications: 0, teamMembers: 0, unreadNotifications: 0,
-    unreadContacts: 0, totalContacts: 0, repliedContacts: 0, pendingContactReplies: 0,
-  });
+  const [stats, setStats] = useState<DashboardStats>(EMPTY_STATS);
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [userSearch, setUserSearch] = useState("");
   const [userFilter, setUserFilter] = useState("active");
@@ -349,26 +401,241 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
       {/* Main content */}
       <main className="flex-1 p-4 md:p-8 mt-12 md:mt-0 overflow-y-auto">
         {loading ? (
-          <div className="flex items-center justify-center py-20">
-            <p style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>Loading…</p>
+          <div className="space-y-4 py-4" aria-busy="true" aria-label="Loading">
+            <div className="h-8 w-48 rounded-lg animate-pulse" style={{ background: C.surfaceVar }} />
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              {Array.from({ length: 8 }).map((_, i) => (
+                <div key={i} className="h-24 rounded-2xl animate-pulse" style={{ background: C.surfaceVar }} />
+              ))}
+            </div>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <div className="h-64 rounded-2xl animate-pulse" style={{ background: C.surfaceVar }} />
+              <div className="h-64 rounded-2xl animate-pulse" style={{ background: C.surfaceVar }} />
+            </div>
           </div>
         ) : (
           <>
             {section === "dashboard" && (
               <div>
-                <h1 className="text-2xl font-medium mb-6" style={{ color: C.onSurface, fontFamily: "Roboto" }}>Dashboard</h1>
-                <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                  <StatCard label="Total Users" value={stats.totalUsers} />
-                  <StatCard label="Online Users" value={stats.onlineUsers} color="#386A20" />
-                  <StatCard label="Total Channels" value={stats.totalChannels} />
-                  <StatCard label="Total DMs" value={stats.totalDms} />
-                  <StatCard label="Pending Applications" value={stats.pendingApplications} color="#B3261E" />
-                  <StatCard label="Team Members" value={stats.teamMembers} />
-                  <StatCard label="Unread Notifications" value={stats.unreadNotifications} />
-                  <StatCard label="Unread Contacts" value={stats.unreadContacts} color="#B3261E" />
-                  <StatCard label="Total Contacts" value={stats.totalContacts} />
-                  <StatCard label="Replied Contacts" value={stats.repliedContacts} color="#386A20" />
-                  <StatCard label="Pending Replies" value={stats.pendingContactReplies} color="#B3261E" />
+                <div className="flex flex-wrap items-end justify-between gap-3 mb-6">
+                  <div>
+                    <h1 className="text-2xl font-medium" style={{ color: C.onSurface, fontFamily: "Roboto" }}>Dashboard</h1>
+                    <p className="text-sm mt-1" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>Operational overview across users, messaging, downloads, and team activity.</p>
+                  </div>
+                </div>
+
+                <DashSection title="Overview" action={
+                  <button type="button" onClick={() => loadSection()} className="text-xs font-medium px-3 py-1.5 rounded-full hover:bg-black/5" style={{ color: C.primary, fontFamily: "Roboto" }}>Refresh</button>
+                }>
+                  <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
+                    <StatCard label="Total Users" value={stats.totalUsers} />
+                    <StatCard label="Online Users" value={stats.onlineUsers} color="#386A20" />
+                    <StatCard label="Team Members" value={stats.teamMembers} />
+                    <StatCard label="Pending Applications" value={stats.pendingApplications} color="#B3261E" />
+                    <StatCard label="Pending DM Requests" value={stats.pendingDmRequests} color="#B3261E" />
+                    <StatCard label="Unread Contacts" value={stats.unreadContacts} color="#B3261E" />
+                    <StatCard label="Resources" value={stats.totalResources} />
+                    <StatCard label="Total Downloads" value={stats.totalDownloads} />
+                    <StatCard label="Total Messages" value={stats.totalMessages} />
+                    <StatCard label="Active Channels" value={stats.totalChannels} />
+                  </div>
+                </DashSection>
+
+                <DashSection title="Insights">
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    <ChartCard title="User Growth (14 days)" summary={`Registrations over the last 14 days. Total recent: ${stats.userGrowth.reduce((s, d) => s + d.count, 0)}`}>
+                      {stats.userGrowth.some(d => d.count > 0) ? (
+                        <ResponsiveContainer width="100%" height="100%">
+                          <LineChart data={stats.userGrowth} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                            <CartesianGrid strokeDasharray="3 3" stroke={C.outlineVar} />
+                            <XAxis dataKey="label" tick={{ fill: C.onSurfaceVar, fontSize: 11 }} />
+                            <YAxis allowDecimals={false} tick={{ fill: C.onSurfaceVar, fontSize: 11 }} width={32} />
+                            <Tooltip contentStyle={{ background: C.surface, border: `1px solid ${C.outlineVar}`, borderRadius: 12, fontFamily: "Roboto", fontSize: 12 }} />
+                            <Line type="monotone" dataKey="count" name="Registrations" stroke={C.primary} strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 5 }} isAnimationActive />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      ) : <EmptyNote text="No registrations in the last 14 days" />}
+                    </ChartCard>
+
+                    <ChartCard title="Downloads by Platform" summary={`Windows ${stats.downloadsByPlatform.find(p => p.platform === "windows")?.count ?? 0}, Android ${stats.downloadsByPlatform.find(p => p.platform === "android")?.count ?? 0}, iOS ${stats.downloadsByPlatform.find(p => p.platform === "ios")?.count ?? 0}`}>
+                      {stats.downloadsByPlatform.some(d => d.count > 0) ? (
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={stats.downloadsByPlatform} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                            <CartesianGrid strokeDasharray="3 3" stroke={C.outlineVar} />
+                            <XAxis dataKey="label" tick={{ fill: C.onSurfaceVar, fontSize: 11 }} />
+                            <YAxis allowDecimals={false} tick={{ fill: C.onSurfaceVar, fontSize: 11 }} width={32} />
+                            <Tooltip contentStyle={{ background: C.surface, border: `1px solid ${C.outlineVar}`, borderRadius: 12, fontFamily: "Roboto", fontSize: 12 }} />
+                            <Bar dataKey="count" name="Downloads" fill={C.primary} radius={[8, 8, 0, 0]} isAnimationActive />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      ) : <EmptyNote text="No platform downloads recorded yet" />}
+                    </ChartCard>
+
+                    <ChartCard title="User Distribution" summary={stats.userDistribution.map(d => `${d.name}: ${d.value}`).join(", ")}>
+                      {stats.userDistribution.some(d => d.value > 0) ? (
+                        <ResponsiveContainer width="100%" height="100%">
+                          <PieChart>
+                            <Pie data={stats.userDistribution} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={48} outerRadius={78} paddingAngle={2}>
+                              {stats.userDistribution.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
+                            </Pie>
+                            <Tooltip contentStyle={{ background: C.surface, border: `1px solid ${C.outlineVar}`, borderRadius: 12, fontFamily: "Roboto", fontSize: 12 }} />
+                            <Legend wrapperStyle={{ fontFamily: "Roboto", fontSize: 12 }} />
+                          </PieChart>
+                        </ResponsiveContainer>
+                      ) : <EmptyNote text="No user distribution data" />}
+                    </ChartCard>
+
+                    <ChartCard title="Activity Timeline (14 days)" summary="Messages, downloads, and logins over the last 14 days">
+                      {stats.activityTimeline.some(d => d.messages + d.downloads + d.logins > 0) ? (
+                        <ResponsiveContainer width="100%" height="100%">
+                          <AreaChart data={stats.activityTimeline} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                            <CartesianGrid strokeDasharray="3 3" stroke={C.outlineVar} />
+                            <XAxis dataKey="label" tick={{ fill: C.onSurfaceVar, fontSize: 11 }} />
+                            <YAxis allowDecimals={false} tick={{ fill: C.onSurfaceVar, fontSize: 11 }} width={32} />
+                            <Tooltip contentStyle={{ background: C.surface, border: `1px solid ${C.outlineVar}`, borderRadius: 12, fontFamily: "Roboto", fontSize: 12 }} />
+                            <Legend wrapperStyle={{ fontFamily: "Roboto", fontSize: 12 }} />
+                            <Area type="monotone" dataKey="messages" name="Messages" stackId="1" stroke={C.primary} fill={C.primary} fillOpacity={0.35} isAnimationActive />
+                            <Area type="monotone" dataKey="downloads" name="Downloads" stackId="1" stroke="#386A20" fill="#386A20" fillOpacity={0.35} isAnimationActive />
+                            <Area type="monotone" dataKey="logins" name="Logins" stackId="1" stroke="#006A6A" fill="#006A6A" fillOpacity={0.35} isAnimationActive />
+                          </AreaChart>
+                        </ResponsiveContainer>
+                      ) : <EmptyNote text="No activity in the last 14 days" />}
+                    </ChartCard>
+                  </div>
+                </DashSection>
+
+                <div className="grid grid-cols-1 xl:grid-cols-2 gap-0 xl:gap-5">
+                  <DashSection title="User Activity" action={
+                    <button type="button" onClick={() => setSection("users")} className="text-xs font-medium" style={{ color: C.primary, fontFamily: "Roboto" }}>View all</button>
+                  }>
+                    <div className="grid grid-cols-2 gap-3 mb-4">
+                      <StatCard label="Online Now" value={stats.onlineUsers} color="#386A20" />
+                      <StatCard label="Total DMs" value={stats.totalDms} />
+                    </div>
+                    {stats.recentUsers.length === 0 ? <EmptyNote text="No recent registrations" /> : (
+                      <ul className="space-y-2" aria-label="Recent registrations">
+                        {stats.recentUsers.map(u => (
+                          <li key={u.id} className="flex items-center gap-3 px-2 py-2 rounded-xl" style={{ background: C.surfaceVar }}>
+                            <div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-medium shrink-0 overflow-hidden" style={{ background: C.primary }}>
+                              {u.avatarUrl ? <img src={u.avatarUrl} alt="" className="w-full h-full object-cover" /> : u.username?.[0]?.toUpperCase()}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium truncate" style={{ color: C.onSurface, fontFamily: "Roboto" }}>{u.username}</p>
+                              <p className="text-[11px]" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>Joined {u.time}</p>
+                            </div>
+                            <span className="flex items-center gap-1 text-[11px] shrink-0" style={{ color: u.isOnline ? "#386A20" : C.onSurfaceVar, fontFamily: "Roboto" }}>
+                              <FiberManualRecordIcon style={{ fontSize: 10 }} />{u.isOnline ? "Online" : "Offline"}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </DashSection>
+
+                  <DashSection title="Downloads" action={
+                    <button type="button" onClick={() => setSection("game-downloads")} className="text-xs font-medium" style={{ color: C.primary, fontFamily: "Roboto" }}>Manage</button>
+                  }>
+                    <div className="grid grid-cols-2 gap-3 mb-4">
+                      <StatCard label="Total Downloads" value={stats.totalDownloads} />
+                      <StatCard label="Resources" value={stats.totalResources} />
+                    </div>
+                    {stats.mostDownloadedResource ? (
+                      <div className="rounded-xl px-3 py-3 mb-3" style={{ background: C.surfaceVar }}>
+                        <p className="text-[11px] uppercase tracking-wide mb-1" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>Most downloaded resource</p>
+                        <p className="text-sm font-medium" style={{ color: C.onSurface, fontFamily: "Roboto" }}>{stats.mostDownloadedResource.title}</p>
+                        <p className="text-xs mt-0.5" style={{ color: C.primary, fontFamily: "Roboto" }}>{stats.mostDownloadedResource.downloads.toLocaleString()} downloads</p>
+                      </div>
+                    ) : <EmptyNote text="No resource downloads yet" />}
+                    <div className="grid grid-cols-3 gap-2">
+                      {stats.downloadsByPlatform.map(p => (
+                        <div key={p.platform} className="rounded-xl px-2 py-3 text-center" style={{ background: C.surfaceVar }}>
+                          <p className="text-lg font-medium tabular-nums" style={{ color: C.primary, fontFamily: "Roboto" }}>{p.count}</p>
+                          <p className="text-[11px]" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>{p.label}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </DashSection>
+
+                  <DashSection title="Teamwork" action={
+                    <button type="button" onClick={() => setSection("applications")} className="text-xs font-medium" style={{ color: C.primary, fontFamily: "Roboto" }}>Applications</button>
+                  }>
+                    <div className="grid grid-cols-3 gap-3 mb-4">
+                      <StatCard label="Pending" value={stats.pendingApplications} color="#B3261E" />
+                      <StatCard label="Approved" value={stats.approvedApplications} color="#386A20" />
+                      <StatCard label="Rejected" value={stats.rejectedApplications} />
+                    </div>
+                    {stats.recentApplications.length === 0 ? <EmptyNote text="No applications yet" /> : (
+                      <ul className="space-y-2" aria-label="Recent applications">
+                        {stats.recentApplications.map(a => (
+                          <li key={a.id} className="flex items-center gap-3 px-2 py-2 rounded-xl" style={{ background: C.surfaceVar }}>
+                            <WorkIcon style={{ fontSize: 18, color: C.primary }} />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium truncate" style={{ color: C.onSurface, fontFamily: "Roboto" }}>{a.username || "Unknown"} · {a.position || "Role"}</p>
+                              <p className="text-[11px]" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>{a.time}</p>
+                            </div>
+                            <Chip label={a.status} />
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </DashSection>
+
+                  <DashSection title="Messaging" action={
+                    <button type="button" onClick={() => setSection("channels")} className="text-xs font-medium" style={{ color: C.primary, fontFamily: "Roboto" }}>Channels</button>
+                  }>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                      <StatCard label="Messages" value={stats.totalMessages} />
+                      <StatCard label="DMs" value={stats.totalDms} />
+                      <StatCard label="Channels" value={stats.totalChannels} />
+                      <StatCard label="DM Requests" value={stats.pendingDmRequests} color="#B3261E" />
+                    </div>
+                  </DashSection>
+
+                  <DashSection title="Contacts" action={
+                    <button type="button" onClick={() => setSection("contacts")} className="text-xs font-medium" style={{ color: C.primary, fontFamily: "Roboto" }}>Inbox</button>
+                  }>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                      <StatCard label="Unread" value={stats.unreadContacts} color="#B3261E" />
+                      <StatCard label="Pending Reply" value={stats.pendingContactReplies} color="#B3261E" />
+                      <StatCard label="Replied" value={stats.repliedContacts} color="#386A20" />
+                      <StatCard label="Total" value={stats.totalContacts} />
+                    </div>
+                    {stats.recentContacts.length === 0 ? <EmptyNote text="No contact requests" /> : (
+                      <ul className="space-y-2" aria-label="Recent contacts">
+                        {stats.recentContacts.map(c => (
+                          <li key={c.id} className="flex items-center gap-3 px-2 py-2 rounded-xl" style={{ background: C.surfaceVar }}>
+                            <ContactMailIcon style={{ fontSize: 18, color: c.isRead ? C.onSurfaceVar : C.primary }} />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium truncate" style={{ color: C.onSurface, fontFamily: "Roboto" }}>{c.name} · {c.subject}</p>
+                              <p className="text-[11px]" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>{c.time} · {c.replyStatus}</p>
+                            </div>
+                            {!c.isRead && <span className="w-2 h-2 rounded-full shrink-0" style={{ background: C.primary }} aria-label="Unread" />}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </DashSection>
+
+                  <DashSection title="Activity Logs" action={
+                    <button type="button" onClick={() => setSection("activity-logs")} className="text-xs font-medium" style={{ color: C.primary, fontFamily: "Roboto" }}>View logs</button>
+                  }>
+                    {stats.recentActivity.length === 0 ? <EmptyNote text="No recent activity" /> : (
+                      <ul className="space-y-2" aria-label="Recent activity">
+                        {stats.recentActivity.map(a => (
+                          <li key={a.id} className="flex items-start gap-3 px-2 py-2 rounded-xl" style={{ background: C.surfaceVar }}>
+                            <HistoryIcon style={{ fontSize: 18, color: C.onSurfaceVar, marginTop: 2 }} />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm truncate" style={{ color: C.onSurface, fontFamily: "Roboto" }}>{a.description}</p>
+                              <p className="text-[11px] mt-0.5" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
+                                {a.username || "System"} · {a.eventCategory} · {a.time}
+                              </p>
+                            </div>
+                            <span className="text-[10px] uppercase shrink-0" style={{ color: a.result === "success" ? "#386A20" : C.error, fontFamily: "Roboto" }}>{a.result}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </DashSection>
                 </div>
               </div>
             )}

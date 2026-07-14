@@ -187,44 +187,58 @@
   }
 }
 
-/* Voice message player — dark mode contrast */
-.dark .rhap_container {
+/* Voice message player — inherit bubble foreground for WCAG contrast */
+.rhap_container {
+  max-width: 100% !important;
+  box-sizing: border-box !important;
   background: transparent !important;
   box-shadow: none !important;
-  color: #E6E1E5 !important;
 }
-.dark .rhap_time,
-.dark .rhap_current-time,
-.dark .rhap_total-time {
-  color: #CAC4D0 !important;
+.voice-msg .rhap_container,
+.voice-msg .rhap_time,
+.voice-msg .rhap_current-time,
+.voice-msg .rhap_total-time,
+.voice-msg .rhap_button-clear,
+.voice-msg .rhap_main-controls-button,
+.voice-msg .rhap_volume-button {
+  color: inherit !important;
 }
-.dark .rhap_progress-bar,
-.dark .rhap_download-progress {
-  background: rgba(230, 225, 229, 0.25) !important;
+.voice-msg .rhap_button-clear svg,
+.voice-msg .rhap_main-controls-button svg,
+.voice-msg .rhap_volume-button svg {
+  fill: currentColor !important;
+  color: inherit !important;
 }
-.dark .rhap_progress-filled,
-.dark .rhap_progress-indicator {
-  background: #E6E1E5 !important;
+.voice-msg .rhap_progress-bar,
+.voice-msg .rhap_download-progress,
+.voice-msg .rhap_volume-bar {
+  background: color-mix(in srgb, currentColor 28%, transparent) !important;
 }
-.dark .rhap_progress-indicator {
-  box-shadow: 0 0 0 2px rgba(230, 225, 229, 0.35);
+.voice-msg .rhap_progress-filled,
+.voice-msg .rhap_progress-indicator,
+.voice-msg .rhap_volume-indicator {
+  background: currentColor !important;
 }
-.dark .rhap_button-clear,
-.dark .rhap_main-controls-button,
-.dark .rhap_volume-button {
-  color: #E6E1E5 !important;
+.voice-msg .rhap_progress-indicator {
+  box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 35%, transparent);
 }
-.dark .rhap_button-clear svg,
-.dark .rhap_main-controls-button svg,
-.dark .rhap_volume-button svg {
-  fill: #E6E1E5 !important;
-  color: #E6E1E5 !important;
+/* Dark mode peer (incoming on dark surface): boost further */
+.dark .voice-msg--peer {
+  color: #F5EFF7 !important;
 }
-.dark .rhap_volume-bar {
-  background: rgba(230, 225, 229, 0.3) !important;
+.dark .voice-msg--peer .rhap_progress-bar,
+.dark .voice-msg--peer .rhap_download-progress,
+.dark .voice-msg--peer .rhap_volume-bar {
+  background: rgba(245, 239, 247, 0.32) !important;
 }
-.dark .rhap_volume-indicator {
-  background: #E6E1E5 !important;
+.dark .voice-msg--self {
+  /* Outgoing uses light primary fill — keep dark ink via inline color */
+  color: #381E72 !important;
+}
+.dark .voice-msg--self .rhap_progress-bar,
+.dark .voice-msg--self .rhap_download-progress,
+.dark .voice-msg--self .rhap_volume-bar {
+  background: rgba(56, 30, 114, 0.28) !important;
 }
 
 /* Unread badge smooth transitions without layout shift */

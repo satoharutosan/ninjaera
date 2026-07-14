@@ -1,4 +1,5 @@
-import { useState, useRef, useEffect, useLayoutEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, type ReactNode } from "react";
+import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import AudioPlayer from "react-h5-audio-player";
 import "react-h5-audio-player/lib/styles.css";
 import SearchIcon from "@mui/icons-material/Search";
@@ -30,13 +31,21 @@ import InboxIcon from "@mui/icons-material/Inbox";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import DownloadIcon from "@mui/icons-material/Download";
 import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
+import ZoomInIcon from "@mui/icons-material/ZoomIn";
+import ZoomOutIcon from "@mui/icons-material/ZoomOut";
+import RestartAltIcon from "@mui/icons-material/RestartAlt";
 import CircularProgress from "@mui/material/CircularProgress";
+import Badge from "@mui/material/Badge";
 import { toast } from "sonner";
 import {
   Page, AppSettings, Contact, ColorTheme, useC, SH1, FilledBtn, OutlinedBtn, Field, ChatAvatar, BADGE_BG, COUNTRY_ISO,
 } from "@/app/shared";
-import { api, type ApiMessage } from "@/app/api";
+import { api, ApiError, type ApiMessage } from "@/app/api";
 import { onRealtimeEvent, emitTyping, joinConversation } from "@/app/realtime";
+import {
+  getConversationReadState,
+  saveConversationReadState,
+} from "@/app/conversationState";
 
 const CHAT_MSGS = [
   { id:1, user:"Ryuu Ashikaga", msg:"Hey! Are you free tonight for the Dragon Sanctum raid?", time:"7:42 PM", self:false },
@@ -49,7 +58,9 @@ const CHAT_MSGS = [
 
 const STATUS_COLORS: Record<string,string> = { Online:"#386A20", Away:"#F59E0B", "Do Not Disturb":"#B3261E", Offline:"#79747E" };
 const MESSAGE_PAGE_SIZE = 50;
-const NEAR_BOTTOM_PX = 120;
+const VIRTUOSO_START_INDEX = 10_000_000;
+const MAX_RESTORE_PAGES = 30;
+const COMPOSER_MAX_HEIGHT = 160;
 
 // GIF data for picker (public Tenor-style placeholders via known Giphy public beta embeds)
 const EMOJI_TABS = ["😀","🎉","❤️","🔥","⚔️","🛡️","🎮","💀"] as const;
@@ -98,7 +109,7 @@ const URL_TEST = /^https?:\/\//;
 function TextWithLinks({ text, fg }: { text: string; fg: string }) {
   const parts = text.split(URL_SPLIT);
   return (
-    <span>
+    <span className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
       {parts.map((p, i) => URL_TEST.test(p)
         ? <a key={i} href={p} target="_blank" rel="noopener noreferrer" className="underline break-all" style={{ color:fg, opacity:0.85 }}>{p}</a>
         : p
@@ -114,9 +125,9 @@ function LinkPreviewCard({ text, self, C }: { text: string; self: boolean; C: Co
   let domain = "";
   try { domain = new URL(url).hostname.replace(/^www\./, ""); } catch { return null; }
   return (
-    <a href={url} target="_blank" rel="noopener noreferrer" className="flex items-start gap-3 mt-2 px-3 py-2.5 rounded-xl border no-underline hover:opacity-80 transition-opacity" style={{ background: self ? "rgba(255,255,255,.12)" : C.surfaceVar, borderColor: self ? "rgba(255,255,255,.2)" : C.outlineVar, textDecoration:"none" }}>
+    <a href={url} target="_blank" rel="noopener noreferrer" className="flex items-start gap-3 mt-2 px-3 py-2.5 rounded-xl border no-underline hover:opacity-80 transition-opacity min-w-0 max-w-full" style={{ background: self ? "rgba(255,255,255,.12)" : C.surfaceVar, borderColor: self ? "rgba(255,255,255,.2)" : C.outlineVar, textDecoration:"none" }}>
       <img src={`https://www.google.com/s2/favicons?domain=${domain}&sz=32`} alt="" className="w-5 h-5 rounded mt-0.5 shrink-0" />
-      <div className="min-w-0">
+      <div className="min-w-0 flex-1">
         <p className="text-xs font-medium truncate" style={{ color: self ? "rgba(255,255,255,.9)" : C.primary, fontFamily:"Roboto" }}>{domain}</p>
         <p className="text-[10px] truncate opacity-70" style={{ color: self ? "white" : C.onSurfaceVar, fontFamily:"Roboto" }}>{url}</p>
       </div>
@@ -170,7 +181,7 @@ function VideoPlayer({ src }: { src?: string }) {
   const fullscreen = () => { vidRef.current?.requestFullscreen?.(); };
 
   return (
-    <div className="relative bg-black rounded-2xl overflow-hidden" style={{ maxWidth:320, boxShadow:SH1 }}>
+    <div className="relative bg-black rounded-2xl overflow-hidden max-w-full" style={{ maxWidth:320, boxShadow:SH1 }}>
       <video
         ref={vidRef}
         src={src}
@@ -223,7 +234,7 @@ function FileBubble({ msg, self, C }: { msg:ChatMsg; self:boolean; C:ColorTheme 
   const name = msg.fileName || "file";
   const size = msg.fileSize ? fmtSize(msg.fileSize) : "";
   return (
-    <div className="max-w-[260px]">
+    <div className="max-w-[min(260px,100%)] min-w-0">
       <button onClick={() => setOpen(o=>!o)} className="w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-left transition-all hover:opacity-90" style={{ background:bg, boxShadow:SH1 }}>
         <span className="text-2xl shrink-0">{fileIcon(name)}</span>
         <div className="flex-1 min-w-0">
@@ -248,56 +259,218 @@ const QUICK_REACTIONS = ["👍","❤️","😂","😮","😢","🔥","🤯","�
 
 function MediaBubble({ msg, self, C, onScrollTo, onLightbox }: { msg:ChatMsg; self:boolean; C:ColorTheme; onScrollTo?:(id:number)=>void; onLightbox?:(url:string)=>void }) {
   const bg = self ? C.primary : C.surface;
-  const fg = self ? "white" : C.onSurface;
+  const fg = self ? (C.bg === "#FFFBFE" ? "white" : C.onPrimary) : C.onSurface;
   const corner = self ? "rounded-[20px_4px_20px_20px]" : "rounded-[4px_20px_20px_20px]";
   const hasLink = URL_SPLIT.test(msg.msg); URL_SPLIT.lastIndex = 0;
   const isLight = C.bg === "#FFFBFE";
   const replyUsesSelfStyle = self && !isLight;
-  const replyPreviewColor = replyUsesSelfStyle ? "white" : (isLight ? C.onSurfaceVar : C.onSurfaceVar);
+  const replyPreviewColor = replyUsesSelfStyle ? "white" : C.onSurfaceVar;
+  const voiceFg = self ? (isLight ? "#FFFFFF" : C.onPrimary) : C.onSurface;
   const replyBlock = msg.replyTo ? (
-    <button onClick={() => onScrollTo?.(msg.replyTo!.id)} className={`w-full text-left px-3 py-1.5 mb-1 rounded-xl border-l-4 text-xs cursor-pointer hover:opacity-80 transition-opacity ${replyUsesSelfStyle ? "rounded-[16px_4px_4px_16px]" : "rounded-[4px_16px_16px_4px]"}`} style={{ background: replyUsesSelfStyle ? "rgba(255,255,255,.15)" : C.surfaceVar, borderColor: replyUsesSelfStyle ? "rgba(255,255,255,.5)" : C.primary }}>
-      <span className="font-medium block" style={{ color: replyUsesSelfStyle ? "rgba(255,255,255,.9)" : C.primary, fontFamily:"Roboto" }}>{msg.replyTo.user}</span>
+    <button onClick={() => onScrollTo?.(msg.replyTo!.id)} className={`w-full min-w-0 max-w-full text-left px-3 py-1.5 mb-1 rounded-xl border-l-4 text-xs cursor-pointer hover:opacity-80 transition-opacity ${replyUsesSelfStyle ? "rounded-[16px_4px_4px_16px]" : "rounded-[4px_16px_16px_4px]"}`} style={{ background: replyUsesSelfStyle ? "rgba(255,255,255,.15)" : C.surfaceVar, borderColor: replyUsesSelfStyle ? "rgba(255,255,255,.5)" : C.primary }}>
+      <span className="font-medium block truncate" style={{ color: replyUsesSelfStyle ? "rgba(255,255,255,.9)" : C.primary, fontFamily:"Roboto" }}>{msg.replyTo.user}</span>
       <span className="truncate block" style={{ color: replyPreviewColor, fontFamily:"Roboto", opacity: replyUsesSelfStyle ? 0.8 : 1 }}>{msg.replyTo.preview || "📎 Attachment"}</span>
     </button>
   ) : null;
 
-  if (msg.mediaType === "file") return <div>{replyBlock}<FileBubble msg={msg} self={self} C={C} /></div>;
-  if (msg.mediaType === "image") return (
-    <div>{replyBlock}
-      <div className="rounded-2xl overflow-hidden max-w-[220px] cursor-zoom-in" style={{ boxShadow:SH1 }} onClick={() => msg.mediaUrl && onLightbox?.(msg.mediaUrl)}>
-        <img src={msg.mediaUrl} alt="img" className="w-full block hover:brightness-90 transition-all" decoding="async" />
-        {msg.msg && <div className="px-3 py-1.5 text-sm" style={{ background:bg, color:fg, fontFamily:"Roboto" }}><TextWithLinks text={msg.msg} fg={fg} /></div>}
+  /** Shrink-wrap media to content width so parent `items-end` / outgoing alignment works for all types. */
+  const shell = (body: ReactNode) => (
+    <div className={`flex flex-col min-w-0 max-w-full ${self ? "items-end" : "items-start"}`}>
+      <div className="w-fit max-w-full min-w-0">
+        {replyBlock}
+        {body}
       </div>
     </div>
   );
-  if (msg.mediaType === "video") return (
-    <div>{replyBlock}
+
+  if (msg.mediaType === "file") return shell(<FileBubble msg={msg} self={self} C={C} />);
+  if (msg.mediaType === "image") return shell(
+    <div className={`rounded-2xl overflow-hidden max-w-[min(220px,100%)] cursor-zoom-in ${corner}`} style={{ boxShadow:SH1 }} onClick={() => msg.mediaUrl && onLightbox?.(msg.mediaUrl)}>
+      <img src={msg.mediaUrl} alt="img" className="max-w-full h-auto block hover:brightness-90 transition-all" decoding="async" />
+      {msg.msg && <div className="px-3 py-1.5 text-sm min-w-0" style={{ background:bg, color:fg, fontFamily:"Roboto" }}><TextWithLinks text={msg.msg} fg={fg} /></div>}
+    </div>
+  );
+  if (msg.mediaType === "video") return shell(
+    <>
       <VideoPlayer src={msg.mediaUrl} />
-      {msg.msg && <div className="px-3 py-1.5 text-sm rounded-b-2xl max-w-[320px]" style={{ background:bg, color:fg, fontFamily:"Roboto" }}><TextWithLinks text={msg.msg} fg={fg} /></div>}
+      {msg.msg && <div className="px-3 py-1.5 text-sm rounded-b-2xl max-w-[min(320px,100%)] min-w-0" style={{ background:bg, color:fg, fontFamily:"Roboto" }}><TextWithLinks text={msg.msg} fg={fg} /></div>}
+    </>
+  );
+  if (msg.mediaType === "audio") return shell(
+    <div className={`voice-msg w-full max-w-[min(300px,100%)] rounded-2xl overflow-hidden ${corner} ${self ? "voice-msg--self" : "voice-msg--peer"}`} style={{ boxShadow:SH1, background: bg, color: voiceFg }}>
+      <AudioPlayer src={msg.mediaUrl} showJumpControls={false} customAdditionalControls={[]} layout="horizontal-reverse" style={{ background: "transparent", boxShadow:"none", width: "100%", color: voiceFg }} />
+      {msg.msg && <div className="px-3 py-1.5 text-sm min-w-0" style={{ background:bg, color:fg, fontFamily:"Roboto" }}><TextWithLinks text={msg.msg} fg={fg} /></div>}
     </div>
   );
-  if (msg.mediaType === "audio") return (
-    <div>{replyBlock}
-      <div className={`max-w-[300px] rounded-2xl overflow-hidden ${corner}`} style={{ boxShadow:SH1 }}>
-        <AudioPlayer src={msg.mediaUrl} showJumpControls={false} customAdditionalControls={[]} layout="horizontal-reverse" style={{ background: self ? C.primary : C.surface, boxShadow:"none" }} />
-        {msg.msg && <div className="px-3 py-1.5 text-sm" style={{ background:bg, color:fg, fontFamily:"Roboto" }}><TextWithLinks text={msg.msg} fg={fg} /></div>}
-      </div>
-    </div>
-  );
-  if (msg.mediaType === "gif") return (
-    <div>{replyBlock}
-      <div className="rounded-2xl overflow-hidden max-w-[200px]" style={{ boxShadow:SH1 }}>
-        <img src={msg.mediaUrl} alt="gif" className="w-full block" />
-      </div>
+  if (msg.mediaType === "gif") return shell(
+    <div className={`rounded-2xl overflow-hidden max-w-[min(200px,100%)] ${corner}`} style={{ boxShadow:SH1 }}>
+      <img src={msg.mediaUrl} alt="gif" className="max-w-full h-auto block" />
     </div>
   );
   if (!msg.msg) return null;
+  return shell(
+    <div className={`px-4 py-2.5 text-sm min-w-0 max-w-full ${corner}`} style={{ background:bg, color:fg, fontFamily:"Roboto", boxShadow:SH1 }}>
+      <TextWithLinks text={msg.msg} fg={fg} />
+      {msg.edited && <span className="text-[9px] opacity-60 ml-1">(edited)</span>}
+      {hasLink && <LinkPreviewCard text={msg.msg} self={self} C={C} />}
+    </div>
+  );
+}
+
+const LIGHTBOX_MIN = 1;
+const LIGHTBOX_MAX = 5;
+
+function ImageLightbox({ src, onClose }: { src: string; onClose: () => void }) {
+  const [scale, setScale] = useState(1);
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const dragging = useRef(false);
+  const lastPos = useRef({ x: 0, y: 0 });
+  const pinchStart = useRef<{ dist: number; scale: number } | null>(null);
+  const imgRef = useRef<HTMLImageElement>(null);
+  const viewportRef = useRef<HTMLDivElement>(null);
+
+  const clampScale = (s: number) => Math.min(LIGHTBOX_MAX, Math.max(LIGHTBOX_MIN, s));
+
+  const resetView = useCallback(() => {
+    setScale(1);
+    setOffset({ x: 0, y: 0 });
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+      if (e.key === "0" || e.key === "Home") resetView();
+      if (e.key === "+" || e.key === "=") setScale(s => clampScale(s + 0.25));
+      if (e.key === "-" || e.key === "_") setScale(s => clampScale(s - 0.25));
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose, resetView]);
+
+  useEffect(() => {
+    resetView();
+  }, [src, resetView]);
+
+  useEffect(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+    const onWheelNative = (e: WheelEvent) => {
+      e.preventDefault();
+      const delta = e.deltaY > 0 ? -0.15 : 0.15;
+      setScale(s => {
+        const next = clampScale(s + delta);
+        if (next <= 1) setOffset({ x: 0, y: 0 });
+        return next;
+      });
+    };
+    el.addEventListener("wheel", onWheelNative, { passive: false });
+    return () => el.removeEventListener("wheel", onWheelNative);
+  }, []);
+
+  const onWheel = (e: React.WheelEvent) => {
+    e.preventDefault();
+  };
+
+  const onDoubleClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (scale > 1) resetView();
+    else setScale(2);
+  };
+
+  const onPointerDown = (e: React.PointerEvent) => {
+    if (scale <= 1) return;
+    dragging.current = true;
+    lastPos.current = { x: e.clientX, y: e.clientY };
+    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+  };
+
+  const onPointerMove = (e: React.PointerEvent) => {
+    if (!dragging.current || scale <= 1) return;
+    const dx = e.clientX - lastPos.current.x;
+    const dy = e.clientY - lastPos.current.y;
+    lastPos.current = { x: e.clientX, y: e.clientY };
+    setOffset(o => ({ x: o.x + dx, y: o.y + dy }));
+  };
+
+  const onPointerUp = () => { dragging.current = false; };
+
+  const touchDist = (touches: React.TouchList) => {
+    if (touches.length < 2) return 0;
+    const a = touches[0], b = touches[1];
+    return Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+  };
+
+  const onTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length === 2) {
+      pinchStart.current = { dist: touchDist(e.touches), scale };
+    }
+  };
+
+  const onTouchMove = (e: React.TouchEvent) => {
+    if (e.touches.length === 2 && pinchStart.current) {
+      e.preventDefault();
+      const ratio = touchDist(e.touches) / pinchStart.current.dist;
+      const next = clampScale(pinchStart.current.scale * ratio);
+      setScale(next);
+      if (next <= 1) setOffset({ x: 0, y: 0 });
+    }
+  };
+
+  const onTouchEnd = () => { pinchStart.current = null; };
+
   return (
-    <div>{replyBlock}
-      <div className={`px-4 py-2.5 text-sm ${corner}`} style={{ background:bg, color:fg, fontFamily:"Roboto", boxShadow:SH1 }}>
-        <TextWithLinks text={msg.msg} fg={fg} />
-        {msg.edited && <span className="text-[9px] opacity-60 ml-1">(edited)</span>}
-        {hasLink && <LinkPreviewCard text={msg.msg} self={self} C={C} />}
+    <div
+      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/90 backdrop-blur-sm touch-none"
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Image preview"
+    >
+      <div className="absolute top-4 right-4 z-20 flex items-center gap-1">
+        <button type="button" onClick={e => { e.stopPropagation(); setScale(s => clampScale(s - 0.25)); }} className="w-10 h-10 flex items-center justify-center rounded-full text-white hover:bg-white/10" aria-label="Zoom out" title="Zoom out">
+          <ZoomOutIcon style={{ fontSize: 22 }} />
+        </button>
+        <button type="button" onClick={e => { e.stopPropagation(); setScale(s => clampScale(s + 0.25)); }} className="w-10 h-10 flex items-center justify-center rounded-full text-white hover:bg-white/10" aria-label="Zoom in" title="Zoom in">
+          <ZoomInIcon style={{ fontSize: 22 }} />
+        </button>
+        <button type="button" onClick={e => { e.stopPropagation(); resetView(); }} className="w-10 h-10 flex items-center justify-center rounded-full text-white hover:bg-white/10" aria-label="Reset zoom" title="Reset zoom">
+          <RestartAltIcon style={{ fontSize: 22 }} />
+        </button>
+        <button type="button" onClick={e => { e.stopPropagation(); onClose(); }} className="w-10 h-10 flex items-center justify-center rounded-full text-white hover:bg-white/10" aria-label="Close preview">
+          <CloseIcon style={{ fontSize: 24 }} />
+        </button>
+      </div>
+      <span className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 text-white/80 text-xs font-mono px-3 py-1 rounded-full bg-black/40" aria-live="polite">
+        {Math.round(scale * 100)}%
+      </span>
+      <div
+        ref={viewportRef}
+        className="w-full h-full flex items-center justify-center overflow-hidden"
+        onWheel={onWheel}
+        onClick={e => e.stopPropagation()}
+        onTouchStart={onTouchStart}
+        onTouchMove={onTouchMove}
+        onTouchEnd={onTouchEnd}
+      >
+        <img
+          ref={imgRef}
+          src={src}
+          alt="Preview"
+          draggable={false}
+          className="max-w-[90vw] max-h-[90vh] object-contain rounded-xl shadow-2xl select-none"
+          style={{
+            transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`,
+            transformOrigin: "center center",
+            transition: dragging.current ? "none" : "transform 0.15s ease-out",
+            cursor: scale > 1 ? (dragging.current ? "grabbing" : "grab") : "zoom-in",
+            willChange: "transform",
+          }}
+          onDoubleClick={onDoubleClick}
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          onPointerCancel={onPointerUp}
+        />
       </div>
     </div>
   );
@@ -325,7 +498,12 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
   const [msgs, setMsgs] = useState<ChatMsg[]>([]);
   const [hasMoreHistory, setHasMoreHistory] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
-  const [showNewMsgBtn, setShowNewMsgBtn] = useState(false);
+  const [showJumpBtn, setShowJumpBtn] = useState(false);
+  const [unreadBelow, setUnreadBelow] = useState(0);
+  const [threadBootId, setThreadBootId] = useState(0);
+  const [initialScrollIndex, setInitialScrollIndex] = useState<number | null>(null);
+  const [lastReadMessageId, setLastReadMessageId] = useState<number | null>(null);
+  const [threadReady, setThreadReady] = useState(false);
   const [showSidebar, setShowSidebar] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [myStatus, setMyStatus] = useState(currentUser?.status || "Online");
@@ -351,25 +529,25 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
   const [dmRequests, setDmRequests] = useState<{ id: number; requesterId: number; requesterName: string; requesterAvatar?: string | null; requesterDisplayName?: string; time: string }[]>([]);
   const [typingUsers, setTypingUsers] = useState<{ userId: number; username: string }[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const emojiBtnRef = useRef<HTMLButtonElement>(null);
   const emojiPickerRef = useRef<HTMLDivElement>(null);
   const [emojiPickerPos, setEmojiPickerPos] = useState<{ right: number; bottom: number }>({ right: 20, bottom: 72 });
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isTypingRef = useRef(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const messagesContainerRef = useRef<HTMLDivElement>(null);
-  const messagesContentRef = useRef<HTMLDivElement>(null);
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
   const msgRefs = useRef<Map<number,HTMLDivElement>>(new Map());
   const msgsRef = useRef<ChatMsg[]>([]);
   const isNearBottomRef = useRef(true);
   const hasMoreRef = useRef(false);
   const loadingOlderRef = useRef(false);
-  /** While true, keep the viewport glued to the absolute bottom across layout/media changes. */
   const pinToBottomRef = useRef(true);
-  const pendingPrependRestoreRef = useRef<{ prevHeight: number; prevTop: number } | null>(null);
   const loadGenRef = useRef(0);
-  const applyingScrollRef = useRef(false);
+  const firstItemIndexRef = useRef(VIRTUOSO_START_INDEX);
+  const [firstItemIndex, setFirstItemIndex] = useState(VIRTUOSO_START_INDEX);
+  const visibleStartDataIndexRef = useRef(0);
+  const restoreTargetRef = useRef<number | null>(null);
+  const restoringRef = useRef(false);
 
   useEffect(() => {
     if (currentUser) {
@@ -392,115 +570,158 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
     };
   }, []);
 
-  const forceScrollToBottom = useCallback(() => {
-    const el = messagesContainerRef.current;
+  const adjustComposerHeight = useCallback(() => {
+    const el = inputRef.current;
     if (!el) return;
-    applyingScrollRef.current = true;
-    // Instant assignment — never use smooth here; smooth + growing layout = mid-list stop.
-    el.scrollTop = el.scrollHeight;
-    // Re-apply after paint in case fonts/media already expanded layout this frame.
-    requestAnimationFrame(() => {
-      const node = messagesContainerRef.current;
-      if (node && pinToBottomRef.current) node.scrollTop = node.scrollHeight;
-      applyingScrollRef.current = false;
-    });
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, COMPOSER_MAX_HEIGHT)}px`;
+  }, []);
+
+  const forceScrollToBottom = useCallback((behavior: "auto" | "smooth" = "auto") => {
+    pinToBottomRef.current = true;
     isNearBottomRef.current = true;
-    setShowNewMsgBtn(false);
+    setShowJumpBtn(false);
+    setUnreadBelow(0);
+    virtuosoRef.current?.scrollToIndex({
+      index: "LAST",
+      align: "end",
+      behavior,
+    });
   }, []);
 
-  const checkNearBottom = useCallback(() => {
-    const el = messagesContainerRef.current;
-    if (!el) return true;
-    return el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX;
-  }, []);
+  const persistConversation = useCallback((conversationId: number) => {
+    const list = msgsRef.current;
+    if (!conversationId || !list.length || !currentUserId) return;
+    const atBottom = isNearBottomRef.current;
+    const start = Math.max(0, Math.min(list.length - 1, visibleStartDataIndexRef.current));
+    const anchor = list[start]?.id ?? list[list.length - 1].id;
+    const newest = list[list.length - 1].id;
+    const prev = getConversationReadState(currentUserId, conversationId);
+    saveConversationReadState(currentUserId, conversationId, {
+      anchorMessageId: anchor,
+      atBottom,
+      lastReadMessageId: atBottom ? newest : (prev?.lastReadMessageId ?? anchor),
+      lastOpenedAt: Date.now(),
+    });
+  }, [currentUserId]);
 
-  const loadOlderMessages = useCallback(async () => {
-    if (!sel?.id || loadingOlderRef.current || !hasMoreRef.current) return;
+  const loadOlderMessages = useCallback(async (): Promise<number> => {
+    if (!sel?.id || loadingOlderRef.current || !hasMoreRef.current) return 0;
     const current = msgsRef.current;
-    if (!current.length) return;
+    if (!current.length) return 0;
     const oldestId = current[0].id;
     const gen = loadGenRef.current;
-    const wasPinned = pinToBottomRef.current;
     loadingOlderRef.current = true;
     setLoadingOlder(true);
-    const el = messagesContainerRef.current;
-    // Only restore scroll when the user is reading history (not when filling short viewports at bottom).
-    if (el && !wasPinned) {
-      pendingPrependRestoreRef.current = { prevHeight: el.scrollHeight, prevTop: el.scrollTop };
-    }
     try {
       const r = await api.messages.getMessages(sel.id, { limit: MESSAGE_PAGE_SIZE, before: oldestId });
-      if (gen !== loadGenRef.current) {
-        pendingPrependRestoreRef.current = null;
-        return;
-      }
+      if (gen !== loadGenRef.current) return 0;
       const older = (r.messages as ApiMessage[]).map(m => toChatMsg(m, currentUserId));
       if (!older.length) {
         setHasMoreHistory(false);
         hasMoreRef.current = false;
-        pendingPrependRestoreRef.current = null;
-        return;
+        return 0;
       }
-      setMsgs(prev => {
-        const seen = new Set(prev.map(m => m.id));
-        const unique = older.filter(m => !seen.has(m.id));
-        return unique.length ? [...unique, ...prev] : prev;
-      });
+      const unique = older.filter(m => !current.some(c => c.id === m.id));
+      if (!unique.length) {
+        setHasMoreHistory(!!r.hasMore);
+        hasMoreRef.current = !!r.hasMore;
+        return 0;
+      }
+      const next = [...unique, ...current];
+      msgsRef.current = next;
+      firstItemIndexRef.current -= unique.length;
+      setFirstItemIndex(firstItemIndexRef.current);
+      setMsgs(next);
       setHasMoreHistory(!!r.hasMore);
       hasMoreRef.current = !!r.hasMore;
-      if (wasPinned) pinToBottomRef.current = true;
+      return unique.length;
     } catch {
-      pendingPrependRestoreRef.current = null;
+      return 0;
     } finally {
       loadingOlderRef.current = false;
       setLoadingOlder(false);
     }
   }, [sel?.id, currentUserId, toChatMsg]);
 
-  const handleMessagesScroll = useCallback(() => {
-    if (applyingScrollRef.current) return;
-    const el = messagesContainerRef.current;
-    if (!el) return;
-    const near = checkNearBottom();
-    isNearBottomRef.current = near;
-    if (near) {
-      pinToBottomRef.current = true;
-      setShowNewMsgBtn(false);
-    } else {
-      pinToBottomRef.current = false;
+  const ensureAnchorLoaded = useCallback(async (anchorId: number, gen: number) => {
+    let pages = 0;
+    while (pages < MAX_RESTORE_PAGES) {
+      if (gen !== loadGenRef.current) return false;
+      if (msgsRef.current.some(m => m.id === anchorId)) return true;
+      if (!hasMoreRef.current) return false;
+      const added = await loadOlderMessages();
+      if (!added) return msgsRef.current.some(m => m.id === anchorId);
+      pages += 1;
     }
-    // Load older only when user is actively reading upward — never during pin-to-bottom.
-    if (
-      !pinToBottomRef.current
-      && el.scrollTop < 100
-      && el.scrollHeight > el.clientHeight + 40
-      && hasMoreRef.current
-      && !loadingOlderRef.current
-    ) {
-      void loadOlderMessages();
-    }
-  }, [checkNearBottom, loadOlderMessages]);
+    return msgsRef.current.some(m => m.id === anchorId);
+  }, [loadOlderMessages]);
+
+  // Persist reading position when leaving a conversation or unmounting Messages.
+  useEffect(() => {
+    const convId = sel.id;
+    return () => {
+      if (convId) persistConversation(convId);
+    };
+  }, [sel.id, persistConversation]);
 
   useEffect(() => {
     if (!sel?.id) return;
     const gen = ++loadGenRef.current;
     joinConversation(sel.id);
+
+    const saved = getConversationReadState(currentUserId, sel.id);
+    const shouldRestore = !!(saved && !saved.atBottom && saved.anchorMessageId);
+
     setMsgs([]);
     setHasMoreHistory(false);
     hasMoreRef.current = false;
-    setShowNewMsgBtn(false);
+    setShowJumpBtn(false);
+    setUnreadBelow(0);
     setTypingUsers([]);
-    pinToBottomRef.current = true;
-    isNearBottomRef.current = true;
-    pendingPrependRestoreRef.current = null;
+    setThreadReady(false);
+    setInitialScrollIndex(null);
+    setLastReadMessageId(saved?.lastReadMessageId ?? null);
+    firstItemIndexRef.current = VIRTUOSO_START_INDEX;
+    setFirstItemIndex(VIRTUOSO_START_INDEX);
+    restoreTargetRef.current = shouldRestore ? saved!.anchorMessageId : null;
+    restoringRef.current = shouldRestore;
+    pinToBottomRef.current = !shouldRestore;
+    isNearBottomRef.current = !shouldRestore;
 
     api.messages.getMessages(sel.id, { limit: MESSAGE_PAGE_SIZE })
-      .then(r => {
+      .then(async r => {
         if (gen !== loadGenRef.current) return;
-        pinToBottomRef.current = true;
-        setMsgs((r.messages as ApiMessage[]).map(m => toChatMsg(m, currentUserId)));
+        let mapped = (r.messages as ApiMessage[]).map(m => toChatMsg(m, currentUserId));
+        setMsgs(mapped);
+        msgsRef.current = mapped;
         setHasMoreHistory(!!r.hasMore);
         hasMoreRef.current = !!r.hasMore;
+
+        if (shouldRestore && restoreTargetRef.current) {
+          const found = await ensureAnchorLoaded(restoreTargetRef.current, gen);
+          if (gen !== loadGenRef.current) return;
+          mapped = msgsRef.current;
+          const idx = found ? mapped.findIndex(m => m.id === restoreTargetRef.current) : -1;
+          if (idx >= 0) {
+            setInitialScrollIndex(idx);
+            pinToBottomRef.current = false;
+            isNearBottomRef.current = false;
+            setShowJumpBtn(true);
+          } else {
+            setInitialScrollIndex(Math.max(0, mapped.length - 1));
+            pinToBottomRef.current = true;
+            isNearBottomRef.current = true;
+          }
+        } else {
+          setInitialScrollIndex(Math.max(0, mapped.length - 1));
+          pinToBottomRef.current = true;
+          isNearBottomRef.current = true;
+        }
+
+        setThreadBootId(id => id + 1);
+        setThreadReady(true);
+        restoringRef.current = false;
         refreshContacts();
       })
       .catch(() => {
@@ -508,53 +729,11 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
         setMsgs([]);
         setHasMoreHistory(false);
         hasMoreRef.current = false;
+        setThreadReady(true);
+        setInitialScrollIndex(0);
+        restoringRef.current = false;
       });
-  }, [sel.id, currentUserId, toChatMsg]);
-
-  // After React commits message DOM, pin instantly. Keep pin enabled so ResizeObserver can catch media.
-  useLayoutEffect(() => {
-    const el = messagesContainerRef.current;
-    if (!el) return;
-
-    if (pendingPrependRestoreRef.current) {
-      const { prevHeight, prevTop } = pendingPrependRestoreRef.current;
-      pendingPrependRestoreRef.current = null;
-      applyingScrollRef.current = true;
-      el.scrollTop = prevTop + (el.scrollHeight - prevHeight);
-      requestAnimationFrame(() => { applyingScrollRef.current = false; });
-      return;
-    }
-
-    if (pinToBottomRef.current) {
-      forceScrollToBottom();
-    }
-  }, [msgs, forceScrollToBottom]);
-
-  // Re-pin when images/avatars/voice players/reply chrome change content height after first paint.
-  useEffect(() => {
-    const container = messagesContainerRef.current;
-    const content = messagesContentRef.current;
-    if (!container || !content) return;
-
-    const ro = new ResizeObserver(() => {
-      if (pendingPrependRestoreRef.current) return;
-      if (!pinToBottomRef.current) return;
-      forceScrollToBottom();
-    });
-    ro.observe(content);
-    return () => ro.disconnect();
-  }, [sel.id, forceScrollToBottom]);
-
-  // If the newest page is shorter than the viewport and older history exists, fill upward while staying pinned.
-  useEffect(() => {
-    if (!hasMoreHistory || loadingOlder || !msgs.length) return;
-    if (!pinToBottomRef.current) return;
-    const el = messagesContainerRef.current;
-    if (!el) return;
-    if (el.scrollHeight <= el.clientHeight + 24) {
-      void loadOlderMessages();
-    }
-  }, [msgs, hasMoreHistory, loadingOlder, loadOlderMessages]);
+  }, [sel.id, currentUserId, toChatMsg, ensureAnchorLoaded]);
 
   useEffect(() => {
     if (!initialConversationId) return;
@@ -601,13 +780,14 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
           setMsgs(prev => prev.some(m => m.id === chatMsg.id) ? prev : [...prev, chatMsg]);
           if (isNearBottomRef.current || chatMsg.self) {
             pinToBottomRef.current = true;
-            // Instant pin via layout/ResizeObserver; soft smooth for feel when already near bottom.
-            requestAnimationFrame(() => forceScrollToBottom());
+            requestAnimationFrame(() => forceScrollToBottom("auto"));
             if (!message.self && message.userId !== currentUserId) {
               api.messages.markRead(conversationId).then(() => refreshContacts()).catch(() => {});
+              setLastReadMessageId(chatMsg.id);
             }
-          } else {
-            setShowNewMsgBtn(true);
+          } else if (!chatMsg.self) {
+            setUnreadBelow(n => n + 1);
+            setShowJumpBtn(true);
           }
         }
         refreshContacts();
@@ -725,6 +905,11 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
     const trimmed = input.trim();
     if (!trimmed && !extra?.mediaUrl) return;
     setInput(""); setReplyingTo(null); setEmojiOpen(false);
+    requestAnimationFrame(() => {
+      if (inputRef.current) {
+        inputRef.current.style.height = "auto";
+      }
+    });
     if (isTypingRef.current) { isTypingRef.current = false; emitTyping(sel.id, false); }
     pinToBottomRef.current = true;
     isNearBottomRef.current = true;
@@ -743,7 +928,7 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
       };
       setMsgs(prev => [...prev, newMsg]);
     }
-    requestAnimationFrame(() => forceScrollToBottom());
+    requestAnimationFrame(() => forceScrollToBottom("auto"));
   };
 
   const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -770,7 +955,7 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
         mediaUrl:url, mediaType:type, fileName:file.name, fileSize:file.size,
       }]);
     }
-    requestAnimationFrame(() => forceScrollToBottom());
+    requestAnimationFrame(() => forceScrollToBottom("auto"));
   };
 
   const commitEdit = async (id: number) => {
@@ -815,16 +1000,20 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
 
   const scrollTo = (id: number) => {
     const el = msgRefs.current.get(id);
-    if (el) { el.scrollIntoView({ behavior:"smooth", block:"center" }); el.animate([{boxShadow:"0 0 0 3px "+C.primary+"66"},{boxShadow:"0 0 0 0px transparent"}], { duration:800 }); }
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      el.animate([{ boxShadow: "0 0 0 3px " + C.primary + "66" }, { boxShadow: "0 0 0 0px transparent" }], { duration: 800 });
+      return;
+    }
+    const dataIndex = msgsRef.current.findIndex(m => m.id === id);
+    if (dataIndex >= 0) {
+      virtuosoRef.current?.scrollToIndex({
+        index: firstItemIndexRef.current + dataIndex,
+        align: "center",
+        behavior: "smooth",
+      });
+    }
   };
-
-  type MsgGroup = { user:string; self:boolean; time:string; items:ChatMsg[] };
-  const groups: MsgGroup[] = [];
-  for (const m of msgs) {
-    const last = groups[groups.length - 1];
-    if (last && last.user === m.user && last.time === m.time) { last.items.push(m); }
-    else groups.push({ user:m.user, self:m.self, time:m.time, items:[m] });
-  }
 
   const filteredContacts = contacts.filter(c => {
     if (listFilter === "dm-requests") return false;
@@ -857,7 +1046,18 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
         toast.success("Direct message request sent");
       }
     } catch (e) {
-      setNewDmError(e instanceof Error ? e.message : "Could not send request");
+      if (e instanceof ApiError && e.data?.conversationId != null) {
+        const convId = Number(e.data.conversationId);
+        const convs = await api.messages.conversations();
+        setContacts(convs.conversations as Contact[]);
+        const conv = convs.conversations.find(c => c.id === convId);
+        if (conv) setSel(conv as Contact);
+        setNewDmOpen(false);
+        setNewDmUsername("");
+        toast.success("Conversation opened");
+      } else {
+        setNewDmError(e instanceof Error ? e.message : "Could not send request");
+      }
     } finally {
       setNewDmLoading(false);
     }
@@ -968,12 +1168,7 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
         </div>
       )}
       {/* Image lightbox */}
-      {lightbox && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/90 backdrop-blur-sm" onClick={() => setLightbox(null)}>
-          <button onClick={() => setLightbox(null)} className="absolute top-4 right-4 w-10 h-10 flex items-center justify-center rounded-full text-white hover:bg-white/10 transition-colors z-10" style={{ color:"white" }}><CloseIcon style={{ fontSize:24 }} /></button>
-          <img src={lightbox} alt="Preview" className="max-w-[90vw] max-h-[90vh] object-contain rounded-xl shadow-2xl" onClick={e => e.stopPropagation()} />
-        </div>
-      )}
+      {lightbox && <ImageLightbox src={lightbox} onClose={() => setLightbox(null)} />}
       {/* Right-click context menu */}
       {ctxMenu && (
         <div className="fixed z-50 rounded-2xl border shadow-xl overflow-hidden" style={{ top:ctxMenu.y, left:ctxMenu.x, background:C.surface, borderColor:C.outlineVar, minWidth:"13rem" }} onClick={e => e.stopPropagation()}>
@@ -1175,113 +1370,197 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
           </div>
         )}
         {/* Message list */}
-        <div className="flex-1 relative min-h-0 flex flex-col" style={{ background:C.surfaceVar }}>
-          <div
-            ref={messagesContainerRef}
-            className="flex-1 overflow-y-auto px-5 py-5"
-            style={{ scrollBehavior: "auto", overflowAnchor: "none" }}
-            onClick={closeAll}
-            onScroll={handleMessagesScroll}
-          >
-            <div ref={messagesContentRef}>
-            <div className="flex flex-col items-center justify-center min-h-[28px] mb-3 gap-1" style={{ overflowAnchor: "none" }}>
-              {loadingOlder ? (
-                <CircularProgress size={18} thickness={4} style={{ color: C.primary }} />
-              ) : !hasMoreHistory && msgs.length > 0 ? (
-                <span className="text-[11px]" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>Beginning of conversation</span>
-              ) : null}
-            </div>
-            <div className="text-center mb-4"><span className="text-xs px-3 py-1 rounded-full" style={{ background:C.surface, color:C.onSurfaceVar, fontFamily:"Roboto", boxShadow:SH1 }}>Today</span></div>
-            <div className="space-y-3">
-              {groups.map((grp) => (
-                <div key={`${grp.items[0]?.id ?? 0}-${grp.user}-${grp.time}`} className={`flex gap-2.5 ${grp.self?"flex-row-reverse":""}`} style={{ overflowAnchor: "auto" }}>
-                  {!grp.self ? (
-                    <ChatAvatar name={grp.user} avatarUrl={grp.items[0]?.avatarUrl} size={32} className="self-end" />
-                  ) : <div className="w-8 shrink-0" />}
-                  <div className={`flex flex-col gap-1 max-w-xs lg:max-w-md ${grp.self?"items-end":"items-start"}`}>
-                    <span className="text-[11px] mb-0.5 mx-1 flex items-center gap-2" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>
-                      <span style={{ fontFamily:"Roboto Mono,monospace" }}>{grp.time}</span>
-                      {!grp.self && <span>{grp.user}</span>}
-                    </span>
-                    {grp.items.map(m => (
-                      <div key={m.id} ref={el => { if(el) msgRefs.current.set(m.id,el); else msgRefs.current.delete(m.id); }}
-                        className="relative"
-                        onMouseEnter={() => setHoveredMsgId(m.id)} onMouseLeave={() => { setHoveredMsgId(null); }}>
-                        {/* Hover action bar — always on right side */}
-                        {hoveredMsgId === m.id && (
-                          <div className="absolute -top-8 right-0 flex items-center gap-0.5 px-1.5 py-1 rounded-full shadow-lg z-20" style={{ background:C.surface, border:`1px solid ${C.outlineVar}` }}>
-                            {/* Reaction picker button */}
-                            <div className="relative">
-                              <button title="React" onClick={e => { e.stopPropagation(); setReactionPickerMsgId(rp => rp===m.id?null:m.id); }} className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-black/8 transition-colors text-sm" style={{ color:C.onSurfaceVar }}>😊</button>
-                              {reactionPickerMsgId === m.id && (
-                                <div className="absolute bottom-full mb-1 right-0 flex gap-1 px-2 py-1.5 rounded-full shadow-lg" style={{ background:C.surface, border:`1px solid ${C.outlineVar}` }} onClick={e => e.stopPropagation()}>
-                                  {QUICK_REACTIONS.map(emoji => (
-                                    <button key={emoji} onClick={() => addReaction(m.id, emoji)} className="text-lg hover:scale-125 transition-transform w-7 h-7 flex items-center justify-center rounded-full hover:bg-black/8">{emoji}</button>
+        <div className="flex-1 relative min-h-0 min-w-0 flex flex-col overflow-hidden" style={{ background:C.surfaceVar }} onClick={closeAll}>
+          {threadReady && msgs.length > 0 ? (
+            <Virtuoso
+              key={`${sel.id}-${threadBootId}`}
+              ref={virtuosoRef}
+              className="flex-1 px-5 min-w-0"
+              style={{ height: "100%", overflowX: "hidden" }}
+              data={msgs}
+              firstItemIndex={firstItemIndex}
+              initialTopMostItemIndex={initialScrollIndex ?? msgs.length - 1}
+              increaseViewportBy={{ top: 600, bottom: 600 }}
+              defaultItemHeight={72}
+              followOutput={() => (pinToBottomRef.current ? "auto" : false)}
+              startReached={() => {
+                if (!restoringRef.current && hasMoreRef.current && !loadingOlderRef.current) {
+                  void loadOlderMessages();
+                }
+              }}
+              atBottomStateChange={(atBottom) => {
+                if (restoringRef.current) return;
+                isNearBottomRef.current = atBottom;
+                pinToBottomRef.current = atBottom;
+                setShowJumpBtn(!atBottom && sel.id > 0);
+                if (atBottom) {
+                  setUnreadBelow(0);
+                  if (sel.id && msgsRef.current.length) {
+                    const newest = msgsRef.current[msgsRef.current.length - 1].id;
+                    setLastReadMessageId(newest);
+                    api.messages.markRead(sel.id).then(() => refreshContacts()).catch(() => {});
+                  }
+                }
+              }}
+              rangeChanged={(range) => {
+                visibleStartDataIndexRef.current = Math.max(0, range.startIndex - firstItemIndexRef.current);
+              }}
+              components={{
+                Header: () => (
+                  <div className="flex flex-col items-center justify-center min-h-[28px] py-3 gap-1">
+                    {loadingOlder ? (
+                      <CircularProgress size={18} thickness={4} style={{ color: C.primary }} />
+                    ) : !hasMoreHistory ? (
+                      <span className="text-[11px]" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>Beginning of conversation</span>
+                    ) : (
+                      <span className="text-[11px] opacity-50" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>Scroll for older messages</span>
+                    )}
+                  </div>
+                ),
+                Footer: () => (
+                  <div className="pb-3">
+                    {typingLabel() && (
+                      <p className="text-xs px-2 py-1 italic" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>{typingLabel()}</p>
+                    )}
+                  </div>
+                ),
+              }}
+              itemContent={(absoluteIndex, m) => {
+                const dataIndex = absoluteIndex - firstItemIndex;
+                const prev = dataIndex > 0 ? msgs[dataIndex - 1] : undefined;
+                const showHeader = !prev || prev.user !== m.user || prev.time !== m.time;
+                const showUnreadDivider = !!(
+                  lastReadMessageId
+                  && !m.self
+                  && m.id > lastReadMessageId
+                  && (!prev || prev.id <= lastReadMessageId || prev.self)
+                );
+                return (
+                  <div className="pb-3 min-w-0 max-w-full">
+                    {showUnreadDivider && (
+                      <div className="flex items-center gap-3 my-3">
+                        <div className="flex-1 h-px" style={{ background: C.error }} />
+                        <span className="text-[10px] font-medium uppercase tracking-wider" style={{ color: C.error, fontFamily: "Roboto" }}>New</span>
+                        <div className="flex-1 h-px" style={{ background: C.error }} />
+                      </div>
+                    )}
+                    <div className={`flex gap-2.5 min-w-0 max-w-full ${m.self ? "flex-row-reverse" : ""}`}>
+                      {!m.self ? (
+                        showHeader
+                          ? <ChatAvatar name={m.user} avatarUrl={m.avatarUrl} size={32} className="self-end" />
+                          : <div className="w-8 shrink-0" />
+                      ) : <div className="w-8 shrink-0" />}
+                      <div className={`flex flex-col gap-1 min-w-0 max-w-[min(100%,20rem)] lg:max-w-md ${m.self ? "items-end" : "items-start"}`}>
+                        {showHeader && (
+                          <span className="text-[11px] mb-0.5 mx-1 flex items-center gap-2" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
+                            <span style={{ fontFamily: "Roboto Mono,monospace" }}>{m.time}</span>
+                            {!m.self && <span>{m.user}</span>}
+                          </span>
+                        )}
+                        <div
+                          ref={el => { if (el) msgRefs.current.set(m.id, el); else msgRefs.current.delete(m.id); }}
+                          className="relative min-w-0 max-w-full"
+                          onMouseEnter={() => setHoveredMsgId(m.id)}
+                          onMouseLeave={() => setHoveredMsgId(null)}
+                        >
+                          {hoveredMsgId === m.id && (
+                            <div className="absolute -top-8 right-0 flex items-center gap-0.5 px-1.5 py-1 rounded-full shadow-lg z-20" style={{ background: C.surface, border: `1px solid ${C.outlineVar}` }}>
+                              <div className="relative">
+                                <button title="React" onClick={e => { e.stopPropagation(); setReactionPickerMsgId(rp => rp === m.id ? null : m.id); }} className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-black/8 transition-colors text-sm" style={{ color: C.onSurfaceVar }}>😊</button>
+                                {reactionPickerMsgId === m.id && (
+                                  <div className="absolute bottom-full mb-1 right-0 flex gap-1 px-2 py-1.5 rounded-full shadow-lg" style={{ background: C.surface, border: `1px solid ${C.outlineVar}` }} onClick={e => e.stopPropagation()}>
+                                    {QUICK_REACTIONS.map(emoji => (
+                                      <button key={emoji} onClick={() => addReaction(m.id, emoji)} className="text-lg hover:scale-125 transition-transform w-7 h-7 flex items-center justify-center rounded-full hover:bg-black/8">{emoji}</button>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                              <button title="Reply" onClick={e => { e.stopPropagation(); setReplyingTo(m); }} className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-black/8 transition-colors" style={{ color: C.onSurfaceVar }}><ReplyIcon style={{ fontSize: 14 }} /></button>
+                              {m.self && editingId !== m.id && (
+                                <button title="Edit" onClick={e => { e.stopPropagation(); setEditingId(m.id); setEditText(m.msg); }} className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-black/8 transition-colors" style={{ color: C.onSurfaceVar }}><EditIcon style={{ fontSize: 14 }} /></button>
+                              )}
+                              {m.self && (
+                                <button title="Delete" onClick={e => { e.stopPropagation(); askConfirm("Delete Message", "Delete this message permanently?", () => deleteMsg(m.id)); }} className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-black/8 transition-colors" style={{ color: C.error }}><DeleteIcon style={{ fontSize: 14 }} /></button>
+                              )}
+                              {!m.self && (
+                                <button title="Report" onClick={e => { e.stopPropagation(); askConfirm("Report Message", "Report this message for inappropriate content?", () => { api.messages.report({ messageId: m.id }).catch(() => {}); }); }} className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-black/8 transition-colors" style={{ color: C.error }}><FlagIcon style={{ fontSize: 14 }} /></button>
+                              )}
+                            </div>
+                          )}
+                          {editingId === m.id ? (
+                            <div className="flex items-center gap-2 px-3 py-2 rounded-2xl border min-w-0 max-w-full" style={{ background: C.surfaceVar, borderColor: C.primary }}>
+                              <input autoFocus value={editText} onChange={e => setEditText(e.target.value)} onKeyDown={e => { if (e.key === "Enter") commitEdit(m.id); if (e.key === "Escape") setEditingId(null); }} className="flex-1 min-w-0 bg-transparent text-sm focus:outline-none" style={{ color: C.onSurface, fontFamily: "Roboto" }} />
+                              <button onClick={() => commitEdit(m.id)} className="w-6 h-6 flex items-center justify-center rounded-full text-white shrink-0" style={{ background: C.primary }}><CheckIcon style={{ fontSize: 12 }} /></button>
+                              <button onClick={() => setEditingId(null)} className="w-6 h-6 flex items-center justify-center rounded-full shrink-0" style={{ background: C.surfaceVar, color: C.onSurfaceVar }}><CloseIcon style={{ fontSize: 12 }} /></button>
+                            </div>
+                          ) : (
+                            <div>
+                              <MediaBubble msg={m} self={m.self} C={C} onScrollTo={scrollTo} onLightbox={setLightbox} />
+                              {m.reactions && Object.keys(m.reactions).length > 0 && (
+                                <div className={`flex flex-wrap gap-1 mt-1 ${m.self ? "justify-end" : "justify-start"}`}>
+                                  {Object.entries(m.reactions).map(([emoji, users]) => (
+                                    <button key={emoji} onClick={() => addReaction(m.id, emoji)} className="flex items-center gap-1 px-2 py-0.5 rounded-full text-xs border transition-all hover:scale-105" style={{ background: users.includes(String(currentUserId)) ? C.primaryCont : C.surface, borderColor: users.includes(String(currentUserId)) ? C.primary : C.outlineVar, color: C.onSurface, fontFamily: "Roboto" }}>
+                                      <span>{emoji}</span><span className="font-medium">{users.length}</span>
+                                    </button>
                                   ))}
                                 </div>
                               )}
                             </div>
-                            <button title="Reply" onClick={e => { e.stopPropagation(); setReplyingTo(m); }} className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-black/8 transition-colors" style={{ color:C.onSurfaceVar }}><ReplyIcon style={{ fontSize:14 }} /></button>
-                            {m.self && editingId !== m.id && (
-                              <button title="Edit" onClick={e => { e.stopPropagation(); setEditingId(m.id); setEditText(m.msg); }} className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-black/8 transition-colors" style={{ color:C.onSurfaceVar }}><EditIcon style={{ fontSize:14 }} /></button>
-                            )}
-                            {m.self && (
-                              <button title="Delete" onClick={e => { e.stopPropagation(); askConfirm("Delete Message","Delete this message permanently?", () => deleteMsg(m.id)); }} className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-black/8 transition-colors" style={{ color:C.error }}><DeleteIcon style={{ fontSize:14 }} /></button>
-                            )}
-                            {!m.self && (
-                              <button title="Report" onClick={e => { e.stopPropagation(); askConfirm("Report Message","Report this message for inappropriate content?", () => { api.messages.report({ messageId: m.id }).catch(() => {}); }); }} className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-black/8 transition-colors" style={{ color:C.error }}><FlagIcon style={{ fontSize:14 }} /></button>
-                            )}
-                          </div>
-                        )}
-                        {/* Edit mode */}
-                        {editingId === m.id ? (
-                          <div className="flex items-center gap-2 px-3 py-2 rounded-2xl border" style={{ background:C.surfaceVar, borderColor:C.primary }}>
-                            <input autoFocus value={editText} onChange={e => setEditText(e.target.value)} onKeyDown={e => { if(e.key==="Enter") commitEdit(m.id); if(e.key==="Escape") setEditingId(null); }} className="flex-1 bg-transparent text-sm focus:outline-none" style={{ color:C.onSurface, fontFamily:"Roboto", minWidth:"160px" }} />
-                            <button onClick={() => commitEdit(m.id)} className="w-6 h-6 flex items-center justify-center rounded-full text-white" style={{ background:C.primary }}><CheckIcon style={{ fontSize:12 }} /></button>
-                            <button onClick={() => setEditingId(null)} className="w-6 h-6 flex items-center justify-center rounded-full" style={{ background:C.surfaceVar, color:C.onSurfaceVar }}><CloseIcon style={{ fontSize:12 }} /></button>
-                          </div>
-                        ) : (
-                          <div>
-                            <MediaBubble msg={m} self={grp.self} C={C} onScrollTo={scrollTo} onLightbox={setLightbox} />
-                            {/* Reaction badges */}
-                            {m.reactions && Object.keys(m.reactions).length > 0 && (
-                              <div className={`flex flex-wrap gap-1 mt-1 ${grp.self?"justify-end":"justify-start"}`}>
-                                {Object.entries(m.reactions).map(([emoji, users]) => (
-                                  <button key={emoji} onClick={() => addReaction(m.id, emoji)} className="flex items-center gap-1 px-2 py-0.5 rounded-full text-xs border transition-all hover:scale-105" style={{ background: users.includes(String(currentUserId))?C.primaryCont:C.surface, borderColor: users.includes(String(currentUserId))?C.primary:C.outlineVar, color:C.onSurface, fontFamily:"Roboto" }}>
-                                    <span>{emoji}</span><span className="font-medium">{users.length}</span>
-                                  </button>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        )}
+                          )}
+                        </div>
                       </div>
-                    ))}
+                    </div>
                   </div>
-                </div>
-              ))}
-            </div>
-            <div ref={messagesEndRef} />
-            {typingLabel() && (
-              <p className="text-xs px-2 py-1 italic" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>{typingLabel()}</p>
-            )}
-            </div>
-          </div>
-          {showNewMsgBtn && (
-            <button
-              type="button"
-              onClick={() => {
-                pinToBottomRef.current = true;
-                forceScrollToBottom();
-                if (sel?.id) api.messages.markRead(sel.id).then(() => refreshContacts()).catch(() => {});
+                );
               }}
-              className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-1.5 px-4 py-2 rounded-full text-sm font-medium text-white shadow-lg hover:opacity-95 transition-all focus-visible:outline-none focus-visible:ring-2"
-              style={{ background: C.primary, fontFamily: "Roboto", boxShadow: SH1 }}
-              aria-label="Jump to new messages"
+            />
+          ) : threadReady ? (
+            <div className="flex-1 flex items-center justify-center px-6">
+              <p className="text-sm text-center" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
+                {sel.id > 0 ? "No messages yet — say hello!" : "Select a conversation"}
+              </p>
+            </div>
+          ) : (
+            <div className="flex-1 flex items-center justify-center">
+              <CircularProgress size={28} thickness={4} style={{ color: C.primary }} />
+            </div>
+          )}
+          {showJumpBtn && sel.id > 0 && (
+            <div
+              className="absolute z-20 transition-all duration-200 ease-out animate-in fade-in zoom-in-95"
+              style={{ right: 28, bottom: 28 }}
             >
-              New Messages
-              <KeyboardArrowDownIcon style={{ fontSize: 18 }} />
-            </button>
+              <Badge
+                badgeContent={unreadBelow > 0 ? (unreadBelow > 99 ? "99+" : unreadBelow) : 0}
+                color="error"
+                overlap="circular"
+                invisible={unreadBelow <= 0}
+              >
+                <button
+                  type="button"
+                  onClick={() => {
+                    pinToBottomRef.current = true;
+                    forceScrollToBottom("smooth");
+                    if (sel?.id) {
+                      api.messages.markRead(sel.id).then(() => refreshContacts()).catch(() => {});
+                      if (msgsRef.current.length) setLastReadMessageId(msgsRef.current[msgsRef.current.length - 1].id);
+                    }
+                    setUnreadBelow(0);
+                    setShowJumpBtn(false);
+                  }}
+                  className="w-12 h-12 rounded-full flex items-center justify-center hover:opacity-95 focus-visible:outline-none focus-visible:ring-2 transition-transform hover:scale-105"
+                  style={{
+                    background: C.bg === "#FFFBFE" ? "#1C1B1F" : "#FFFFFF",
+                    color: C.bg === "#FFFBFE" ? "#FFFFFF" : "#1C1B1F",
+                    boxShadow: SH1,
+                  }}
+                  aria-label="Jump to latest message"
+                  title="Jump to latest"
+                >
+                  <KeyboardArrowDownIcon style={{ fontSize: 26, color: "inherit" }} />
+                </button>
+              </Badge>
+            </div>
           )}
         </div>
         {/* Input bar */}
@@ -1308,12 +1587,12 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
                 </div>
                 {emojiTab === "emoji" ? (
                   <div className="p-3 grid grid-cols-8 gap-1 max-h-52 overflow-y-auto">
-                    {EMOJI_LIST.map(e => <button key={e} onClick={() => setInput(i => i + e)} className="text-xl w-8 h-8 flex items-center justify-center rounded-lg hover:scale-125 transition-transform">{e}</button>)}
+                    {EMOJI_LIST.map(e => <button key={e} onClick={() => { setInput(i => i + e); requestAnimationFrame(adjustComposerHeight); }} className="text-xl w-8 h-8 flex items-center justify-center rounded-lg hover:scale-125 transition-transform">{e}</button>)}
                   </div>
                 ) : (
                   <div className="p-3 grid grid-cols-2 gap-2 max-h-52 overflow-y-auto">
                     {GIF_LIST.map(g => (
-                      <button key={g.label} onClick={() => { setMsgs(prev => [...prev, { id:Date.now(), user:"You", msg:"", time:nowTime(), self:true, mediaUrl:g.url, mediaType:"gif" }]); setEmojiOpen(false); pinToBottomRef.current = true; requestAnimationFrame(() => forceScrollToBottom()); }} className="rounded-xl overflow-hidden border hover:opacity-80 transition-opacity" style={{ borderColor:C.outlineVar }}>
+                      <button key={g.label} onClick={() => { setMsgs(prev => [...prev, { id:Date.now(), user:"You", msg:"", time:nowTime(), self:true, mediaUrl:g.url, mediaType:"gif" }]); setEmojiOpen(false); pinToBottomRef.current = true; requestAnimationFrame(() => forceScrollToBottom("auto")); }} className="rounded-xl overflow-hidden border hover:opacity-80 transition-opacity" style={{ borderColor:C.outlineVar }}>
                         <img src={g.url} alt={g.label} className="w-full h-16 object-cover" />
                         <p className="text-[10px] py-1 text-center" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>{g.label}</p>
                       </button>
@@ -1324,20 +1603,38 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
             )}
             <input ref={fileRef} type="file" className="hidden" onChange={handleFile} />
             <div
-              className="flex items-center gap-2 rounded-full border px-4 py-2.5 cursor-text"
+              className="flex items-center gap-2 rounded-[24px] border px-4 py-2.5 cursor-text"
               style={{ borderColor:C.outlineVar }}
               onMouseDown={e => {
                 const target = e.target as HTMLElement;
-                if (target.closest("button") || target.closest("a") || target.tagName === "INPUT") return;
+                if (target.closest("button") || target.closest("a") || target.tagName === "TEXTAREA") return;
                 if (settingsOpen || newDmOpen || confirm || emojiOpen) return;
                 e.preventDefault();
                 inputRef.current?.focus();
               }}
             >
-              <button onClick={() => fileRef.current?.click()} style={{ color:C.onSurfaceVar }} title="Attach any file"><AttachFileIcon style={{ fontSize:20 }} /></button>
-              <input ref={inputRef} value={input} onChange={e => handleInputChange(e.target.value)} onKeyDown={e => e.key==="Enter"&&send()} placeholder={`Message ${sel.name}...`} className="flex-1 bg-transparent text-sm focus:outline-none" style={{ color:C.onSurface, fontFamily:"Roboto" }} onClick={() => setEmojiOpen(false)} />
-              <button ref={emojiBtnRef} onClick={e => { e.stopPropagation(); setEmojiOpen(o => !o); }} style={{ color:emojiOpen?C.primary:C.onSurfaceVar }} title="Emoji / GIF"><EmojiEmotionsIcon style={{ fontSize:20 }} /></button>
-              <button onClick={() => send()} className="w-8 h-8 rounded-full flex items-center justify-center ml-1 text-white hover:opacity-90" style={{ background:C.primary }}><SendIcon style={{ fontSize:16 }} /></button>
+              <button type="button" className="shrink-0 self-center" onClick={() => fileRef.current?.click()} style={{ color:C.onSurfaceVar }} title="Attach any file"><AttachFileIcon style={{ fontSize:20 }} /></button>
+              <textarea
+                ref={inputRef}
+                rows={1}
+                value={input}
+                onChange={e => { handleInputChange(e.target.value); requestAnimationFrame(adjustComposerHeight); }}
+                onKeyDown={e => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    void send();
+                  } else if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+                    e.preventDefault();
+                    void send();
+                  }
+                }}
+                placeholder={`Message ${sel.name}...`}
+                className="flex-1 min-w-0 bg-transparent text-sm focus:outline-none resize-none leading-5 py-0.5"
+                style={{ color:C.onSurface, fontFamily:"Roboto", maxHeight: COMPOSER_MAX_HEIGHT, overflowY: "auto" }}
+                onClick={() => setEmojiOpen(false)}
+              />
+              <button type="button" ref={emojiBtnRef} className="shrink-0 self-center" onClick={e => { e.stopPropagation(); setEmojiOpen(o => !o); }} style={{ color:emojiOpen?C.primary:C.onSurfaceVar }} title="Emoji / GIF"><EmojiEmotionsIcon style={{ fontSize:20 }} /></button>
+              <button type="button" onClick={() => send()} className="w-8 h-8 rounded-full flex items-center justify-center ml-1 text-white hover:opacity-90 shrink-0 self-center" style={{ background:C.primary }}><SendIcon style={{ fontSize:16 }} /></button>
             </div>
           </div>
         </div>

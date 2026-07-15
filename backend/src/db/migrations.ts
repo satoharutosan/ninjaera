@@ -40,6 +40,8 @@ export function runMigrations() {
   addColumn("users", "last_login_at", "TEXT");
 
   addColumn("conversation_participants", "last_read_at", "TEXT");
+  /** One-time: user has baselined channel last-read to newest historical messages. */
+  addColumn("users", "channel_reads_initialized", "INTEGER DEFAULT 0");
   addColumn("game_stats", "global_rank", "INTEGER DEFAULT 0");
   addColumn("team_members", "user_id", "INTEGER REFERENCES users(id) ON DELETE CASCADE");
 

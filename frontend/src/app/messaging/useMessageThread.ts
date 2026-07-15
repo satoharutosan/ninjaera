@@ -3,6 +3,7 @@ import { api, type ApiMessage } from "@/app/api";
 import {
   getConversationReadState,
   markConversationOpened,
+  ensureFirstOpenReadBaseline,
 } from "@/app/conversationState";
 import { joinConversation } from "@/app/realtime";
 import { messageCache } from "./messageCache";
@@ -125,9 +126,11 @@ export function useMessageThread({
       if (!shouldRestore && messageCache.hasNewestWindow(conversationId)) {
         msgPerf.cacheHit(conversationId);
         if (gen !== loadGenRef.current) return;
+        const newestId = cached.messages[cached.messages.length - 1]?.id ?? null;
+        ensureFirstOpenReadBaseline(currentUserId, conversationId, newestId);
         bootThread(cached.messages, cached, {
           pinBottom: true,
-          lastReadId: saved?.lastReadMessageId ?? cached.messages[cached.messages.length - 1]?.id ?? null,
+          lastReadId: saved?.lastReadMessageId ?? newestId,
         });
         msgPerf.markOpenReady(conversationId, "cache");
         // Still mark read on server without waiting
@@ -158,16 +161,31 @@ export function useMessageThread({
       };
       messageCache.setWindow(conversationId, mapped, flags, "merge");
 
+      const newestId = mapped[mapped.length - 1]?.id ?? null;
+      if (!shouldRestore) {
+        ensureFirstOpenReadBaseline(currentUserId, conversationId, newestId);
+      }
+
       const anchorId = shouldRestore ? saved!.anchorMessageId : null;
       const found = anchorId != null && mapped.some(m => m.id === anchorId);
+      const effectiveLastRead = shouldRestore
+        ? (saved?.lastReadMessageId ?? null)
+        : (saved?.lastReadMessageId ?? newestId);
       bootThread(mapped, flags, {
         scrollToId: found ? anchorId : null,
         pinBottom: !found,
-        lastReadId: saved?.lastReadMessageId ?? null,
+        lastReadId: effectiveLastRead,
         showJump: found,
       });
       msgPerf.markOpenReady(conversationId, "network");
       onContactsRefresh?.();
+      if (!found) {
+        // Ensure first paint lands on newest even if Virtuoso mounts mid-paint
+        requestAnimationFrame(() => {
+          pinToBottomRef.current = true;
+          isNearBottomRef.current = true;
+        });
+      }
     } catch {
       if (gen !== loadGenRef.current) return;
       bootThread([], { hasMoreOlder: false, hasMoreNewer: false }, { pinBottom: true });

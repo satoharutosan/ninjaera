@@ -5,7 +5,7 @@ import fs from "fs";
 import { db } from "../db/index.js";
 import { requireAuth, timeAgo, formatTime } from "../middleware/auth.js";
 import { isUserOnline } from "../services/presence.js";
-import { userCanAccessChannel } from "../services/channels.js";
+import { initializeChannelReadsForUser, userCanAccessChannel } from "../services/channels.js";
 import {
   emitMessageToParticipants, emitConversationUpdate, emitToUser, scheduleAdminStatsRefresh,
 } from "../services/realtime.js";
@@ -290,6 +290,9 @@ function formatConversation(conv: {
 
 router.get("/conversations", requireAuth, (req, res) => {
   const userId = req.user!.id;
+  // First Messages visit: treat all existing channel history as already read (once per user).
+  initializeChannelReadsForUser(userId);
+
   const convs = db.prepare(`
     SELECT c.* FROM conversations c
     JOIN conversation_participants cp ON cp.conversation_id = c.id

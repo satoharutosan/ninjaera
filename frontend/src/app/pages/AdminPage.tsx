@@ -33,6 +33,7 @@ import {
 import { toast } from "sonner";
 import {
   Page, useC, SH1, SH2, FilledBtn, OutlinedBtn, TonalBtn, Field, Chip, FlagImg,
+  BADGE_BG,
 } from "@/app/shared";
 import { formatCountryDisplay, maskIp } from "@/app/countryIso";
 import {
@@ -233,6 +234,18 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
       });
   }, [setPage]);
 
+  // Keep sidebar badge counts fresh regardless of active section.
+  useEffect(() => {
+    if (!authorized) return;
+    api.admin.stats().then(setStats).catch(() => {});
+  }, [authorized]);
+
+  const sidebarBadge = (id: Section): number => {
+    if (id === "contacts") return stats.unreadContacts || 0;
+    if (id === "applications") return stats.pendingApplications || 0;
+    return 0;
+  };
+
   const loadSection = useCallback(async (opts?: { quiet?: boolean }) => {
     if (!authorized) return;
     const quiet = !!opts?.quiet;
@@ -376,6 +389,8 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
       const r = await api.admin.getContact(id);
       setSelectedContact(r.contact);
       setContactReply("");
+      // Viewing a ticket marks it read — refresh sidebar badge promptly
+      api.admin.stats().then(setStats).catch(() => {});
       loadSection();
     } catch (e) {
       toast.error(e instanceof ApiError ? e.message : "Failed to load contact");
@@ -416,6 +431,7 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
       await action();
       toast.success(successMsg);
       loadSection();
+      api.admin.stats().then(setStats).catch(() => {});
       setEditUser(null);
     } catch (e) {
       toast.error(e instanceof ApiError ? e.message : "Action failed");
@@ -433,7 +449,7 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
   if (!authorized) return null;
 
   return (
-    <div className="min-h-screen pt-16 flex" style={{ background: C.bg }}>
+    <div className="h-[calc(100vh-4rem)] mt-16 flex overflow-hidden" style={{ background: C.bg }}>
       {confirm && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4" onClick={() => setConfirm(null)}>
           <div className="rounded-3xl p-6 w-full max-w-sm" style={{ background: C.surface }} onClick={e => e.stopPropagation()}>
@@ -447,15 +463,20 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
         </div>
       )}
 
-      {/* Sidebar */}
-      <aside className="w-64 border-r shrink-0 hidden md:flex flex-col" style={{ background: C.surface, borderColor: C.outlineVar, boxShadow: SH1 }}>
-        <div className="p-5 border-b" style={{ borderColor: C.outlineVar }}>
+      {/* Sidebar — fixed height viewport; independent scroll for long section lists */}
+      <aside
+        className="w-64 border-r shrink-0 hidden md:flex flex-col h-full overflow-y-auto z-20"
+        style={{ background: C.surface, borderColor: C.outlineVar, boxShadow: SH1 }}
+      >
+        <div className="p-5 border-b shrink-0" style={{ borderColor: C.outlineVar }}>
           <h2 className="font-medium text-lg flex items-center gap-2" style={{ color: C.onSurface, fontFamily: "Roboto" }}>
             <VpnKeyIcon style={{ fontSize: 20, color: C.primary }} /> Administration
           </h2>
         </div>
         <nav className="flex-1 p-3 space-y-1">
-          {SECTIONS.map(s => (
+          {SECTIONS.map(s => {
+            const count = sidebarBadge(s.id);
+            return (
             <button key={s.id} onClick={() => setSection(s.id)}
               className="w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium transition-all text-left"
               style={{
@@ -463,26 +484,48 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                 color: section === s.id ? C.primary : C.onSurfaceVar,
                 fontFamily: "Roboto",
               }}>
-              <s.Icon style={{ fontSize: 18 }} />{s.label}
+              <s.Icon style={{ fontSize: 18 }} />
+              <span className="flex-1 min-w-0 truncate">{s.label}</span>
+              {count > 0 && (
+                <span
+                  className="shrink-0 min-w-[18px] h-[18px] px-1 rounded-full text-white text-[10px] font-bold flex items-center justify-center leading-none"
+                  style={{ background: BADGE_BG }}
+                  aria-label={`${count} pending`}
+                >
+                  {count > 99 ? "99+" : count}
+                </span>
+              )}
             </button>
-          ))}
+            );
+          })}
         </nav>
       </aside>
 
       {/* Mobile section tabs */}
       <div className="md:hidden fixed top-16 left-0 right-0 z-40 overflow-x-auto border-b" style={{ background: C.surface, borderColor: C.outlineVar }}>
         <div className="flex gap-1 p-2">
-          {SECTIONS.map(s => (
-            <button key={s.id} onClick={() => setSection(s.id)} className="px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap"
+          {SECTIONS.map(s => {
+            const count = sidebarBadge(s.id);
+            return (
+            <button key={s.id} onClick={() => setSection(s.id)} className="relative px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap"
               style={{ background: section === s.id ? C.primary : C.surfaceVar, color: section === s.id ? "white" : C.onSurfaceVar, fontFamily: "Roboto" }}>
               {s.label}
+              {count > 0 && (
+                <span
+                  className="absolute -top-1 -right-1 min-w-[14px] h-3.5 px-0.5 rounded-full text-white text-[8px] font-bold flex items-center justify-center leading-none"
+                  style={{ background: BADGE_BG }}
+                >
+                  {count > 99 ? "99+" : count}
+                </span>
+              )}
             </button>
-          ))}
+            );
+          })}
         </div>
       </div>
 
-      {/* Main content */}
-      <main className="flex-1 p-4 md:p-8 mt-12 md:mt-0 overflow-y-auto">
+      {/* Main content — sole vertical scroll region */}
+      <main className="flex-1 min-w-0 min-h-0 p-4 md:p-8 mt-12 md:mt-0 overflow-y-auto overscroll-contain">
         {loading ? (
           <div className="space-y-4 py-4" aria-busy="true" aria-label="Loading">
             <div className="h-8 w-48 rounded-lg animate-pulse" style={{ background: C.surfaceVar }} />

@@ -62,3 +62,23 @@ export function markConversationOpened(userId: number, conversationId: number) {
     lastOpenedAt: Date.now(),
   });
 }
+
+/**
+ * First open of a channel with no local read state: pin to newest and treat
+ * the current window as already read (no historical "New" separator).
+ */
+export function ensureFirstOpenReadBaseline(
+  userId: number,
+  conversationId: number,
+  newestMessageId: number | null,
+) {
+  if (!userId || !conversationId || newestMessageId == null) return;
+  const prev = getConversationReadState(userId, conversationId);
+  if (prev?.lastReadMessageId != null) return;
+  saveConversationReadState(userId, conversationId, {
+    anchorMessageId: newestMessageId,
+    atBottom: true,
+    lastReadMessageId: newestMessageId,
+    lastOpenedAt: Date.now(),
+  });
+}

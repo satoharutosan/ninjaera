@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback, useRef, lazy, Suspense } from "react";
+import { useState, useEffect, useCallback, useRef, type ReactNode } from "react";
 import { toast, Toaster } from "sonner";
+import Badge from "@mui/material/Badge";
 
 // MUI Icons (Navbar & Footer)
 import HomeIcon from "@mui/icons-material/Home";
@@ -24,7 +25,6 @@ import AdminPanelSettingsIcon from "@mui/icons-material/AdminPanelSettings";
 import LogoutIcon from "@mui/icons-material/Logout";
 import PersonIcon from "@mui/icons-material/Person";
 import ChatBubbleIcon from "@mui/icons-material/ChatBubble";
-import CircularProgress from "@mui/material/CircularProgress";
 
 import {
   Page, AppSettings, Contact,
@@ -38,31 +38,60 @@ import { appPerf } from "@/app/perf";
 import { pageFromLocation, setPageInLocation } from "@/app/routing";
 import { api, setToken, ApiError, type ApiUser, type ApiNotification } from "@/app/api";
 import { SOCIAL_LINKS, isSocialUrlConfigured, type SocialPlatform } from "@/app/socialLinks";
+import { SECTION_IDS, scrollToSection, scrollToSectionWhenReady } from "@/app/scrollToSection";
 
-/** Page fallback while a route chunk loads. */
-function RouteFallback() {
-  return (
-    <div className="flex-1 flex items-center justify-center min-h-[40vh]">
-      <CircularProgress size={28} />
-    </div>
-  );
-}
-
-// Keep first-paint routes eager; defer everything else until navigation.
+// Eager page imports — avoids Suspense flash on route changes (native-feeling navigation).
 import HomePage from "@/app/pages/HomePage";
 import LoginPage from "@/app/pages/LoginPage";
 import OAuthCallbackPage from "@/app/pages/OAuthCallbackPage";
+import AboutPage from "@/app/pages/AboutPage";
+import ResourcesPage from "@/app/pages/ResourcesPage";
+import TeamworkPage from "@/app/pages/TeamworkPage";
+import ContactPage from "@/app/pages/ContactPage";
+import AlarmsPage from "@/app/pages/AlarmsPage";
+import SignUpPage from "@/app/pages/SignUpPage";
+import ProfilePage from "@/app/pages/ProfilePage";
+import TermsOfServicePage from "@/app/pages/TermsOfServicePage";
+import MessagesPage from "@/app/pages/MessagesPage";
+import AdminPage from "@/app/pages/AdminPage";
+import HelpCenterPage from "@/app/pages/HelpCenterPage";
+import BugReportsPage from "@/app/pages/BugReportsPage";
+import ServerStatusPage from "@/app/pages/ServerStatusPage";
+import PatchNotesPage from "@/app/pages/PatchNotesPage";
 
-const AboutPage = lazy(() => import("@/app/pages/AboutPage"));
-const ResourcesPage = lazy(() => import("@/app/pages/ResourcesPage"));
-const TeamworkPage = lazy(() => import("@/app/pages/TeamworkPage"));
-const ContactPage = lazy(() => import("@/app/pages/ContactPage"));
-const AlarmsPage = lazy(() => import("@/app/pages/AlarmsPage"));
-const SignUpPage = lazy(() => import("@/app/pages/SignUpPage"));
-const ProfilePage = lazy(() => import("@/app/pages/ProfilePage"));
-const TermsOfServicePage = lazy(() => import("@/app/pages/TermsOfServicePage"));
-const MessagesPage = lazy(() => import("@/app/pages/MessagesPage"));
-const AdminPage = lazy(() => import("@/app/pages/AdminPage"));
+function NavIconBadge({
+  badgeContent,
+  children,
+  max = 99,
+}: {
+  badgeContent: number;
+  children: ReactNode;
+  max?: number;
+}) {
+  return (
+    <Badge
+      badgeContent={badgeContent}
+      max={max}
+      invisible={badgeContent <= 0}
+      color="error"
+      overlap="circular"
+      anchorOrigin={{ vertical: "top", horizontal: "right" }}
+      sx={{
+        "& .MuiBadge-badge": {
+          backgroundColor: BADGE_BG,
+          color: "#fff",
+          fontSize: "0.55rem",
+          fontWeight: 700,
+          minWidth: 14,
+          height: 14,
+          padding: "0 3px",
+        },
+      }}
+    >
+      <span className="inline-flex leading-none">{children}</span>
+    </Badge>
+  );
+}
 
 // ── NAVBAR ───────────────────────────────────────────────────────────────────
 function Navbar({ page, setPage, isDark, setIsDark, loggedIn, user, userAvatar, notifs, setNotifs, msgUnread, dmRequestCount, isAdmin, onLogout }: {
@@ -159,15 +188,12 @@ function Navbar({ page, setPage, isDark, setIsDark, loggedIn, user, userAvatar, 
               aria-haspopup="true"
               aria-expanded={notifOpen}
               aria-label={`Notifications${unreadCount > 0 ? ` (${unreadCount} unread)` : ""}`}
-              className="w-10 h-10 rounded-full flex items-center justify-center relative hover:bg-black/5 transition-colors"
+              className="w-10 h-10 rounded-full flex items-center justify-center hover:bg-black/5 transition-colors"
               style={{ color: notifOpen ? C.primary : C.onSurfaceVar }}
             >
-              <NotificationsIcon style={{ fontSize:20 }} />
-              {unreadCount > 0 && (
-                <span className="absolute top-1.5 right-1.5 min-w-[14px] h-3.5 px-0.5 rounded-full flex items-center justify-center text-[8px] font-bold text-white leading-none" style={{ background: BADGE_BG }}>
-                  {unreadCount > 99 ? "99+" : unreadCount}
-                </span>
-              )}
+              <NavIconBadge badgeContent={unreadCount}>
+                <NotificationsIcon style={{ fontSize:20 }} />
+              </NavIconBadge>
             </button>
             {notifOpen && (
               <div
@@ -210,10 +236,11 @@ function Navbar({ page, setPage, isDark, setIsDark, loggedIn, user, userAvatar, 
                 </button>
               )}
               <button onClick={() => go("messages")} className="relative flex items-center justify-center hover:bg-[#6750A4]/8 rounded-full transition-colors" style={{ padding: showLabels ? "8px 16px" : "8px", gap: showLabels ? "6px" : 0, color:C.primary, fontFamily:"Roboto", fontSize:"0.875rem", fontWeight:500 }}>
-                <ChatBubbleIcon style={{ fontSize:18 }} />
+                <NavIconBadge badgeContent={msgUnread} max={9}>
+                  <ChatBubbleIcon style={{ fontSize:18 }} />
+                </NavIconBadge>
                 {showLabels && "Messages"}
-                {msgUnread > 0 && <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-0.5 rounded-full text-white text-[9px] flex items-center justify-center font-bold" style={{ background: BADGE_BG }}>{msgUnread > 9 ? "9+" : msgUnread}</span>}
-                {dmRequestCount > 0 && <span className="absolute -bottom-0.5 -right-0.5 min-w-[14px] h-3.5 px-0.5 rounded-full text-white text-[8px] flex items-center justify-center font-bold" style={{ background: BADGE_BG }}>{dmRequestCount}</span>}
+                {dmRequestCount > 0 && <span className="absolute bottom-0.5 right-0.5 min-w-[14px] h-3.5 px-0.5 rounded-full text-white text-[8px] flex items-center justify-center font-bold" style={{ background: BADGE_BG }}>{dmRequestCount}</span>}
               </button>
               <button
                 ref={avatarBtnRef}
@@ -273,15 +300,12 @@ function Navbar({ page, setPage, isDark, setIsDark, loggedIn, user, userAvatar, 
                 type="button"
                 onClick={() => go("alarms")}
                 aria-label={`Notifications${unreadCount > 0 ? ` (${unreadCount} unread)` : ""}`}
-                className="w-10 h-10 rounded-full flex items-center justify-center relative hover:bg-black/5 transition-colors"
+                className="w-10 h-10 rounded-full flex items-center justify-center hover:bg-black/5 transition-colors"
                 style={{ color: page === "alarms" ? C.primary : C.onSurfaceVar }}
               >
-                <NotificationsIcon style={{ fontSize: 20 }} />
-                {unreadCount > 0 && (
-                  <span className="absolute top-1.5 right-1.5 min-w-[14px] h-3.5 px-0.5 rounded-full flex items-center justify-center text-[8px] font-bold text-white leading-none" style={{ background: BADGE_BG }}>
-                    {unreadCount > 99 ? "99+" : unreadCount}
-                  </span>
-                )}
+                <NavIconBadge badgeContent={unreadCount}>
+                  <NotificationsIcon style={{ fontSize: 20 }} />
+                </NavIconBadge>
               </button>
               <button
                 type="button"
@@ -290,12 +314,9 @@ function Navbar({ page, setPage, isDark, setIsDark, loggedIn, user, userAvatar, 
                 className="w-10 h-10 rounded-full flex items-center justify-center relative hover:bg-black/5 transition-colors"
                 style={{ color: page === "messages" ? C.primary : C.onSurfaceVar }}
               >
-                <ChatBubbleIcon style={{ fontSize: 20 }} />
-                {msgUnread > 0 && (
-                  <span className="absolute top-1 right-1 min-w-[14px] h-3.5 px-0.5 rounded-full text-white text-[8px] flex items-center justify-center font-bold leading-none" style={{ background: BADGE_BG }}>
-                    {msgUnread > 9 ? "9+" : msgUnread}
-                  </span>
-                )}
+                <NavIconBadge badgeContent={msgUnread} max={9}>
+                  <ChatBubbleIcon style={{ fontSize: 20 }} />
+                </NavIconBadge>
                 {dmRequestCount > 0 && (
                   <span className="absolute bottom-1 right-1 min-w-[12px] h-3 px-0.5 rounded-full text-white text-[7px] flex items-center justify-center font-bold leading-none" style={{ background: BADGE_BG }}>
                     {dmRequestCount}
@@ -382,7 +403,7 @@ const SOCIAL_BRAND_COLORS: Record<SocialPlatform, string> = {
   whatsapp: "#25D366",
 };
 
-function Footer({ setPage }: { setPage:(p:Page)=>void }) {
+function Footer({ setPage, onGoToDownload }: { setPage:(p:Page)=>void; onGoToDownload: () => void }) {
   const C = useC();
   const [newsletterEmail, setNewsletterEmail] = useState("");
   const go = (p:Page) => { setPage(p); window.scrollTo(0,0); };
@@ -397,6 +418,15 @@ function Footer({ setPage }: { setPage:(p:Page)=>void }) {
       toast.error("Could not subscribe. Email may already be registered.");
     }
   };
+
+  const supportLinks: { label: string; action: () => void }[] = [
+    { label: "Help Center", action: () => go("help") },
+    { label: "Bug Reports", action: () => go("bugs") },
+    { label: "Server Status", action: () => go("status") },
+    { label: "Patch Notes", action: () => go("patches") },
+    { label: "Game", action: onGoToDownload },
+  ];
+
   return (
     <footer className="pt-16 pb-8 overflow-hidden" style={{ background:"#1C1B1F" }}>
       <div className="max-w-7xl mx-auto px-4 sm:px-6">
@@ -455,8 +485,16 @@ function Footer({ setPage }: { setPage:(p:Page)=>void }) {
           </div>
           <div>
             <h4 className="text-white font-medium text-sm mb-4 uppercase tracking-wide" style={{ fontFamily:"Roboto" }}>Support</h4>
-            {["Help Center","Bug Reports","Server Status","Patch Notes","Game"].map(l => (
-              <a key={l} href="#" className="block text-sm py-1.5 hover:text-white transition-colors" style={{ color:"#CAC4D0", fontFamily:"Roboto" }}>{l}</a>
+            {supportLinks.map(l => (
+              <button
+                key={l.label}
+                type="button"
+                onClick={l.action}
+                className="block text-sm py-1.5 hover:text-white transition-colors text-left w-full"
+                style={{ color:"#CAC4D0", fontFamily:"Roboto" }}
+              >
+                {l.label}
+              </button>
             ))}
           </div>
           <div className="col-span-2 md:col-span-1">
@@ -486,13 +524,30 @@ function Footer({ setPage }: { setPage:(p:Page)=>void }) {
 // ── APP ROOT ──────────────────────────────────────────────────────────────────
 export default function App() {
   const [page, setPageState] = useState<Page>(() => pageFromLocation());
+  const pendingSectionRef = useRef<string | null>(null);
   const setPage = useCallback((p: Page) => {
     appPerf.mark(`route:${p}`);
     setPageState(p);
     setPageInLocation(p);
-    window.scrollTo(0, 0);
+    if (!pendingSectionRef.current) window.scrollTo(0, 0);
     requestAnimationFrame(() => appPerf.measure(`route:${p}`));
   }, []);
+
+  const goToDownload = useCallback(() => {
+    if (page === "home") {
+      scrollToSection(SECTION_IDS.download);
+      return;
+    }
+    pendingSectionRef.current = SECTION_IDS.download;
+    setPage("home");
+  }, [page, setPage]);
+
+  useEffect(() => {
+    if (page !== "home" || !pendingSectionRef.current) return;
+    const target = pendingSectionRef.current;
+    pendingSectionRef.current = null;
+    scrollToSectionWhenReady(target);
+  }, [page]);
   const [isDark, setIsDark] = useState(() => localStorage.getItem("ninja-era-theme") === "dark");
   const toggleTheme = (v: boolean) => { setIsDark(v); localStorage.setItem("ninja-era-theme", v ? "dark" : "light"); };
 
@@ -763,8 +818,7 @@ export default function App() {
       ) : (
         <>
       {!noNav.includes(page) && <Navbar page={page} setPage={go} isDark={isDark} setIsDark={toggleTheme} loggedIn={loggedIn} user={user} userAvatar={userAvatar} notifs={notifs} setNotifs={setNotifs} msgUnread={msgUnread} dmRequestCount={dmRequestCount} isAdmin={user?.isAdmin} onLogout={handleLogout} />}
-      <Suspense fallback={<RouteFallback />}>
-        {page==="home"      && <HomePage setPage={go} />}
+        {page==="home"      && <HomePage setPage={go} onGoToDownload={goToDownload} />}
         {page==="about"     && <AboutPage />}
         {page==="resources" && <ResourcesPage isTeamMember={user?.isTeamMember} />}
         {page==="teamwork"  && <TeamworkPage loggedIn={loggedIn} setPage={go} onAddDM={addDM} />}
@@ -794,8 +848,11 @@ export default function App() {
         {page==="profile"   && loggedIn && <ProfilePage setPage={go} isDark={isDark} setIsDark={toggleTheme} settings={settings} setSettings={setSettings} user={user} setUser={setUser} userAvatar={userAvatar} setUserAvatar={setUserAvatar} onLogout={handleLogout} />}
         {page==="admin"     && loggedIn && user?.isAdmin && <AdminPage setPage={go} />}
         {page==="terms"     && <TermsOfServicePage />}
-      </Suspense>
-      {!noFoot.includes(page) && <Footer setPage={go} />}
+        {page==="help"      && <HelpCenterPage />}
+        {page==="bugs"      && <BugReportsPage setPage={go} />}
+        {page==="status"    && <ServerStatusPage />}
+        {page==="patches"   && <PatchNotesPage />}
+      {!noFoot.includes(page) && <Footer setPage={go} onGoToDownload={goToDownload} />}
         </>
       )}
     </div>

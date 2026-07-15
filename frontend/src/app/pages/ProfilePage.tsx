@@ -6,19 +6,66 @@ import VisibilityIcon from "@mui/icons-material/Visibility";
 import VisibilityOffIcon from "@mui/icons-material/VisibilityOff";
 import PhotoCameraIcon from "@mui/icons-material/PhotoCamera";
 import SecurityIcon from "@mui/icons-material/Security";
+import LockIcon from "@mui/icons-material/Lock";
 import EmojiEventsIcon from "@mui/icons-material/EmojiEvents";
+import InventoryIcon from "@mui/icons-material/Inventory2";
 import StarIcon from "@mui/icons-material/Star";
-import MilitaryTechIcon from "@mui/icons-material/MilitaryTech";
-import DiamondIcon from "@mui/icons-material/Diamond";
-import WorkspacePremiumIcon from "@mui/icons-material/WorkspacePremium";
-import ShieldIcon from "@mui/icons-material/Shield";
-import WhatshotIcon from "@mui/icons-material/Whatshot";
 import imgHero from "@/imports/bd24127e-135e-438e-bd57-6204d9b433ee.png";
 import {
   Page, AppSettings, useC, SH1, SH3, COUNTRIES, Field, FilledBtn, OutlinedBtn, FlagImg,
 } from "@/app/shared";
 import { api, type ApiUser } from "@/app/api";
 import { toast } from "sonner";
+
+/**
+ * Future-proof unlock gates: when game progression syncs, set these from API data.
+ * Achievements unlock when the player has earned any (or game account is linked).
+ * Inventory unlocks when the linked game inventory is available.
+ */
+function isAchievementsUnlocked(user: ApiUser | null, achievementCount: number) {
+  return achievementCount > 0 || Boolean((user as ApiUser & { gameLinked?: boolean })?.gameLinked);
+}
+
+function isInventoryUnlocked(user: ApiUser | null, inventoryCount: number) {
+  return inventoryCount > 0 || Boolean((user as ApiUser & { gameLinked?: boolean })?.gameLinked);
+}
+
+function LockedTabPanel({
+  title,
+  message,
+  Icon,
+}: {
+  title: string;
+  message: string;
+  Icon: typeof LockIcon;
+}) {
+  const C = useC();
+  return (
+    <div className="pb-16">
+      <div
+        className="rounded-3xl p-10 text-center pointer-events-none select-none opacity-70"
+        style={{ background: C.surface, boxShadow: SH1 }}
+        aria-disabled="true"
+      >
+        <div
+          className="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4"
+          style={{ background: C.surfaceVar }}
+        >
+          <Icon style={{ fontSize: 28, color: C.onSurfaceVar }} />
+        </div>
+        <div className="flex items-center justify-center gap-2 mb-2">
+          <LockIcon style={{ fontSize: 18, color: C.onSurfaceVar }} />
+          <h2 className="text-lg font-medium" style={{ color: C.onSurface, fontFamily: "'Trade Winds', cursive" }}>
+            {title}
+          </h2>
+        </div>
+        <p className="text-sm max-w-md mx-auto leading-relaxed" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
+          {message}
+        </p>
+      </div>
+    </div>
+  );
+}
 
 function ProfilePage({ setPage, isDark, setIsDark, settings, setSettings, user, setUser, userAvatar, setUserAvatar, onLogout }: {
   setPage:(p:Page)=>void; isDark:boolean; setIsDark:(v:boolean)=>void;
@@ -44,15 +91,32 @@ function ProfilePage({ setPage, isDark, setIsDark, settings, setSettings, user, 
   const [bio, setBio] = useState(user?.bio || "");
   const [stats, setStats] = useState<Record<string, number> | null>(null);
   const [activities, setActivities] = useState<{ description: string; createdAt: string }[]>([]);
+  // Counts stay 0 until game sync lands; gates unlock automatically when > 0.
+  const [achievementCount] = useState(0);
+  const [inventoryCount] = useState(0);
   const fileRef = useRef<HTMLInputElement>(null);
+  const achievementsOpen = isAchievementsUnlocked(user, achievementCount);
+  const inventoryOpen = isInventoryUnlocked(user, inventoryCount);
   const tabs = [
     { id: "Profile", label: "Profile" },
     { id: "Stats", label: "Stats" },
-    { id: "Achievements", label: "Achievements", mobileLabel: "Achieve" },
-    { id: "Inventory", label: "Inventory" },
+    { id: "Achievements", label: "Achievements", mobileLabel: "Achieve", locked: !achievementsOpen },
+    { id: "Inventory", label: "Inventory", locked: !inventoryOpen },
     { id: "Settings", label: "Settings" },
   ] as const;
   const selStyle = { borderColor:C.outline, color:C.onSurface, background:C.surface, fontFamily:"Roboto" };
+
+  const membershipLabel = user?.isTeamMember
+    ? "Team Member"
+    : user?.isAdmin
+      ? "Admin"
+      : "Member";
+  // Future: append village/clan/guild when real game progression is linked.
+  const profileMeta = [
+    `Level ${user?.level ?? 1}`,
+    membershipLabel,
+  ].join(" · ");
+
 
   useEffect(() => {
     if (!user) return;
@@ -144,8 +208,7 @@ function ProfilePage({ setPage, isDark, setIsDark, settings, setSettings, user, 
           <div className="mb-3">
             <h1 className="text-2xl font-medium" style={{ fontFamily:"'Trade Winds', cursive", color:C.profileName }}>{user?.username || "Shinobi"}</h1>
             <p className="text-sm font-medium mt-0.5" style={{ color:C.primary, fontFamily:"Roboto" }}>
-              {user?.village || "Leaf Village"} · {user?.clan || "Dragon Clan"} · Level {user?.level ?? 1}
-              {user?.isTeamMember ? " · Team Member" : user?.isAdmin ? " · Admin" : " · Member"}
+              {profileMeta}
             </p>
           </div>
           <div className="ml-auto mb-3"></div>
@@ -156,11 +219,17 @@ function ProfilePage({ setPage, isDark, setIsDark, settings, setSettings, user, 
               key={t.id}
               type="button"
               onClick={() => setActiveTab(t.id)}
-              className="flex-1 md:flex-none min-w-0 px-2 md:px-5 py-3 text-sm font-medium text-center md:text-left whitespace-nowrap transition-all border-b-2"
-              style={{ borderColor:activeTab===t.id?C.primary:"transparent", color:activeTab===t.id?C.primary:C.onSurfaceVar, fontFamily:"Roboto" }}
-              aria-selected={activeTab===t.id}
+              className="flex-1 md:flex-none min-w-0 px-2 md:px-5 py-3 text-sm font-medium text-center md:text-left whitespace-nowrap transition-all border-b-2 inline-flex items-center justify-center md:justify-start gap-1"
+              style={{
+                borderColor: activeTab === t.id ? C.primary : "transparent",
+                color: activeTab === t.id ? C.primary : C.onSurfaceVar,
+                fontFamily: "Roboto",
+                opacity: "locked" in t && t.locked ? 0.7 : 1,
+              }}
+              aria-selected={activeTab === t.id}
               role="tab"
             >
+              {"locked" in t && t.locked && <LockIcon style={{ fontSize: 14 }} aria-hidden />}
               {"mobileLabel" in t && t.mobileLabel ? (
                 <>
                   <span className="md:hidden">{t.mobileLabel}</span>
@@ -329,25 +398,35 @@ function ProfilePage({ setPage, isDark, setIsDark, settings, setSettings, user, 
             </div>
           </div>
         )}
-        {(activeTab==="Achievements"||activeTab==="Inventory") && (
-          <div className="pb-16">
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-              {[...Array(8)].map((_,i) => {
-                const icons = [EmojiEventsIcon,StarIcon,MilitaryTechIcon,DiamondIcon,WorkspacePremiumIcon,ShieldIcon,SecurityIcon,WhatshotIcon];
-                const Icon = icons[i%icons.length];
-                const names = activeTab==="Achievements"
-                  ? ["First Blood","Dragon Slayer","Guild Master","Legendary","Speed Demon","Pacifist","The Unbroken","Ascendant"]
-                  : ["Iron Katana","Shadow Mask","Fire Robes","Wind Boots","Jade Ring","Soul Seal","Dark Armor","Void Blade"];
-                return (
-                  <div key={i} className="rounded-3xl p-5 text-center hover:scale-[1.03] transition-all cursor-pointer" style={{ background:C.surface, boxShadow:SH1 }}>
-                    <div className="w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-3" style={{ background:C.primaryCont }}><Icon style={{ fontSize:22, color:C.primary }} /></div>
-                    <p className="font-medium text-xs" style={{ color:C.onSurface, fontFamily:"Roboto" }}>{names[i]}</p>
-                    <p className="text-[10px] mt-0.5" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>Unlocked</p>
-                  </div>
-                );
-              })}
+        {activeTab==="Achievements" && (
+          achievementsOpen ? (
+            <div className="pb-16">
+              <p className="text-sm" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
+                Your achievements will appear here.
+              </p>
             </div>
-          </div>
+          ) : (
+            <LockedTabPanel
+              title="Achievements Locked"
+              message="Achievements will become available after you begin playing Ninja Era."
+              Icon={EmojiEventsIcon}
+            />
+          )
+        )}
+        {activeTab==="Inventory" && (
+          inventoryOpen ? (
+            <div className="pb-16">
+              <p className="text-sm" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
+                Your inventory will appear here.
+              </p>
+            </div>
+          ) : (
+            <LockedTabPanel
+              title="Inventory Locked"
+              message="Inventory will unlock after your game account has been created."
+              Icon={InventoryIcon}
+            />
+          )
         )}
         {activeTab==="Settings" && (
           <div className="max-w-xl pb-16 space-y-3">

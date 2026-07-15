@@ -40,6 +40,15 @@ import imgCharHaejin from "@/imports/characters/haejin.png";
 import imgCharDaigo from "@/imports/characters/daigo.png";
 import imgCharVorian from "@/imports/characters/vorian.png";
 import imgCharLiria from "@/imports/characters/liria.png";
+import thumbCharHaruki from "@/imports/characters/haruki_thumb.jpg";
+import thumbCharLuna from "@/imports/characters/luna_thumb.jpg";
+import thumbCharRaiken from "@/imports/characters/raiken_thumb.jpg";
+import thumbCharKaelen from "@/imports/characters/kaelen_thumb.jpg";
+import thumbCharVyra from "@/imports/characters/vyra_thumb.jpg";
+import thumbCharHaejin from "@/imports/characters/haejin_thumb.jpg";
+import thumbCharDaigo from "@/imports/characters/daigo_thumb.jpg";
+import thumbCharVorian from "@/imports/characters/vorian_thumb.jpg";
+import thumbCharLiria from "@/imports/characters/liria_thumb.jpg";
 import imgPvP from "@/imports/379a1912-653d-4824-8658-f27e0424fb77.png";
 import imgCouncil from "@/imports/4360b9ce-e8c9-44c2-85fb-0ceb5225cede.png";
 import { Page, useC, SH1, SH2, SH3, FilledBtn, Chip, OutlinedBtn } from "@/app/shared";
@@ -66,18 +75,18 @@ function formatDate(iso: string | null | undefined) {
 }
 
 const CHARACTERS = [
-  { id:1, name:"Kazuki Sengoku", village:"Leaf", role:"Sage", rarity:"Legendary", clan:"Sengoku", color:"#6750A4", img:imgCharHaruki, bio:"The last sage of the Sacred Flame lineage. Kazuki wields wind chakra and summons divine beasts.", stats:{atk:85,def:70,spd:90,mgk:95}, abilities:["Wind Slash","Sacred Barrier","Divine Summon","Sage Mode"] },
-  { id:2, name:"Yoru Kagetsuki", village:"Shadow", role:"Assassin", rarity:"Legendary", clan:"Kagetsuki", color:"#1D192B", img:imgCharLuna, bio:"Master of shadows and forbidden jutsu. Yoru moves unseen, delivering lethal strikes before vanishing.", stats:{atk:98,def:50,spd:99,mgk:75}, abilities:["Shadow Step","Poison Blade","Void Cloak","Death Mark"] },
-  { id:3, name:"Ryuu Ashikaga", village:"Fire", role:"Berserker", rarity:"Epic", clan:"Ashikaga", color:"#B3261E", img:imgCharRaiken, bio:"Consumed by dragon fire, Ryuu channels raw destruction. His rage grows stronger with every wound.", stats:{atk:99,def:60,spd:75,mgk:55}, abilities:["Dragon Fury","Inferno Charge","Berserk","Flame Cloak"] },
-  { id:4, name:"Sakura Tenma", village:"Petal", role:"Healer", rarity:"Epic", clan:"Tenma", color:"#7D5260", img:imgCharKaelen, bio:"Born under cherry blossoms, Sakura uses petal-based healing arts of the Tenma shrine lineage.", stats:{atk:50,def:80,spd:70,mgk:98}, abilities:["Blossom Heal","Petal Shield","Nature's Blessing","Rebirth"] },
-  { id:5, name:"Takeshi Oni", village:"Mountain", role:"Guardian", rarity:"Epic", clan:"Oni", color:"#4A4458", img:imgCharVyra, bio:"Forged in iron mountains. His impenetrable defense has never been broken in 300 duels.", stats:{atk:70,def:99,spd:40,mgk:45}, abilities:["Iron Wall","Seismic Slam","Taunt","Unbreakable"] },
-  { id:6, name:"Miyuki Frost", village:"Snow", role:"Mage", rarity:"Rare", clan:"Frost", color:"#006688", img:imgCharDaigo, bio:"A prodigy of ice arts. Miyuki can freeze time itself within a localized field.", stats:{atk:88,def:55,spd:72,mgk:97}, abilities:["Blizzard","Ice Prison","Freeze Pulse","Absolute Zero"] },
-  { id:7, name:"Koga Shadowstep", village:"Forest", role:"Ranger", rarity:"Rare", clan:"Wolf", color:"#386A20", img:imgCharLiria, bio:"Raised by wolves in the ancient forest. Koga tracks prey through impossible terrain.", stats:{atk:90,def:60,spd:95,mgk:40}, abilities:["Predator Shot","Wolf Pack","Track","Rain of Arrows"] },
-  { id:8, name:"Hanzo Yamakage", village:"Swamp", role:"Poisoner", rarity:"Rare", clan:"Serpent", color:"#6D3B00", img:imgCharVorian, bio:"Grand master of venom arts. His poisons corrupt even elemental barriers and magical shields.", stats:{atk:80,def:65,spd:80,mgk:88}, abilities:["Venom Strike","Miasma Cloud","Snake Charm","Death Bloom"] },
-  { id:9, name:"Aoi Tempest", village:"Cloud", role:"Summoner", rarity:"Rare", clan:"Storm", color:"#3B4DB8", img:imgCharHaejin, bio:"Commands sky spirits from her floating island sanctuary high above the mortal world.", stats:{atk:75,def:70,spd:85,mgk:95}, abilities:["Storm Call","Lightning Familiar","Thunder Bind","Sky Fortress"] },
-  { id:10, name:"Ren Blazeheart", village:"Fire", role:"Spellsword", rarity:"Uncommon", clan:"Phoenix", color:"#7D5260", img:null, bio:"A swordsman who infuses his blade with arcane flames that detonate on command.", stats:{atk:92,def:68,spd:82,mgk:80}, abilities:["Flame Brand","Phoenix Dive","Arcane Slash","Eruption"] },
-  { id:11, name:"Tsuki Moonshroud", village:"Night", role:"Illusionist", rarity:"Uncommon", clan:"Moon", color:"#625B71", img:null, bio:"Weaves moonlight into perfect illusions that even skilled shinobi cannot distinguish from reality.", stats:{atk:65,def:75,spd:88,mgk:99}, abilities:["Moonveil","Phantom Clone","Dream Prison","Lunar Eclipse"] },
-  { id:12, name:"Daiki Ironveil", village:"Earth", role:"Guardian", rarity:"Uncommon", clan:"Stone", color:"#5C4300", img:null, bio:"Earth clan elder who reshapes terrain mid-battle — walls, cages, weapons from pure stone.", stats:{atk:75,def:95,spd:45,mgk:70}, abilities:["Terra Shift","Stone Cage","Earthen Armor","Quake"] },
+  { id:1, name:"Kazuki Sengoku", village:"Leaf", role:"Sage", rarity:"Legendary", clan:"Sengoku", color:"#6750A4", img:imgCharHaruki, thumb:thumbCharHaruki, bio:"The last sage of the Sacred Flame lineage. Kazuki wields wind chakra and summons divine beasts.", stats:{atk:85,def:70,spd:90,mgk:95}, abilities:["Wind Slash","Sacred Barrier","Divine Summon","Sage Mode"] },
+  { id:2, name:"Yoru Kagetsuki", village:"Shadow", role:"Assassin", rarity:"Legendary", clan:"Kagetsuki", color:"#1D192B", img:imgCharLuna, thumb:thumbCharLuna, bio:"Master of shadows and forbidden jutsu. Yoru moves unseen, delivering lethal strikes before vanishing.", stats:{atk:98,def:50,spd:99,mgk:75}, abilities:["Shadow Step","Poison Blade","Void Cloak","Death Mark"] },
+  { id:3, name:"Ryuu Ashikaga", village:"Fire", role:"Berserker", rarity:"Epic", clan:"Ashikaga", color:"#B3261E", img:imgCharRaiken, thumb:thumbCharRaiken, bio:"Consumed by dragon fire, Ryuu channels raw destruction. His rage grows stronger with every wound.", stats:{atk:99,def:60,spd:75,mgk:55}, abilities:["Dragon Fury","Inferno Charge","Berserk","Flame Cloak"] },
+  { id:4, name:"Sakura Tenma", village:"Petal", role:"Healer", rarity:"Epic", clan:"Tenma", color:"#7D5260", img:imgCharKaelen, thumb:thumbCharKaelen, bio:"Born under cherry blossoms, Sakura uses petal-based healing arts of the Tenma shrine lineage.", stats:{atk:50,def:80,spd:70,mgk:98}, abilities:["Blossom Heal","Petal Shield","Nature's Blessing","Rebirth"] },
+  { id:5, name:"Takeshi Oni", village:"Mountain", role:"Guardian", rarity:"Epic", clan:"Oni", color:"#4A4458", img:imgCharVyra, thumb:thumbCharVyra, bio:"Forged in iron mountains. His impenetrable defense has never been broken in 300 duels.", stats:{atk:70,def:99,spd:40,mgk:45}, abilities:["Iron Wall","Seismic Slam","Taunt","Unbreakable"] },
+  { id:6, name:"Miyuki Frost", village:"Snow", role:"Mage", rarity:"Rare", clan:"Frost", color:"#006688", img:imgCharDaigo, thumb:thumbCharDaigo, bio:"A prodigy of ice arts. Miyuki can freeze time itself within a localized field.", stats:{atk:88,def:55,spd:72,mgk:97}, abilities:["Blizzard","Ice Prison","Freeze Pulse","Absolute Zero"] },
+  { id:7, name:"Koga Shadowstep", village:"Forest", role:"Ranger", rarity:"Rare", clan:"Wolf", color:"#386A20", img:imgCharLiria, thumb:thumbCharLiria, bio:"Raised by wolves in the ancient forest. Koga tracks prey through impossible terrain.", stats:{atk:90,def:60,spd:95,mgk:40}, abilities:["Predator Shot","Wolf Pack","Track","Rain of Arrows"] },
+  { id:8, name:"Hanzo Yamakage", village:"Swamp", role:"Poisoner", rarity:"Rare", clan:"Serpent", color:"#6D3B00", img:imgCharVorian, thumb:thumbCharVorian, bio:"Grand master of venom arts. His poisons corrupt even elemental barriers and magical shields.", stats:{atk:80,def:65,spd:80,mgk:88}, abilities:["Venom Strike","Miasma Cloud","Snake Charm","Death Bloom"] },
+  { id:9, name:"Aoi Tempest", village:"Cloud", role:"Summoner", rarity:"Rare", clan:"Storm", color:"#3B4DB8", img:imgCharHaejin, thumb:thumbCharHaejin, bio:"Commands sky spirits from her floating island sanctuary high above the mortal world.", stats:{atk:75,def:70,spd:85,mgk:95}, abilities:["Storm Call","Lightning Familiar","Thunder Bind","Sky Fortress"] },
+  { id:10, name:"Ren Blazeheart", village:"Fire", role:"Spellsword", rarity:"Uncommon", clan:"Phoenix", color:"#7D5260", img:null, thumb:null, bio:"A swordsman who infuses his blade with arcane flames that detonate on command.", stats:{atk:92,def:68,spd:82,mgk:80}, abilities:["Flame Brand","Phoenix Dive","Arcane Slash","Eruption"] },
+  { id:11, name:"Tsuki Moonshroud", village:"Night", role:"Illusionist", rarity:"Uncommon", clan:"Moon", color:"#625B71", img:null, thumb:null, bio:"Weaves moonlight into perfect illusions that even skilled shinobi cannot distinguish from reality.", stats:{atk:65,def:75,spd:88,mgk:99}, abilities:["Moonveil","Phantom Clone","Dream Prison","Lunar Eclipse"] },
+  { id:12, name:"Daiki Ironveil", village:"Earth", role:"Guardian", rarity:"Uncommon", clan:"Stone", color:"#5C4300", img:null, thumb:null, bio:"Earth clan elder who reshapes terrain mid-battle — walls, cages, weapons from pure stone.", stats:{atk:75,def:95,spd:45,mgk:70}, abilities:["Terra Shift","Stone Cage","Earthen Armor","Quake"] },
 ];
 
 const FEATURES = [
@@ -209,7 +218,7 @@ const WIND_STYLE = `
              windSway 6s ease-in-out 1.18s infinite;
 }
 `;
-function HomePage({ setPage }: { setPage:(p:Page)=>void }) {
+function HomePage({ setPage, onGoToDownload }: { setPage:(p:Page)=>void; onGoToDownload?: () => void }) {
   const C = useC();
   const [sel, setSel] = useState<typeof CHARACTERS[0]|null>(null);
   const [faq, setFaq] = useState<number|null>(null);
@@ -349,8 +358,14 @@ function HomePage({ setPage }: { setPage:(p:Page)=>void }) {
                 style={{ background:C.surface, boxShadow:SH2, ["--tw-ring-color" as string]:C.primary }}
               >
                 <div className="relative aspect-[3/4] overflow-hidden">
-                  {c.img
-                    ? <ImageWithFallback src={c.img} alt={c.name} className="w-full h-full object-cover object-top transition-transform duration-500 ease-out group-hover:scale-105" />
+                  {(c.thumb || c.img)
+                    ? <ImageWithFallback
+                        src={c.thumb || c.img!}
+                        alt={c.name}
+                        className="w-full h-full object-cover object-top transition-transform duration-500 ease-out group-hover:scale-105"
+                        loading="lazy"
+                        decoding="async"
+                      />
                     : <div className="w-full h-full flex items-center justify-center" style={{ background:`linear-gradient(135deg,${c.color}22,${C.surfaceVar})` }}><PersonIcon style={{ fontSize:64, color:c.color, opacity:.4 }} /></div>}
                   <div className="absolute top-3 right-3">
                     <span className="text-[10px] font-medium px-2 py-0.5 rounded-full text-white" style={{ background:RARITY_COLOR[c.rarity] }}>{c.rarity[0]}</span>
@@ -432,7 +447,11 @@ function HomePage({ setPage }: { setPage:(p:Page)=>void }) {
             ))}
           </div>
           <div className="text-center">
-            <button onClick={() => setPage("signup")} className="inline-flex items-center gap-2 px-8 py-3.5 rounded-full text-sm font-medium hover:opacity-90 transition-all" style={{ background:C.primaryCont, color:C.onPrimaryCont, fontFamily:"Roboto", boxShadow:SH2 }}>
+            <button
+              onClick={() => (onGoToDownload ? onGoToDownload() : document.getElementById("ne-download")?.scrollIntoView({ behavior: "smooth", block: "start" }))}
+              className="inline-flex items-center gap-2 px-8 py-3.5 rounded-full text-sm font-medium hover:opacity-90 transition-all"
+              style={{ background:C.primaryCont, color:C.onPrimaryCont, fontFamily:"Roboto", boxShadow:SH2 }}
+            >
               Join the Game <ArrowForwardIcon style={{ fontSize:18 }} />
             </button>
           </div>
@@ -440,7 +459,7 @@ function HomePage({ setPage }: { setPage:(p:Page)=>void }) {
       </section>
 
       {/* DOWNLOAD */}
-      <section className="py-24" style={{ background:C.bg }}>
+      <section id="ne-download" className="py-24 scroll-mt-20" style={{ background:C.bg }}>
         <div className="max-w-7xl mx-auto px-6">
           <div className="text-center mb-14">
             <p className="text-xs font-medium tracking-widest uppercase mb-3" style={{ color:C.primary, fontFamily:"Roboto" }}>Get the Game</p>

@@ -500,11 +500,11 @@ router.post("/channels", (req, res) => {
   const ts = now();
   const result = db.prepare("INSERT INTO conversations (type, name, bio, visibility, created_at) VALUES ('channel', ?, ?, ?, ?)").run(name, bio || "", vis, ts);
   const convId = result.lastInsertRowid as number;
-  db.prepare("INSERT INTO conversation_participants (conversation_id, user_id, joined_at) VALUES (?, ?, ?)").run(convId, req.user!.id, ts);
+  db.prepare("INSERT INTO conversation_participants (conversation_id, user_id, joined_at, last_read_at) VALUES (?, ?, ?, ?)").run(convId, req.user!.id, ts, ts);
   if (vis === "public") {
     const users = db.prepare("SELECT id FROM users WHERE is_npc = 0 AND is_deleted = 0 AND is_disabled = 0").all() as { id: number }[];
-    const insert = db.prepare("INSERT OR IGNORE INTO conversation_participants (conversation_id, user_id, joined_at) VALUES (?, ?, ?)");
-    for (const u of users) insert.run(convId, u.id, ts);
+    const insert = db.prepare("INSERT OR IGNORE INTO conversation_participants (conversation_id, user_id, joined_at, last_read_at) VALUES (?, ?, ?, ?)");
+    for (const u of users) insert.run(convId, u.id, ts, ts);
   } else {
     syncPrivateChannelParticipants(convId);
   }
@@ -529,8 +529,8 @@ router.patch("/channels/:id", (req, res) => {
   if (visibility === "public") {
     const users = db.prepare("SELECT id FROM users WHERE is_npc = 0 AND is_deleted = 0 AND is_disabled = 0").all() as { id: number }[];
     const ts = now();
-    const insert = db.prepare("INSERT OR IGNORE INTO conversation_participants (conversation_id, user_id, joined_at) VALUES (?, ?, ?)");
-    for (const u of users) insert.run(id, u.id, ts);
+    const insert = db.prepare("INSERT OR IGNORE INTO conversation_participants (conversation_id, user_id, joined_at, last_read_at) VALUES (?, ?, ?, ?)");
+    for (const u of users) insert.run(id, u.id, ts, ts);
   }
   scheduleAdminStatsRefresh();
   res.json({ ok: true });
@@ -588,6 +588,8 @@ router.get("/contacts/:id", (req, res) => {
   if (row.is_read !== 1) {
     db.prepare("UPDATE contact_tickets SET is_read = 1, updated_at = ? WHERE id = ?").run(now(), row.id);
     row.is_read = 1;
+    emitToAdmins("admin:contact", { contactId: row.id });
+    scheduleAdminStatsRefresh();
   }
   res.json({ contact: formatContactTicket(row) });
 });
@@ -596,6 +598,8 @@ router.patch("/contacts/:id/read", (req, res) => {
   const id = Number(req.params.id);
   const ts = now();
   db.prepare("UPDATE contact_tickets SET is_read = 1, updated_at = ? WHERE id = ?").run(ts, id);
+  emitToAdmins("admin:contact", { contactId: id });
+  scheduleAdminStatsRefresh();
   res.json({ ok: true });
 });
 

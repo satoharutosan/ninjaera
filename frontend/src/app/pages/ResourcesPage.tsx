@@ -8,7 +8,6 @@ import ShieldIcon from "@mui/icons-material/Shield";
 import PhotoCameraIcon from "@mui/icons-material/PhotoCamera";
 import VideoLibraryIcon from "@mui/icons-material/VideoLibrary";
 import DownloadIcon from "@mui/icons-material/Download";
-import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import imgGarden from "@/imports/262b44b3-ebff-4dc2-a225-62e4b0d5eb8c.png";
 import { useC, SH1 } from "@/app/shared";
 import { api, ApiError } from "@/app/api";
@@ -85,7 +84,7 @@ function ResourcesPage({ isTeamMember }: { isTeamMember?: boolean }) {
                   <h3 className="font-medium text-sm mb-2" style={{ color: C.onSurface, fontFamily: "Roboto" }}>{c.title}</h3>
                   <p className="text-xs leading-relaxed" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>{c.description}</p>
                   <button onClick={() => handleDownload(c.id, c.title)} className="mt-4 flex items-center gap-1 text-xs font-medium hover:opacity-80 transition-opacity" style={{ color: C.primary, fontFamily: "Roboto" }}>
-                    <DownloadIcon style={{ fontSize: 14 }} /> Download <ChevronRightIcon style={{ fontSize: 14 }} />
+                    <DownloadIcon style={{ fontSize: 14 }} /> Download
                   </button>
                 </div>
               );

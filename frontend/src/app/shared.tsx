@@ -1,6 +1,6 @@
 import { useState, useEffect, createContext, useContext } from "react";
 
-export type Page = "home" | "about" | "resources" | "teamwork" | "contact" | "login" | "signup" | "oauth-callback" | "messages" | "profile" | "alarms" | "admin" | "terms";
+export type Page = "home" | "about" | "resources" | "teamwork" | "contact" | "login" | "signup" | "oauth-callback" | "messages" | "profile" | "alarms" | "admin" | "terms" | "help" | "bugs" | "status" | "patches";
 export type AppSettings = { emailNotif:boolean; pushNotif:boolean; twoFA:boolean; publicProfile:boolean };
 // ── MD3 Color tokens ─────────────────────────────────────────────────────────
 const LIGHT_C = {

@@ -13,7 +13,7 @@ import DiamondIcon from "@mui/icons-material/Diamond";
 import WorkspacePremiumIcon from "@mui/icons-material/WorkspacePremium";
 import ShieldIcon from "@mui/icons-material/Shield";
 import WhatshotIcon from "@mui/icons-material/Whatshot";
-import imgHero from "@/imports/0f5a128a-ba81-4b49-a98d-77a79e4e65db.png";
+import imgHero from "@/imports/bd24127e-135e-438e-bd57-6204d9b433ee.png";
 import {
   Page, AppSettings, useC, SH1, SH3, COUNTRIES, Field, FilledBtn, OutlinedBtn, FlagImg,
 } from "@/app/shared";
@@ -45,7 +45,13 @@ function ProfilePage({ setPage, isDark, setIsDark, settings, setSettings, user, 
   const [stats, setStats] = useState<Record<string, number> | null>(null);
   const [activities, setActivities] = useState<{ description: string; createdAt: string }[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
-  const tabs = ["Profile","Stats","Achievements","Inventory","Settings"];
+  const tabs = [
+    { id: "Profile", label: "Profile" },
+    { id: "Stats", label: "Stats" },
+    { id: "Achievements", label: "Achievements", mobileLabel: "Achieve" },
+    { id: "Inventory", label: "Inventory" },
+    { id: "Settings", label: "Settings" },
+  ] as const;
   const selStyle = { borderColor:C.outline, color:C.onSurface, background:C.surface, fontFamily:"Roboto" };
 
   useEffect(() => {
@@ -147,15 +153,20 @@ function ProfilePage({ setPage, isDark, setIsDark, settings, setSettings, user, 
         <div className="flex w-full border-b mb-8 overflow-hidden md:overflow-visible" style={{ borderColor:C.outlineVar }}>
           {tabs.map(t => (
             <button
-              key={t}
+              key={t.id}
               type="button"
-              onClick={() => setActiveTab(t)}
-              className="flex-1 md:flex-none min-w-0 px-1.5 sm:px-3 md:px-5 py-3 text-[11px] sm:text-xs md:text-sm font-medium text-center md:text-left truncate md:whitespace-nowrap transition-all border-b-2"
-              style={{ borderColor:activeTab===t?C.primary:"transparent", color:activeTab===t?C.primary:C.onSurfaceVar, fontFamily:"Roboto" }}
-              aria-selected={activeTab===t}
+              onClick={() => setActiveTab(t.id)}
+              className="flex-1 md:flex-none min-w-0 px-2 md:px-5 py-3 text-sm font-medium text-center md:text-left whitespace-nowrap transition-all border-b-2"
+              style={{ borderColor:activeTab===t.id?C.primary:"transparent", color:activeTab===t.id?C.primary:C.onSurfaceVar, fontFamily:"Roboto" }}
+              aria-selected={activeTab===t.id}
               role="tab"
             >
-              {t}
+              {"mobileLabel" in t && t.mobileLabel ? (
+                <>
+                  <span className="md:hidden">{t.mobileLabel}</span>
+                  <span className="hidden md:inline">{t.label}</span>
+                </>
+              ) : t.label}
             </button>
           ))}
         </div>

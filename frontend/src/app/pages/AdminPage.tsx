@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, type ReactNode } from "react";
+import { useState, useEffect, useCallback, useRef, memo, type ReactNode } from "react";
 import DashboardIcon from "@mui/icons-material/Dashboard";
 import PeopleIcon from "@mui/icons-material/People";
 import NotificationsIcon from "@mui/icons-material/Notifications";
@@ -82,16 +82,14 @@ function UserAvatar({ user, size = 32 }: { user: AdminUser; size?: number }) {
   );
 }
 
-function StatCard({ label, value, color, hint, Icon }: { label: string; value: number; color?: string; hint?: string; Icon?: typeof PeopleIcon }) {
+const StatCard = memo(function StatCard({ label, value, color, hint, Icon }: { label: string; value: number; color?: string; hint?: string; Icon?: typeof PeopleIcon }) {
   const C = useC();
   return (
     <div className="rounded-2xl p-4 md:p-5 min-h-[96px] flex flex-col justify-between gap-2" style={{ background: C.surface, boxShadow: SH1 }} role="group" aria-label={`${label}: ${value}`}>
       <div className="flex items-start justify-between gap-2">
-        <p className="text-2xl md:text-3xl font-medium tabular-nums" style={{ color: color || C.primary, fontFamily: "Roboto" }}>{value.toLocaleString()}</p>
+        <p className="text-2xl md:text-3xl font-medium tabular-nums leading-none" style={{ color: color || C.primary, fontFamily: "Roboto" }}>{value.toLocaleString()}</p>
         {Icon && (
-          <span className="w-9 h-9 rounded-full flex items-center justify-center shrink-0" style={{ background: C.surfaceVar }} aria-hidden>
-            <Icon style={{ fontSize: 20, color: color || C.primary }} />
-          </span>
+          <Icon style={{ fontSize: 32, color: color || C.primary }} aria-hidden className="shrink-0" />
         )}
       </div>
       <div>
@@ -100,7 +98,7 @@ function StatCard({ label, value, color, hint, Icon }: { label: string; value: n
       </div>
     </div>
   );
-}
+});
 
 function DashSection({ title, children, defaultOpen = true, action }: { title: string; children: ReactNode; defaultOpen?: boolean; action?: ReactNode }) {
   const C = useC();
@@ -235,9 +233,10 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
       });
   }, [setPage]);
 
-  const loadSection = useCallback(async () => {
+  const loadSection = useCallback(async (opts?: { quiet?: boolean }) => {
     if (!authorized) return;
-    setLoading(true);
+    const quiet = !!opts?.quiet;
+    if (!quiet) setLoading(true);
     try {
       if (section === "dashboard") {
         const s = await api.admin.stats();
@@ -280,27 +279,85 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
         setDbInfo(info);
       }
     } catch (e) {
-      toast.error(e instanceof ApiError ? e.message : "Failed to load data");
+      if (!quiet) toast.error(e instanceof ApiError ? e.message : "Failed to load data");
     } finally {
-      setLoading(false);
+      if (!quiet) setLoading(false);
     }
   }, [authorized, section, userSearch, userFilter, activityPage, logFilters]);
 
   useEffect(() => { loadSection(); }, [loadSection]);
 
+  const sectionRef = useRef(section);
+  sectionRef.current = section;
+
+  const statsTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sectionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const refreshStatsQuiet = useCallback(() => {
+    if (statsTimer.current) clearTimeout(statsTimer.current);
+    // Longer debounce — presence + activity flood free-tier CPU if stats refetch constantly.
+    statsTimer.current = setTimeout(() => {
+      api.admin.stats().then(setStats).catch(() => {});
+    }, 1200);
+  }, []);
+
+  const refreshActiveSectionQuiet = useCallback((targets: Section[]) => {
+    if (!targets.includes(sectionRef.current)) return;
+    if (sectionTimer.current) clearTimeout(sectionTimer.current);
+    sectionTimer.current = setTimeout(() => {
+      void loadSection({ quiet: true });
+    }, 600);
+  }, [loadSection]);
+
   useEffect(() => {
     if (!authorized) return;
-    const refreshStats = () => { if (section === "dashboard") api.admin.stats().then(setStats).catch(() => {}); };
     const unsubs = [
-      onRealtimeEvent("admin:stats", refreshStats),
-      onRealtimeEvent("admin:activity", () => { if (section === "activity-logs") loadSection(); refreshStats(); }),
-      onRealtimeEvent("admin:contact", () => { if (section === "contacts" || section === "dashboard") loadSection(); }),
-      onRealtimeEvent("admin:applications", () => { if (section === "applications" || section === "dashboard") loadSection(); }),
-      onRealtimeEvent("notification:new", () => { if (section === "notifications" || section === "dashboard") loadSection(); }),
-      onRealtimeEvent("admin:notifications", () => { if (section === "notifications") loadSection(); }),
+      onRealtimeEvent("admin:stats", () => {
+        refreshStatsQuiet();
+        refreshActiveSectionQuiet(["channels", "resources", "game-downloads", "users", "database"]);
+      }),
+      onRealtimeEvent("admin:activity", () => {
+        refreshStatsQuiet();
+        refreshActiveSectionQuiet(["activity-logs", "dashboard"]);
+      }),
+      onRealtimeEvent("admin:contact", () => {
+        refreshStatsQuiet();
+        refreshActiveSectionQuiet(["contacts", "dashboard"]);
+      }),
+      onRealtimeEvent("admin:applications", () => {
+        refreshStatsQuiet();
+        refreshActiveSectionQuiet(["applications", "dashboard"]);
+      }),
+      onRealtimeEvent("notification:new", () => {
+        refreshStatsQuiet();
+        refreshActiveSectionQuiet(["notifications", "dashboard"]);
+      }),
+      onRealtimeEvent("admin:notifications", () => {
+        refreshStatsQuiet();
+        refreshActiveSectionQuiet(["notifications"]);
+      }),
+      onRealtimeEvent("presence:update", () => {
+        // Only refresh stats on dashboard; users list refreshes separately.
+        if (sectionRef.current === "dashboard") {
+          refreshStatsQuiet();
+        } else if (sectionRef.current === "users") {
+          refreshActiveSectionQuiet(["users"]);
+        }
+      }),
+      onRealtimeEvent("team:updated", () => {
+        refreshStatsQuiet();
+        refreshActiveSectionQuiet(["users", "applications", "dashboard"]);
+      }),
+      onRealtimeEvent("counts:update", () => {
+        refreshStatsQuiet();
+      }),
     ];
-    return () => { unsubs.forEach(u => u()); };
-  }, [authorized, section, loadSection]);
+    return () => {
+      unsubs.forEach(u => u());
+      if (statsTimer.current) clearTimeout(statsTimer.current);
+      if (sectionTimer.current) clearTimeout(sectionTimer.current);
+    };
+  }, [authorized, refreshStatsQuiet, refreshActiveSectionQuiet]);
 
   const openUserProfile = async (user: AdminUser) => {
     setProfileLoading(true);
@@ -453,7 +510,7 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                 <DashSection title="Overview" action={
                   <button type="button" onClick={() => loadSection()} className="text-xs font-medium px-3 py-1.5 rounded-full hover:bg-black/5" style={{ color: C.primary, fontFamily: "Roboto" }}>Refresh</button>
                 }>
-                  <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
+                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
                     <StatCard label="Total Users" value={stats.totalUsers} Icon={PeopleIcon} />
                     <StatCard label="Online Users" value={stats.onlineUsers} color="#386A20" Icon={FiberManualRecordIcon} />
                     <StatCard label="Administrators" value={stats.userDistribution.find(d => d.name === "Administrators")?.value ?? 0} Icon={AdminPanelSettingsIcon} />
@@ -479,7 +536,7 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                             <XAxis dataKey="label" tick={{ fill: C.onSurfaceVar, fontSize: 11 }} />
                             <YAxis allowDecimals={false} tick={{ fill: C.onSurfaceVar, fontSize: 11 }} width={32} />
                             <Tooltip contentStyle={{ background: C.surface, border: `1px solid ${C.outlineVar}`, borderRadius: 12, fontFamily: "Roboto", fontSize: 12 }} />
-                            <Line type="monotone" dataKey="count" name="Registrations" stroke={C.primary} strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 5 }} isAnimationActive />
+                            <Line type="monotone" dataKey="count" name="Registrations" stroke={C.primary} strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 5 }} isAnimationActive={false} />
                           </LineChart>
                         </ResponsiveContainer>
                       ) : <EmptyNote text="No registrations in the last 14 days" />}
@@ -493,7 +550,7 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                             <XAxis dataKey="label" tick={{ fill: C.onSurfaceVar, fontSize: 11 }} />
                             <YAxis allowDecimals={false} tick={{ fill: C.onSurfaceVar, fontSize: 11 }} width={32} />
                             <Tooltip contentStyle={{ background: C.surface, border: `1px solid ${C.outlineVar}`, borderRadius: 12, fontFamily: "Roboto", fontSize: 12 }} />
-                            <Bar dataKey="count" name="Downloads" fill={C.primary} radius={[8, 8, 0, 0]} isAnimationActive />
+                            <Bar dataKey="count" name="Downloads" fill={C.primary} radius={[8, 8, 0, 0]} isAnimationActive={false} />
                           </BarChart>
                         </ResponsiveContainer>
                       ) : <EmptyNote text="No platform downloads recorded yet" />}
@@ -522,9 +579,9 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                             <YAxis allowDecimals={false} tick={{ fill: C.onSurfaceVar, fontSize: 11 }} width={32} />
                             <Tooltip contentStyle={{ background: C.surface, border: `1px solid ${C.outlineVar}`, borderRadius: 12, fontFamily: "Roboto", fontSize: 12 }} />
                             <Legend wrapperStyle={{ fontFamily: "Roboto", fontSize: 12 }} />
-                            <Area type="monotone" dataKey="messages" name="Messages" stackId="1" stroke={C.primary} fill={C.primary} fillOpacity={0.35} isAnimationActive />
-                            <Area type="monotone" dataKey="downloads" name="Downloads" stackId="1" stroke="#386A20" fill="#386A20" fillOpacity={0.35} isAnimationActive />
-                            <Area type="monotone" dataKey="logins" name="Logins" stackId="1" stroke="#006A6A" fill="#006A6A" fillOpacity={0.35} isAnimationActive />
+                            <Area type="monotone" dataKey="messages" name="Messages" stackId="1" stroke={C.primary} fill={C.primary} fillOpacity={0.35} isAnimationActive={false} />
+                            <Area type="monotone" dataKey="downloads" name="Downloads" stackId="1" stroke="#386A20" fill="#386A20" fillOpacity={0.35} isAnimationActive={false} />
+                            <Area type="monotone" dataKey="logins" name="Logins" stackId="1" stroke="#006A6A" fill="#006A6A" fillOpacity={0.35} isAnimationActive={false} />
                           </AreaChart>
                         </ResponsiveContainer>
                       ) : <EmptyNote text="No activity in the last 14 days" />}

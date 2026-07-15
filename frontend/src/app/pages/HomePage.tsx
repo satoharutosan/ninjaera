@@ -35,6 +35,11 @@ import imgCharHaruki from "@/imports/characters/haruki.png";
 import imgCharLuna from "@/imports/characters/luna.png";
 import imgCharRaiken from "@/imports/characters/raiken.png";
 import imgCharKaelen from "@/imports/characters/kaelen.png";
+import imgCharVyra from "@/imports/characters/vyra.png";
+import imgCharHaejin from "@/imports/characters/haejin.png";
+import imgCharDaigo from "@/imports/characters/daigo.png";
+import imgCharVorian from "@/imports/characters/vorian.png";
+import imgCharLiria from "@/imports/characters/liria.png";
 import imgPvP from "@/imports/379a1912-653d-4824-8658-f27e0424fb77.png";
 import imgCouncil from "@/imports/4360b9ce-e8c9-44c2-85fb-0ceb5225cede.png";
 import { Page, useC, SH1, SH2, SH3, FilledBtn, Chip, OutlinedBtn } from "@/app/shared";
@@ -65,11 +70,11 @@ const CHARACTERS = [
   { id:2, name:"Yoru Kagetsuki", village:"Shadow", role:"Assassin", rarity:"Legendary", clan:"Kagetsuki", color:"#1D192B", img:imgCharLuna, bio:"Master of shadows and forbidden jutsu. Yoru moves unseen, delivering lethal strikes before vanishing.", stats:{atk:98,def:50,spd:99,mgk:75}, abilities:["Shadow Step","Poison Blade","Void Cloak","Death Mark"] },
   { id:3, name:"Ryuu Ashikaga", village:"Fire", role:"Berserker", rarity:"Epic", clan:"Ashikaga", color:"#B3261E", img:imgCharRaiken, bio:"Consumed by dragon fire, Ryuu channels raw destruction. His rage grows stronger with every wound.", stats:{atk:99,def:60,spd:75,mgk:55}, abilities:["Dragon Fury","Inferno Charge","Berserk","Flame Cloak"] },
   { id:4, name:"Sakura Tenma", village:"Petal", role:"Healer", rarity:"Epic", clan:"Tenma", color:"#7D5260", img:imgCharKaelen, bio:"Born under cherry blossoms, Sakura uses petal-based healing arts of the Tenma shrine lineage.", stats:{atk:50,def:80,spd:70,mgk:98}, abilities:["Blossom Heal","Petal Shield","Nature's Blessing","Rebirth"] },
-  { id:5, name:"Takeshi Oni", village:"Mountain", role:"Guardian", rarity:"Epic", clan:"Oni", color:"#4A4458", img:null, bio:"Forged in iron mountains. His impenetrable defense has never been broken in 300 duels.", stats:{atk:70,def:99,spd:40,mgk:45}, abilities:["Iron Wall","Seismic Slam","Taunt","Unbreakable"] },
-  { id:6, name:"Miyuki Frost", village:"Snow", role:"Mage", rarity:"Rare", clan:"Frost", color:"#006688", img:null, bio:"A prodigy of ice arts. Miyuki can freeze time itself within a localized field.", stats:{atk:88,def:55,spd:72,mgk:97}, abilities:["Blizzard","Ice Prison","Freeze Pulse","Absolute Zero"] },
-  { id:7, name:"Koga Shadowstep", village:"Forest", role:"Ranger", rarity:"Rare", clan:"Wolf", color:"#386A20", img:null, bio:"Raised by wolves in the ancient forest. Koga tracks prey through impossible terrain.", stats:{atk:90,def:60,spd:95,mgk:40}, abilities:["Predator Shot","Wolf Pack","Track","Rain of Arrows"] },
-  { id:8, name:"Hanzo Yamakage", village:"Swamp", role:"Poisoner", rarity:"Rare", clan:"Serpent", color:"#6D3B00", img:null, bio:"Grand master of venom arts. His poisons corrupt even elemental barriers and magical shields.", stats:{atk:80,def:65,spd:80,mgk:88}, abilities:["Venom Strike","Miasma Cloud","Snake Charm","Death Bloom"] },
-  { id:9, name:"Aoi Tempest", village:"Cloud", role:"Summoner", rarity:"Rare", clan:"Storm", color:"#3B4DB8", img:null, bio:"Commands sky spirits from her floating island sanctuary high above the mortal world.", stats:{atk:75,def:70,spd:85,mgk:95}, abilities:["Storm Call","Lightning Familiar","Thunder Bind","Sky Fortress"] },
+  { id:5, name:"Takeshi Oni", village:"Mountain", role:"Guardian", rarity:"Epic", clan:"Oni", color:"#4A4458", img:imgCharVyra, bio:"Forged in iron mountains. His impenetrable defense has never been broken in 300 duels.", stats:{atk:70,def:99,spd:40,mgk:45}, abilities:["Iron Wall","Seismic Slam","Taunt","Unbreakable"] },
+  { id:6, name:"Miyuki Frost", village:"Snow", role:"Mage", rarity:"Rare", clan:"Frost", color:"#006688", img:imgCharDaigo, bio:"A prodigy of ice arts. Miyuki can freeze time itself within a localized field.", stats:{atk:88,def:55,spd:72,mgk:97}, abilities:["Blizzard","Ice Prison","Freeze Pulse","Absolute Zero"] },
+  { id:7, name:"Koga Shadowstep", village:"Forest", role:"Ranger", rarity:"Rare", clan:"Wolf", color:"#386A20", img:imgCharLiria, bio:"Raised by wolves in the ancient forest. Koga tracks prey through impossible terrain.", stats:{atk:90,def:60,spd:95,mgk:40}, abilities:["Predator Shot","Wolf Pack","Track","Rain of Arrows"] },
+  { id:8, name:"Hanzo Yamakage", village:"Swamp", role:"Poisoner", rarity:"Rare", clan:"Serpent", color:"#6D3B00", img:imgCharVorian, bio:"Grand master of venom arts. His poisons corrupt even elemental barriers and magical shields.", stats:{atk:80,def:65,spd:80,mgk:88}, abilities:["Venom Strike","Miasma Cloud","Snake Charm","Death Bloom"] },
+  { id:9, name:"Aoi Tempest", village:"Cloud", role:"Summoner", rarity:"Rare", clan:"Storm", color:"#3B4DB8", img:imgCharHaejin, bio:"Commands sky spirits from her floating island sanctuary high above the mortal world.", stats:{atk:75,def:70,spd:85,mgk:95}, abilities:["Storm Call","Lightning Familiar","Thunder Bind","Sky Fortress"] },
   { id:10, name:"Ren Blazeheart", village:"Fire", role:"Spellsword", rarity:"Uncommon", clan:"Phoenix", color:"#7D5260", img:null, bio:"A swordsman who infuses his blade with arcane flames that detonate on command.", stats:{atk:92,def:68,spd:82,mgk:80}, abilities:["Flame Brand","Phoenix Dive","Arcane Slash","Eruption"] },
   { id:11, name:"Tsuki Moonshroud", village:"Night", role:"Illusionist", rarity:"Uncommon", clan:"Moon", color:"#625B71", img:null, bio:"Weaves moonlight into perfect illusions that even skilled shinobi cannot distinguish from reality.", stats:{atk:65,def:75,spd:88,mgk:99}, abilities:["Moonveil","Phantom Clone","Dream Prison","Lunar Eclipse"] },
   { id:12, name:"Daiki Ironveil", village:"Earth", role:"Guardian", rarity:"Uncommon", clan:"Stone", color:"#5C4300", img:null, bio:"Earth clan elder who reshapes terrain mid-battle — walls, cages, weapons from pure stone.", stats:{atk:75,def:95,spd:45,mgk:70}, abilities:["Terra Shift","Stone Cage","Earthen Armor","Quake"] },
@@ -231,7 +236,7 @@ function HomePage({ setPage }: { setPage:(p:Page)=>void }) {
       {/* HERO */}
       <section className="relative min-h-screen flex items-center overflow-hidden">
         <div className="absolute inset-0">
-          <ImageWithFallback src={imgGroup} alt="Ninja Era heroes" className="w-full h-full object-cover" />
+          <ImageWithFallback src={imgGroup} alt="Ninja Era heroes" className="w-full h-full object-cover" loading="eager" fetchPriority="high" />
           <div className="absolute inset-0" style={{ background:"linear-gradient(to right,rgba(0,0,0,.78),rgba(0,0,0,.45) 60%,rgba(0,0,0,.15))" }} />
           <div className="absolute inset-0" style={{ background:"linear-gradient(to top,rgba(0,0,0,.5),transparent 40%)" }} />
         </div>

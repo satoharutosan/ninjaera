@@ -37,7 +37,22 @@ export default defineConfig({
       '/socket.io': { target: 'http://localhost:3001', ws: true, changeOrigin: true },
     },
   },
-
+  build: {
+    // Avoid inlining large PNGs into JS (hurts free-tier transfer + parse).
+    assetsInlineLimit: 4096,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return
+          if (id.includes('@mui') || id.includes('@emotion')) return 'mui'
+          if (id.includes('socket.io')) return 'socket'
+          if (id.includes('react-virtuoso')) return 'virtuoso'
+          if (id.includes('recharts')) return 'recharts'
+          if (id.includes('react-dom') || id.includes('/react/')) return 'react'
+        },
+      },
+    },
+  },
   // File types to support raw imports. Never add .css, .tsx, or .ts files to this.
   assetsInclude: ['**/*.svg', '**/*.csv'],
 })

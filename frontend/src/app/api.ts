@@ -165,14 +165,24 @@ export const api = {
 
   messages: {
     conversations: () => request<{ conversations: ApiConversation[] }>("/conversations"),
-    getMessages: (conversationId: number, opts?: { limit?: number; before?: number }) => {
+    getMessages: (conversationId: number, opts?: {
+      limit?: number;
+      before?: number;
+      after?: number;
+      around?: number;
+    }) => {
       const params = new URLSearchParams();
       if (opts?.limit != null) params.set("limit", String(opts.limit));
       if (opts?.before != null) params.set("before", String(opts.before));
+      if (opts?.after != null) params.set("after", String(opts.after));
+      if (opts?.around != null) params.set("around", String(opts.around));
       const qs = params.toString();
-      return request<{ messages: ApiMessage[]; hasMore: boolean }>(
-        `/conversations/${conversationId}/messages${qs ? `?${qs}` : ""}`,
-      );
+      return request<{
+        messages: ApiMessage[];
+        hasMore: boolean;
+        hasMoreOlder?: boolean;
+        hasMoreNewer?: boolean;
+      }>(`/conversations/${conversationId}/messages${qs ? `?${qs}` : ""}`);
     },
     send: (conversationId: number, msg: string, replyTo?: number) =>
       request<{ message: ApiMessage }>("/messages", {

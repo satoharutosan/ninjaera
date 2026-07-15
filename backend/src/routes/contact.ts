@@ -3,7 +3,7 @@ import { v4 as uuid } from "uuid";
 import { db } from "../db/index.js";
 import { optionalAuth } from "../middleware/auth.js";
 import { lookupGeo } from "../services/geoip.js";
-import { emitToAdmins } from "../services/realtime.js";
+import { emitToAdmins, scheduleAdminStatsRefresh } from "../services/realtime.js";
 
 const router = Router();
 const now = () => new Date().toISOString();
@@ -38,7 +38,7 @@ router.post("/", optionalAuth, async (req, res) => {
   `).run(name, email, subject, category, message, ts, userId, guestIdentifier, ipAddress, country, countryCode, ts);
 
   emitToAdmins("admin:contact", { contactId: result.lastInsertRowid });
-  emitToAdmins("admin:stats", {});
+  scheduleAdminStatsRefresh();
 
   res.status(201).json({ ok: true, message: "Message sent successfully", id: result.lastInsertRowid });
 });

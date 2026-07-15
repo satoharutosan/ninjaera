@@ -7,7 +7,7 @@ import { requireAuth, timeAgo, formatTime } from "../middleware/auth.js";
 import { isUserOnline } from "../services/presence.js";
 import { userCanAccessChannel } from "../services/channels.js";
 import {
-  emitMessageToParticipants, emitConversationUpdate, emitToUser,
+  emitMessageToParticipants, emitConversationUpdate, emitToUser, scheduleAdminStatsRefresh,
 } from "../services/realtime.js";
 
 const router = Router();
@@ -30,8 +30,42 @@ function getLastMessage(convId: number) {
     SELECT m.*, u.username
     FROM messages m JOIN users u ON u.id = m.user_id
     WHERE m.conversation_id = ?
-    ORDER BY m.created_at DESC LIMIT 1
+    ORDER BY m.created_at DESC, m.id DESC LIMIT 1
   `).get(convId) as { content: string; created_at: string; media_type?: string | null; file_name?: string | null } | undefined;
+}
+
+function previewFromMessage(last: { content: string; media_type?: string | null; file_name?: string | null } | undefined) {
+  if (!last) return "No messages yet";
+  if (last.content) return last.content.slice(0, 200);
+  switch (last.media_type) {
+    case "image": return "📷 Image";
+    case "gif": return "GIF";
+    case "video": return "🎬 Video";
+    case "audio": return "🎤 Voice message";
+    case "file": return last.file_name ? `📎 ${last.file_name}` : "📎 File";
+    default: return "No messages yet";
+  }
+}
+
+function touchConversationLastMessage(
+  convId: number,
+  createdAt: string,
+  preview: string,
+) {
+  db.prepare(`
+    UPDATE conversations SET last_message_at = ?, last_message_preview = ? WHERE id = ?
+  `).run(createdAt, preview.slice(0, 200), convId);
+}
+
+function refreshConversationLastMessage(convId: number) {
+  const last = getLastMessage(convId);
+  if (!last) {
+    db.prepare(`
+      UPDATE conversations SET last_message_at = NULL, last_message_preview = NULL WHERE id = ?
+    `).run(convId);
+    return;
+  }
+  touchConversationLastMessage(convId, last.created_at, previewFromMessage(last));
 }
 
 function unreadCount(convId: number, userId: number) {
@@ -63,106 +97,195 @@ function markConversationRead(convId: number, userId: number) {
   `).run(ts, convId, userId);
 }
 
-function previewText(last: { content: string; media_type?: string | null; file_name?: string | null } | undefined) {
-  if (!last) return "No messages yet";
-  if (last.content) return last.content;
-  switch (last.media_type) {
-    case "image": return "📷 Image";
-    case "gif": return "GIF";
-    case "video": return "🎬 Video";
-    case "audio": return "🎤 Voice message";
-    case "file": return last.file_name ? `📎 ${last.file_name}` : "📎 File";
-    default: return "No messages yet";
-  }
-}
+type FormattedMessage = {
+  id: number;
+  userId: number;
+  user: string;
+  msg: string;
+  time: string;
+  self: boolean;
+  avatarUrl?: string;
+  mediaUrl?: string;
+  mediaType?: string;
+  fileName?: string;
+  fileSize?: number;
+  replyTo?: { id: number; user: string; preview: string };
+  edited: boolean;
+  reactions?: Record<string, string[]>;
+};
 
-function formatConversation(conv: { id: number; type: string; name: string; bio: string }, userId: number) {
-  const last = getLastMessage(conv.id) as { content: string; created_at: string; media_type?: string | null; file_name?: string | null } | undefined;
-  const other = db.prepare(`
-    SELECT u.id, u.is_online, u.last_seen_at, u.status, u.username, u.avatar_url as avatarUrl, u.bio,
-           u.village, u.clan, u.level, u.rank, u.member_since as memberSince, u.is_team_member as isTeamMember,
-           u.country, u.city
-    FROM users u
-    JOIN conversation_participants cp ON cp.user_id = u.id
-    WHERE cp.conversation_id = ? AND u.id != ? LIMIT 1
-  `).get(conv.id, userId) as {
-    id: number; is_online: number; last_seen_at: string | null; status: string; username: string;
-    avatarUrl: string | null; bio: string; village: string; clan: string; level: number; rank: string;
-    memberSince: string; isTeamMember: number; country: string; city: string | null;
-  } | undefined;
+function formatMessages(rows: Record<string, unknown>[], currentUserId: number): FormattedMessage[] {
+  if (!rows.length) return [];
 
-  const selfPart = db.prepare(`
-    SELECT muted FROM conversation_participants WHERE conversation_id = ? AND user_id = ?
-  `).get(conv.id, userId) as { muted: number } | undefined;
+  const ids = rows.map(r => r.id as number);
+  const placeholders = ids.map(() => "?").join(",");
 
-  const isDm = conv.type === "dm";
-  const otherOnline = other ? isUserOnline(other) : false;
-  const presenceStatus = !other ? "Offline"
-    : (!otherOnline || other.status === "Offline") ? "Offline"
-    : (other.status || "Online");
+  const reactionRows = db.prepare(`
+    SELECT message_id, emoji, user_id FROM message_reactions
+    WHERE message_id IN (${placeholders})
+  `).all(...ids) as { message_id: number; emoji: string; user_id: number }[];
 
-  return {
-    id: conv.id,
-    name: isDm ? (other?.username || conv.name) : conv.name,
-    msg: previewText(last),
-    time: last ? timeAgo(last.created_at) : "now",
-    unread: isDm ? unreadCount(conv.id, userId) : 0,
-    online: otherOnline && presenceStatus !== "Offline",
-    status: isDm ? presenceStatus : undefined,
-    muted: selfPart?.muted === 1,
-    bio: isDm ? (other?.bio || "") : conv.bio,
-    type: conv.type,
-    avatarUrl: isDm ? (other?.avatarUrl || undefined) : undefined,
-    otherUserId: isDm ? other?.id : undefined,
-    village: isDm ? other?.village : undefined,
-    clan: isDm ? other?.clan : undefined,
-    level: isDm ? other?.level : undefined,
-    rank: isDm ? other?.rank : undefined,
-    memberSince: isDm ? other?.memberSince : undefined,
-    isTeamMember: isDm ? other?.isTeamMember === 1 : undefined,
-    country: isDm ? other?.country : undefined,
-    city: isDm ? other?.city : undefined,
-  };
-}
-
-function formatMessage(msg: Record<string, unknown>, currentUserId: number) {
-  const reactions = db.prepare(`
-    SELECT emoji, user_id FROM message_reactions WHERE message_id = ?
-  `).all(msg.id as number) as { emoji: string; user_id: number }[];
-
-  const reactionMap: Record<string, string[]> = {};
-  for (const r of reactions) {
-    if (!reactionMap[r.emoji]) reactionMap[r.emoji] = [];
-    reactionMap[r.emoji].push(String(r.user_id));
-  }
-
-  let replyTo: { id: number; user: string; preview: string } | undefined;
-  if (msg.reply_to_id) {
-    const parent = db.prepare(`
-      SELECT m.id, u.username, m.content FROM messages m
-      JOIN users u ON u.id = m.user_id WHERE m.id = ?
-    `).get(msg.reply_to_id) as { id: number; username: string; content: string } | undefined;
-    if (parent) {
-      replyTo = { id: parent.id, user: parent.username, preview: parent.content.slice(0, 80) };
+  const reactionsByMsg = new Map<number, Record<string, string[]>>();
+  for (const r of reactionRows) {
+    let map = reactionsByMsg.get(r.message_id);
+    if (!map) {
+      map = {};
+      reactionsByMsg.set(r.message_id, map);
     }
+    if (!map[r.emoji]) map[r.emoji] = [];
+    map[r.emoji].push(String(r.user_id));
   }
 
-  return {
-    id: msg.id,
-    userId: msg.user_id as number,
-    user: msg.username,
-    msg: msg.content,
-    time: formatTime(msg.created_at as string),
-    self: msg.user_id === currentUserId,
-    avatarUrl: (msg.avatar_url as string | null) || undefined,
-    mediaUrl: msg.media_url || undefined,
-    mediaType: msg.media_type || undefined,
-    fileName: msg.file_name || undefined,
-    fileSize: msg.file_size || undefined,
-    replyTo,
-    edited: !!msg.edited_at,
-    reactions: Object.keys(reactionMap).length ? reactionMap : undefined,
-  };
+  const replyIds = [...new Set(
+    rows.map(r => r.reply_to_id as number | null | undefined).filter((id): id is number => id != null),
+  )];
+  const parentsById = new Map<number, { id: number; username: string; content: string }>();
+  if (replyIds.length) {
+    const rp = replyIds.map(() => "?").join(",");
+    const parents = db.prepare(`
+      SELECT m.id, u.username, m.content FROM messages m
+      JOIN users u ON u.id = m.user_id WHERE m.id IN (${rp})
+    `).all(...replyIds) as { id: number; username: string; content: string }[];
+    for (const p of parents) parentsById.set(p.id, p);
+  }
+
+  return rows.map(msg => {
+    const reactionMap = reactionsByMsg.get(msg.id as number);
+    let replyTo: FormattedMessage["replyTo"];
+    const replyId = msg.reply_to_id as number | null | undefined;
+    if (replyId != null) {
+      const parent = parentsById.get(replyId);
+      if (parent) {
+        replyTo = { id: parent.id, user: parent.username, preview: parent.content.slice(0, 80) };
+      }
+    }
+    return {
+      id: msg.id as number,
+      userId: msg.user_id as number,
+      user: msg.username as string,
+      msg: msg.content as string,
+      time: formatTime(msg.created_at as string),
+      self: msg.user_id === currentUserId,
+      avatarUrl: (msg.avatar_url as string | null) || undefined,
+      mediaUrl: (msg.media_url as string | null) || undefined,
+      mediaType: (msg.media_type as string | null) || undefined,
+      fileName: (msg.file_name as string | null) || undefined,
+      fileSize: (msg.file_size as number | null) || undefined,
+      replyTo,
+      edited: !!msg.edited_at,
+      reactions: reactionMap && Object.keys(reactionMap).length ? reactionMap : undefined,
+    };
+  });
+}
+
+function formatMessage(msg: Record<string, unknown>, currentUserId: number): FormattedMessage {
+  return formatMessages([msg], currentUserId)[0];
+}
+
+/** Format once, then flip `self` per viewer for realtime fan-out. */
+function formatMessageForViewers(msg: Record<string, unknown>, authorId: number) {
+  const base = formatMessage(msg, authorId);
+  return (viewerId: number) => ({
+    ...base,
+    self: authorId === viewerId,
+  });
+}
+
+function formatConversations(
+  convs: {
+    id: number; type: string; name: string; bio: string;
+    last_message_at?: string | null; last_message_preview?: string | null;
+  }[],
+  userId: number,
+) {
+  if (!convs.length) return [];
+
+  const ids = convs.map(c => c.id);
+  const placeholders = ids.map(() => "?").join(",");
+
+  const selfParts = db.prepare(`
+    SELECT conversation_id, muted, last_read_at
+    FROM conversation_participants
+    WHERE user_id = ? AND conversation_id IN (${placeholders})
+  `).all(userId, ...ids) as { conversation_id: number; muted: number; last_read_at: string | null }[];
+  const selfByConv = new Map(selfParts.map(r => [r.conversation_id, r]));
+
+  const others = db.prepare(`
+    SELECT cp.conversation_id as conversationId, u.id, u.is_online, u.last_seen_at, u.status, u.username,
+           u.avatar_url as avatarUrl, u.bio, u.village, u.clan, u.level, u.rank,
+           u.member_since as memberSince, u.is_team_member as isTeamMember, u.country, u.city
+    FROM conversation_participants cp
+    JOIN users u ON u.id = cp.user_id
+    WHERE cp.conversation_id IN (${placeholders}) AND cp.user_id != ?
+  `).all(...ids, userId) as {
+    conversationId: number; id: number; is_online: number; last_seen_at: string | null; status: string;
+    username: string; avatarUrl: string | null; bio: string; village: string; clan: string;
+    level: number; rank: string; memberSince: string; isTeamMember: number; country: string; city: string | null;
+  }[];
+  const otherByConv = new Map<number, typeof others[0]>();
+  for (const o of others) {
+    if (!otherByConv.has(o.conversationId)) otherByConv.set(o.conversationId, o);
+  }
+
+  const unreadRows = db.prepare(`
+    SELECT m.conversation_id as conversationId, COUNT(*) as c
+    FROM messages m
+    JOIN conversation_participants cp
+      ON cp.conversation_id = m.conversation_id AND cp.user_id = ?
+    WHERE m.conversation_id IN (${placeholders})
+      AND m.user_id != ?
+      AND (cp.last_read_at IS NULL OR m.created_at > cp.last_read_at)
+    GROUP BY m.conversation_id
+  `).all(userId, ...ids, userId) as { conversationId: number; c: number }[];
+  const unreadByConv = new Map(unreadRows.map(r => [r.conversationId, r.c]));
+
+  return convs.map(conv => {
+    const other = otherByConv.get(conv.id);
+    const selfPart = selfByConv.get(conv.id);
+    const isDm = conv.type === "dm";
+    const otherOnline = other ? isUserOnline(other) : false;
+    const presenceStatus = !other ? "Offline"
+      : (!otherOnline || other.status === "Offline") ? "Offline"
+      : (other.status || "Online");
+
+    let msgPreview = conv.last_message_preview || "No messages yet";
+    let msgTime = conv.last_message_at ? timeAgo(conv.last_message_at) : "now";
+    if (!conv.last_message_at && !conv.last_message_preview) {
+      const last = getLastMessage(conv.id);
+      msgPreview = previewFromMessage(last);
+      msgTime = last ? timeAgo(last.created_at) : "now";
+    }
+
+    return {
+      id: conv.id,
+      name: isDm ? (other?.username || conv.name) : conv.name,
+      msg: msgPreview,
+      time: msgTime,
+      unread: isDm ? (unreadByConv.get(conv.id) || 0) : 0,
+      online: otherOnline && presenceStatus !== "Offline",
+      status: isDm ? presenceStatus : undefined,
+      muted: selfPart?.muted === 1,
+      bio: isDm ? (other?.bio || "") : conv.bio,
+      type: conv.type,
+      avatarUrl: isDm ? (other?.avatarUrl || undefined) : undefined,
+      otherUserId: isDm ? other?.id : undefined,
+      village: isDm ? other?.village : undefined,
+      clan: isDm ? other?.clan : undefined,
+      level: isDm ? other?.level : undefined,
+      rank: isDm ? other?.rank : undefined,
+      memberSince: isDm ? other?.memberSince : undefined,
+      isTeamMember: isDm ? other?.isTeamMember === 1 : undefined,
+      country: isDm ? other?.country : undefined,
+      city: isDm ? other?.city : undefined,
+    };
+  });
+}
+
+function formatConversation(conv: {
+  id: number; type: string; name: string; bio: string;
+  last_message_at?: string | null; last_message_preview?: string | null;
+}, userId: number) {
+  return formatConversations([conv], userId)[0];
 }
 
 router.get("/conversations", requireAuth, (req, res) => {
@@ -170,15 +293,15 @@ router.get("/conversations", requireAuth, (req, res) => {
   const convs = db.prepare(`
     SELECT c.* FROM conversations c
     JOIN conversation_participants cp ON cp.conversation_id = c.id
-    LEFT JOIN (
-      SELECT conversation_id, MAX(created_at) as last_at FROM messages GROUP BY conversation_id
-    ) lm ON lm.conversation_id = c.id
     WHERE cp.user_id = ? AND (c.archived IS NULL OR c.archived = 0)
-    ORDER BY c.type DESC, COALESCE(lm.last_at, c.created_at) DESC
-  `).all(userId) as { id: number; type: string; name: string; bio: string; visibility?: string }[];
+    ORDER BY c.type DESC, COALESCE(c.last_message_at, c.created_at) DESC
+  `).all(userId) as {
+    id: number; type: string; name: string; bio: string; visibility?: string;
+    last_message_at?: string | null; last_message_preview?: string | null;
+  }[];
 
   const filtered = convs.filter(c => c.type !== "channel" || userCanAccessChannel(userId, c.id));
-  res.json({ conversations: filtered.map(c => formatConversation(c, userId)) });
+  res.json({ conversations: formatConversations(filtered, userId) });
 });
 
 router.get("/conversations/:id", requireAuth, (req, res) => {
@@ -194,9 +317,52 @@ router.get("/conversations/:id", requireAuth, (req, res) => {
     res.status(403).json({ error: "Not a participant" });
     return;
   }
-  const conv = db.prepare("SELECT * FROM conversations WHERE id = ?").get(convId) as { id: number; type: string; name: string; bio: string };
+  const conv = db.prepare("SELECT * FROM conversations WHERE id = ?").get(convId) as {
+    id: number; type: string; name: string; bio: string;
+    last_message_at?: string | null; last_message_preview?: string | null;
+  };
   res.json({ conversation: formatConversation(conv, req.user!.id) });
 });
+
+type MsgRow = Record<string, unknown>;
+
+function fetchOlderThan(convId: number, anchor: { id: number; created_at: string }, fetchLimit: number) {
+  return db.prepare(`
+    SELECT m.*, u.username, u.avatar_url FROM messages m
+    JOIN users u ON u.id = m.user_id
+    WHERE m.conversation_id = ?
+      AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?))
+    ORDER BY m.created_at DESC, m.id DESC
+    LIMIT ?
+  `).all(convId, anchor.created_at, anchor.created_at, anchor.id, fetchLimit) as MsgRow[];
+}
+
+function fetchNewerThan(convId: number, anchor: { id: number; created_at: string }, fetchLimit: number) {
+  return db.prepare(`
+    SELECT m.*, u.username, u.avatar_url FROM messages m
+    JOIN users u ON u.id = m.user_id
+    WHERE m.conversation_id = ?
+      AND (m.created_at > ? OR (m.created_at = ? AND m.id > ?))
+    ORDER BY m.created_at ASC, m.id ASC
+    LIMIT ?
+  `).all(convId, anchor.created_at, anchor.created_at, anchor.id, fetchLimit) as MsgRow[];
+}
+
+function fetchNewest(convId: number, fetchLimit: number) {
+  return db.prepare(`
+    SELECT m.*, u.username, u.avatar_url FROM messages m
+    JOIN users u ON u.id = m.user_id
+    WHERE m.conversation_id = ?
+    ORDER BY m.created_at DESC, m.id DESC
+    LIMIT ?
+  `).all(convId, fetchLimit) as MsgRow[];
+}
+
+function resolveAnchor(convId: number, messageId: number) {
+  return db.prepare(`
+    SELECT id, created_at FROM messages WHERE id = ? AND conversation_id = ?
+  `).get(messageId, convId) as { id: number; created_at: string } | undefined;
+}
 
 router.get("/conversations/:id/messages", requireAuth, (req, res) => {
   const convId = Number(req.params.id);
@@ -219,51 +385,72 @@ router.get("/conversations/:id/messages", requireAuth, (req, res) => {
     ? Math.min(Math.floor(rawLimit), MAX_LIMIT)
     : DEFAULT_LIMIT;
   const beforeId = req.query.before != null ? Number(req.query.before) : null;
+  const afterId = req.query.after != null ? Number(req.query.after) : null;
+  const aroundId = req.query.around != null ? Number(req.query.around) : null;
   const fetchLimit = limit + 1;
 
-  let rows: unknown[];
-  if (beforeId != null && Number.isFinite(beforeId)) {
-    const anchor = db.prepare(`
-      SELECT id, created_at FROM messages WHERE id = ? AND conversation_id = ?
-    `).get(beforeId, convId) as { id: number; created_at: string } | undefined;
+  let page: MsgRow[] = [];
+  let hasMoreOlder = false;
+  let hasMoreNewer = false;
 
+  if (aroundId != null && Number.isFinite(aroundId)) {
+    const anchor = resolveAnchor(convId, aroundId);
     if (!anchor) {
-      res.json({ messages: [], hasMore: false });
+      res.json({ messages: [], hasMore: false, hasMoreOlder: false, hasMoreNewer: false });
       return;
     }
+    const olderHalf = Math.max(1, Math.floor(limit / 2));
+    const newerHalf = Math.max(1, limit - olderHalf - 1);
+    const olderRows = fetchOlderThan(convId, anchor, olderHalf + 1);
+    hasMoreOlder = olderRows.length > olderHalf;
+    const older = (hasMoreOlder ? olderRows.slice(0, olderHalf) : olderRows).reverse();
 
-    // Older messages relative to the anchor (scroll-up pagination)
-    rows = db.prepare(`
+    const center = db.prepare(`
       SELECT m.*, u.username, u.avatar_url FROM messages m
       JOIN users u ON u.id = m.user_id
-      WHERE m.conversation_id = ?
-        AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?))
-      ORDER BY m.created_at DESC, m.id DESC
-      LIMIT ?
-    `).all(convId, anchor.created_at, anchor.created_at, anchor.id, fetchLimit);
+      WHERE m.id = ? AND m.conversation_id = ?
+    `).get(aroundId, convId) as MsgRow | undefined;
+
+    const newerRows = fetchNewerThan(convId, anchor, newerHalf + 1);
+    hasMoreNewer = newerRows.length > newerHalf;
+    const newer = hasMoreNewer ? newerRows.slice(0, newerHalf) : newerRows;
+
+    page = center ? [...older, center, ...newer] : [...older, ...newer];
+  } else if (afterId != null && Number.isFinite(afterId)) {
+    const anchor = resolveAnchor(convId, afterId);
+    if (!anchor) {
+      res.json({ messages: [], hasMore: false, hasMoreOlder: true, hasMoreNewer: false });
+      return;
+    }
+    const newerRows = fetchNewerThan(convId, anchor, fetchLimit);
+    hasMoreNewer = newerRows.length > limit;
+    page = hasMoreNewer ? newerRows.slice(0, limit) : newerRows;
+    hasMoreOlder = true; // there is always content at/before the after cursor when scrolling down from history
+  } else if (beforeId != null && Number.isFinite(beforeId)) {
+    const anchor = resolveAnchor(convId, beforeId);
+    if (!anchor) {
+      res.json({ messages: [], hasMore: false, hasMoreOlder: false, hasMoreNewer: true });
+      return;
+    }
+    const olderRows = fetchOlderThan(convId, anchor, fetchLimit);
+    hasMoreOlder = olderRows.length > limit;
+    page = (hasMoreOlder ? olderRows.slice(0, limit) : olderRows).reverse();
+    hasMoreNewer = true;
   } else {
     // Initial load: newest page
-    rows = db.prepare(`
-      SELECT m.*, u.username, u.avatar_url FROM messages m
-      JOIN users u ON u.id = m.user_id
-      WHERE m.conversation_id = ?
-      ORDER BY m.created_at DESC, m.id DESC
-      LIMIT ?
-    `).all(convId, fetchLimit);
-  }
-
-  const hasMore = rows.length > limit;
-  const page = (hasMore ? rows.slice(0, limit) : rows).reverse();
-
-  // Only mark read on the initial (newest) page so history loads do not affect unread
-  if (beforeId == null) {
+    const rows = fetchNewest(convId, fetchLimit);
+    hasMoreOlder = rows.length > limit;
+    page = (hasMoreOlder ? rows.slice(0, limit) : rows).reverse();
+    hasMoreNewer = false;
     markConversationRead(convId, req.user!.id);
     emitToUser(req.user!.id, "conversation:update", { conversationId: convId });
   }
 
   res.json({
-    messages: page.map(m => formatMessage(m as Record<string, unknown>, req.user!.id)),
-    hasMore,
+    messages: formatMessages(page, req.user!.id),
+    hasMore: hasMoreOlder,
+    hasMoreOlder,
+    hasMoreNewer,
   });
 });
 
@@ -306,12 +493,20 @@ router.post("/messages", requireAuth, (req, res) => {
   `).get(result.lastInsertRowid);
 
   const raw = inserted as Record<string, unknown>;
-  const formatted = formatMessage(raw, req.user!.id);
+  const forViewer = formatMessageForViewers(raw, req.user!.id);
+  const formatted = forViewer(req.user!.id);
+  const ts = raw.created_at as string;
+  touchConversationLastMessage(conversationId, ts, previewFromMessage({
+    content: msg,
+    media_type: null,
+    file_name: null,
+  }));
   emitMessageToParticipants(conversationId, "message:new", (viewerId) => ({
     conversationId,
-    message: formatMessage(raw, viewerId),
+    message: forViewer(viewerId),
   }));
   emitConversationUpdate(conversationId);
+  scheduleAdminStatsRefresh();
 
   res.status(201).json({ message: formatted });
 });
@@ -349,12 +544,19 @@ router.post("/messages/media", requireAuth, upload.single("file"), (req, res) =>
   `).get(result.lastInsertRowid);
 
   const raw = inserted as Record<string, unknown>;
-  const formatted = formatMessage(raw, req.user!.id);
+  const forViewer = formatMessageForViewers(raw, req.user!.id);
+  const formatted = forViewer(req.user!.id);
+  touchConversationLastMessage(conversationId, raw.created_at as string, previewFromMessage({
+    content: "",
+    media_type: mediaType,
+    file_name: req.file.originalname,
+  }));
   emitMessageToParticipants(conversationId, "message:new", (viewerId) => ({
     conversationId,
-    message: formatMessage(raw, viewerId),
+    message: forViewer(viewerId),
   }));
   emitConversationUpdate(conversationId);
+  scheduleAdminStatsRefresh();
 
   res.status(201).json({ message: formatted });
 });
@@ -370,11 +572,13 @@ router.patch("/messages/:id", requireAuth, (req, res) => {
   db.prepare("UPDATE messages SET content = ?, edited_at = ? WHERE id = ?").run(msg, now(), msgId);
   const updated = db.prepare("SELECT m.*, u.username, u.avatar_url FROM messages m JOIN users u ON u.id = m.user_id WHERE m.id = ?").get(msgId);
   const raw = updated as Record<string, unknown>;
-  const formatted = formatMessage(raw, req.user!.id);
+  const forViewer = formatMessageForViewers(raw, req.user!.id);
+  const formatted = forViewer(req.user!.id);
   const convId = (existing as { conversation_id: number }).conversation_id;
+  refreshConversationLastMessage(convId);
   emitMessageToParticipants(convId, "message:updated", (viewerId) => ({
     conversationId: convId,
-    message: formatMessage(raw, viewerId),
+    message: forViewer(viewerId),
   }));
   res.json({ message: formatted });
 });
@@ -388,6 +592,7 @@ router.delete("/messages/:id", requireAuth, (req, res) => {
   }
   const convId = (existing as { conversation_id: number }).conversation_id;
   db.prepare("DELETE FROM messages WHERE id = ?").run(msgId);
+  refreshConversationLastMessage(convId);
   emitMessageToParticipants(convId, "message:deleted", () => ({ conversationId: convId, messageId: msgId }));
   emitConversationUpdate(convId);
   res.json({ ok: true });

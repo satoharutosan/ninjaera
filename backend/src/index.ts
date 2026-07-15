@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
+import compression from "compression";
 import path from "path";
 import fs from "fs";
 import http from "http";
@@ -40,10 +41,19 @@ const app = express();
 const PORT = Number(process.env.PORT) || 3001;
 const CORS_ORIGIN = process.env.CORS_ORIGIN || "http://localhost:5173";
 
+// gzip/deflate shrinks JSON + HTML for free-tier bandwidth budgets
+app.use(compression());
 app.use(cors({ origin: CORS_ORIGIN, credentials: true }));
 app.use(cookieParser());
-app.use(express.json());
-app.use("/uploads", express.static(uploadDir));
+app.use(express.json({ limit: "1mb" }));
+
+// Cache uploaded media aggressively (filenames are unique/immutable once written).
+app.use("/uploads", express.static(uploadDir, {
+  maxAge: "7d",
+  etag: true,
+  lastModified: true,
+  immutable: true,
+}));
 
 app.use("/api/auth", authRoutes);
 app.use("/api/auth", oauthRoutes);
@@ -57,6 +67,35 @@ app.use("/api/admin", adminRoutes);
 app.use("/api", dmRoutes);
 app.use("/api", gameDownloadRoutes);
 app.use("/api", contentRoutes);
+
+app.get("/api/health", (_req, res) => {
+  res.json({ ok: true, ts: Date.now() });
+});
+
+// Optional: serve Vite build from the same Node process (Railway/Render single-service deploys).
+const spaDir = process.env.SPA_DIR ? path.resolve(process.env.SPA_DIR) : null;
+if (spaDir && fs.existsSync(spaDir)) {
+  app.use(express.static(spaDir, {
+    maxAge: "1h",
+    etag: true,
+    setHeaders(res, filePath) {
+      if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+        res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+      }
+    },
+  }));
+  app.get(/.*/, (req, res, next) => {
+    if (
+      req.path.startsWith("/api")
+      || req.path.startsWith("/uploads")
+      || req.path.startsWith("/socket.io")
+    ) {
+      next();
+      return;
+    }
+    res.sendFile(path.join(spaDir, "index.html"));
+  });
+}
 
 app.use(notFound);
 app.use(errorHandler);

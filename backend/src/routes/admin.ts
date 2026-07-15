@@ -7,7 +7,7 @@ import { db, dbPath, dataDirectory } from "../db/index.js";
 import { requireAuth, publicUser, timeAgo } from "../middleware/auth.js";
 import { requireAdmin } from "../middleware/admin.js";
 import { logActivitySync } from "../services/activityLog.js";
-import { emitToAdmins, emitToUser, broadcast } from "../services/realtime.js";
+import { emitToAdmins, emitToUser, broadcast, scheduleAdminStatsRefresh } from "../services/realtime.js";
 import { isUserOnline } from "../services/presence.js";
 import { syncPrivateChannelParticipants, syncPublicChannels, syncPrivateChannelsForUser } from "../services/channels.js";
 
@@ -38,12 +38,35 @@ const gameUpload = multer({ storage: gameStorage, limits: { fileSize: 500 * 1024
 router.use(requireAuth, requireAdmin);
 
 // ── Dashboard ────────────────────────────────────────────────────────────────
+const STATS_CACHE_TTL_MS = 5000;
+let statsCache: { at: number; body: unknown } | null = null;
+
 router.get("/stats", (_req, res) => {
+  if (statsCache && Date.now() - statsCache.at < STATS_CACHE_TTL_MS) {
+    res.json(statsCache.body);
+    return;
+  }
+
   const totalUsers = (db.prepare("SELECT COUNT(*) as c FROM users WHERE is_npc = 0 AND is_deleted = 0").get() as { c: number }).c;
-  const allUsers = db.prepare("SELECT is_online, last_seen_at, is_admin, is_team_member FROM users WHERE is_npc = 0 AND is_deleted = 0").all() as {
-    is_online: number; last_seen_at: string | null; is_admin: number; is_team_member: number;
-  }[];
-  const onlineUsers = allUsers.filter(u => isUserOnline(u)).length;
+  // Online window matches presence.ts ONLINE_WINDOW_MS (5 minutes) without loading all user rows.
+  const onlineUsers = (db.prepare(`
+    SELECT COUNT(*) as c FROM users
+    WHERE is_npc = 0 AND is_deleted = 0
+      AND is_online = 1
+      AND (status IS NULL OR status != 'Offline')
+      AND last_seen_at IS NOT NULL
+      AND last_seen_at > datetime('now', '-5 minutes')
+  `).get() as { c: number }).c;
+  const roleCounts = db.prepare(`
+    SELECT
+      SUM(CASE WHEN is_admin = 1 THEN 1 ELSE 0 END) as adminCount,
+      SUM(CASE WHEN is_team_member = 1 AND is_admin != 1 THEN 1 ELSE 0 END) as teamCount
+    FROM users WHERE is_npc = 0 AND is_deleted = 0
+  `).get() as { adminCount: number; teamCount: number };
+  const adminCount = roleCounts.adminCount || 0;
+  const teamCount = roleCounts.teamCount || 0;
+  const registeredCount = Math.max(0, totalUsers - adminCount - teamCount);
+
   const totalChannels = (db.prepare("SELECT COUNT(*) as c FROM conversations WHERE type = 'channel' AND archived = 0").get() as { c: number }).c;
   const totalDms = (db.prepare("SELECT COUNT(*) as c FROM conversations WHERE type = 'dm'").get() as { c: number }).c;
   const pendingApplications = (db.prepare("SELECT COUNT(*) as c FROM job_applications WHERE status = 'pending'").get() as { c: number }).c;
@@ -67,9 +90,6 @@ router.get("/stats", (_req, res) => {
     SELECT COUNT(*) as c FROM activity_logs
     WHERE event_category = 'downloads' AND result = 'success'
   `).get() as { c: number }).c;
-  const adminCount = allUsers.filter(u => u.is_admin === 1).length;
-  const teamCount = allUsers.filter(u => u.is_team_member === 1 && u.is_admin !== 1).length;
-  const registeredCount = Math.max(0, totalUsers - adminCount - teamCount);
 
   const dayKeys: string[] = [];
   for (let i = 13; i >= 0; i--) {
@@ -178,7 +198,7 @@ router.get("/stats", (_req, res) => {
     eventCategory: string; description: string; userRole: string | null; result: string;
   }[];
 
-  res.json({
+  const body = {
     totalUsers, onlineUsers, totalChannels, totalDms, pendingApplications, teamMembers, unreadNotifications,
     unreadContacts, totalContacts, repliedContacts, pendingContactReplies,
     totalMessages, pendingDmRequests, totalResources, totalDownloads,
@@ -204,7 +224,9 @@ router.get("/stats", (_req, res) => {
       time: timeAgo(c.createdAt),
     })),
     recentActivity: recentActivity.map(a => ({ ...a, time: timeAgo(a.timestamp) })),
-  });
+  };
+  statsCache = { at: Date.now(), body };
+  res.json(body);
 });
 
 // ── Users ──────────────────────────────────────────────────────────────────────
@@ -410,7 +432,7 @@ router.post("/notifications", (req, res) => {
     VALUES (?, ?, ?, ?, ?, ?, ?, 'announcement', ?, ?)
   `).run(title, body, source || "Operations", page || "alarms", recipientType || "everyone", JSON.stringify(recipientIds || []), pinned ? 1 : 0, req.user!.id, ts);
   emitToAdmins("admin:notifications", {});
-  emitToAdmins("admin:stats", {});
+  scheduleAdminStatsRefresh();
   broadcast("notification:new", {});
   broadcast("counts:update", {});
   res.status(201).json({ id: result.lastInsertRowid });
@@ -486,6 +508,7 @@ router.post("/channels", (req, res) => {
   } else {
     syncPrivateChannelParticipants(convId);
   }
+  scheduleAdminStatsRefresh();
   res.status(201).json({ id: convId });
 });
 
@@ -509,6 +532,7 @@ router.patch("/channels/:id", (req, res) => {
     const insert = db.prepare("INSERT OR IGNORE INTO conversation_participants (conversation_id, user_id, joined_at) VALUES (?, ?, ?)");
     for (const u of users) insert.run(id, u.id, ts);
   }
+  scheduleAdminStatsRefresh();
   res.json({ ok: true });
 });
 
@@ -517,6 +541,7 @@ router.delete("/channels/:id", (req, res) => {
   db.prepare("DELETE FROM messages WHERE conversation_id = ?").run(id);
   db.prepare("DELETE FROM conversation_participants WHERE conversation_id = ?").run(id);
   db.prepare("DELETE FROM conversations WHERE id = ? AND type = 'channel'").run(id);
+  scheduleAdminStatsRefresh();
   res.json({ ok: true });
 });
 
@@ -611,7 +636,7 @@ router.post("/contacts/:id/reply", (req, res) => {
 
   const updated = db.prepare("SELECT * FROM contact_tickets WHERE id = ?").get(id) as Record<string, unknown>;
   emitToAdmins("admin:contact", { contactId: id });
-  emitToAdmins("admin:stats", {});
+  scheduleAdminStatsRefresh();
   res.status(201).json({ contact: formatContactTicket(updated) });
 });
 
@@ -675,7 +700,7 @@ router.post("/applications/:id/approve", (req, res) => {
 
   emitToUser(app.user_id, "notification:new", {});
   emitToAdmins("admin:applications", {});
-  emitToAdmins("admin:stats", {});
+  scheduleAdminStatsRefresh();
   emitToAdmins("team:updated", {});
   broadcast("team:updated", {});
 
@@ -697,7 +722,7 @@ router.post("/applications/:id/reject", (req, res) => {
 
   emitToUser(app.user_id, "notification:new", {});
   emitToAdmins("admin:applications", {});
-  emitToAdmins("admin:stats", {});
+  scheduleAdminStatsRefresh();
 
   res.json({ ok: true });
 });
@@ -737,6 +762,7 @@ router.post("/resources", upload.single("file"), (req, res) => {
     INSERT INTO resources (title, category, description, content_url, published_at, enabled, uploader_id, file_size, version, sort_order)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(title, category, description || "", fileUrl, ts, enabled === "false" ? 0 : 1, req.user!.id, fileSize, version || null, Number(sortOrder) || 0);
+  scheduleAdminStatsRefresh();
   res.status(201).json({ id: result.lastInsertRowid });
 });
 
@@ -761,6 +787,7 @@ router.patch("/resources/:id", upload.single("file"), (req, res) => {
   if (!fields.length) { res.status(400).json({ error: "No fields to update" }); return; }
   vals.push(id);
   db.prepare(`UPDATE resources SET ${fields.join(", ")} WHERE id = ?`).run(...vals);
+  scheduleAdminStatsRefresh();
   res.json({ ok: true });
 });
 
@@ -772,6 +799,7 @@ router.delete("/resources/:id", (req, res) => {
     if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
   }
   db.prepare("DELETE FROM resources WHERE id = ?").run(id);
+  scheduleAdminStatsRefresh();
   res.json({ ok: true });
 });
 
@@ -1070,7 +1098,7 @@ router.post("/database/restore", restoreUpload.single("file"), (req, res) => {
           description: `Restored database from uploaded backup (safety copy: ${path.basename(safety)})`,
           affectedObject: `backup:${path.basename(safety)}`,
         });
-        emitToAdmins("admin:stats", {});
+        scheduleAdminStatsRefresh();
         res.json({ ok: true, safetyBackup: path.basename(safety) });
       } catch (inner) {
         try { db.exec("ROLLBACK"); } catch { /* */ }

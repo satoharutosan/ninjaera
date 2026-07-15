@@ -5,12 +5,17 @@ import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import SendIcon from "@mui/icons-material/Send";
 import imgMoonlight from "@/imports/ca45f148-ce4c-4dfa-b709-6b24cd36cd25.png";
 import imgKunoichi from "@/imports/ChatGPT_Image_Jul_7__2026__10_32_45_AM.png";
-import { useC, SH2, Field, FilledBtn, TonalBtn } from "@/app/shared";
+import { useC, useWide, SH2, Field, FilledBtn, TonalBtn } from "@/app/shared";
 import { api, ApiError } from "@/app/api";
 
 function ContactPage() {
   const C = useC();
   const isLight = C.bg === "#FFFBFE";
+  const isMobile = !useWide(767);
+  /** Slightly translucent field fill on mobile so the form background image peeks through. */
+  const fieldBg = isMobile
+    ? (isLight ? "rgba(255,251,254,0.72)" : "rgba(29,27,32,0.62)")
+    : undefined;
   const [sent, setSent] = useState(false);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -49,17 +54,22 @@ function ContactPage() {
       <h2 className="text-2xl font-light mb-7" style={{ color:C.onSurface, fontFamily:"'Trade Winds', cursive" }}>Send a <span className="font-medium">Message</span></h2>
       {error && <p className="text-sm mb-4" style={{ color:C.error, fontFamily:"Roboto" }}>{error}</p>}
       <div className="flex flex-col flex-1 gap-6">
-        <Field label="Name" placeholder="Your name" value={name} onChange={setName} />
-        <Field label="Email" type="email" placeholder="your@email.com" value={email} onChange={setEmail} />
-        <Field label="Subject" placeholder="What is this about?" value={subject} onChange={setSubject} />
+        <Field label="Name" placeholder="Your name" value={name} onChange={setName} bg={fieldBg} />
+        <Field label="Email" type="email" placeholder="your@email.com" value={email} onChange={setEmail} bg={fieldBg} />
+        <Field label="Subject" placeholder="What is this about?" value={subject} onChange={setSubject} bg={fieldBg} />
         <div className="relative mt-1">
-          <select value={category} onChange={e => setCategory(e.target.value)} className="w-full px-4 py-3.5 rounded-[4px] border text-sm focus:outline-none appearance-none" style={{ borderColor:C.outline, color:C.onSurface, background:C.surface, fontFamily:"Roboto" }}>
+          <select
+            value={category}
+            onChange={e => setCategory(e.target.value)}
+            className="w-full px-4 py-3.5 rounded-[4px] border text-sm focus:outline-none appearance-none"
+            style={{ borderColor:C.outline, color:C.onSurface, background: fieldBg ?? C.surface, fontFamily:"Roboto" }}
+          >
             {["General","Bug Report","Account","Billing","Partnership"].map(o => <option key={o}>{o}</option>)}
           </select>
           <span className="absolute left-3 -top-2 px-1 text-xs" style={{ color:C.primary, background:C.surface, fontFamily:"Roboto" }}>Category</span>
           <ExpandMoreIcon style={{ fontSize:20, color:C.onSurfaceVar, position:"absolute", right:12, top:"50%", transform:"translateY(-50%)", pointerEvents:"none" }} />
         </div>
-        <Field label="Message" placeholder="Write your message..." rows={8} value={message} onChange={setMessage} cls="flex-1" />
+        <Field label="Message" placeholder="Write your message..." rows={8} value={message} onChange={setMessage} cls="flex-1" bg={fieldBg} />
         <FilledBtn onClick={handleSubmit} cls="w-full justify-center"><SendIcon style={{ fontSize:16 }} />{loading ? "Sending..." : "Send Message"}</FilledBtn>
       </div>
     </div>
@@ -87,7 +97,7 @@ function ContactPage() {
               <ImageWithFallback src={imgKunoichi} alt="" className="w-full h-full object-cover object-top" />
               <div
                 className="absolute inset-0"
-                style={{ background: isLight ? "rgba(255,251,254,0.90)" : "rgba(29,27,32,0.88)" }}
+                style={{ background: isLight ? "rgba(255,251,254,0.78)" : "rgba(29,27,32,0.72)" }}
               />
             </div>
             <div className="relative z-10 flex flex-col flex-1">{formInner}</div>

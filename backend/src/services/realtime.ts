@@ -138,6 +138,16 @@ export function emitToAdmins(event: string, data: unknown) {
   io?.to("admin").emit(event, data);
 }
 
+/** Coalesce high-frequency metric changes into at most one admin:stats pulse per window. */
+let adminStatsTimer: ReturnType<typeof setTimeout> | null = null;
+export function scheduleAdminStatsRefresh(delayMs = 750) {
+  if (adminStatsTimer) return;
+  adminStatsTimer = setTimeout(() => {
+    adminStatsTimer = null;
+    emitToAdmins("admin:stats", {});
+  }, delayMs);
+}
+
 export function broadcast(event: string, data: unknown) {
   io?.emit(event, data);
 }

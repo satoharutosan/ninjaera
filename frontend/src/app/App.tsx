@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, lazy, Suspense } from "react";
 import { toast, Toaster } from "sonner";
 
 // MUI Icons (Navbar & Footer)
@@ -24,6 +24,7 @@ import AdminPanelSettingsIcon from "@mui/icons-material/AdminPanelSettings";
 import LogoutIcon from "@mui/icons-material/Logout";
 import PersonIcon from "@mui/icons-material/Person";
 import ChatBubbleIcon from "@mui/icons-material/ChatBubble";
+import CircularProgress from "@mui/material/CircularProgress";
 
 import {
   Page, AppSettings, Contact,
@@ -32,23 +33,36 @@ import {
   FilledBtn, OutlinedBtn,
 } from "@/app/shared";
 import { connectRealtime, disconnectRealtime, onRealtimeEvent, joinConversation } from "@/app/realtime";
-
-import HomePage from "@/app/pages/HomePage";
-import AboutPage from "@/app/pages/AboutPage";
-import ResourcesPage from "@/app/pages/ResourcesPage";
-import TeamworkPage from "@/app/pages/TeamworkPage";
-import ContactPage from "@/app/pages/ContactPage";
-import AlarmsPage from "@/app/pages/AlarmsPage";
-import LoginPage from "@/app/pages/LoginPage";
-import SignUpPage from "@/app/pages/SignUpPage";
-import OAuthCallbackPage from "@/app/pages/OAuthCallbackPage";
-import MessagesPage from "@/app/pages/MessagesPage";
-import AdminPage from "@/app/pages/AdminPage";
-import ProfilePage from "@/app/pages/ProfilePage";
-import TermsOfServicePage from "@/app/pages/TermsOfServicePage";
+import { messageCache } from "@/app/messaging/messageCache";
+import { appPerf } from "@/app/perf";
 import { pageFromLocation, setPageInLocation } from "@/app/routing";
 import { api, setToken, ApiError, type ApiUser, type ApiNotification } from "@/app/api";
 import { SOCIAL_LINKS, isSocialUrlConfigured, type SocialPlatform } from "@/app/socialLinks";
+
+/** Page fallback while a route chunk loads. */
+function RouteFallback() {
+  return (
+    <div className="flex-1 flex items-center justify-center min-h-[40vh]">
+      <CircularProgress size={28} />
+    </div>
+  );
+}
+
+// Keep first-paint routes eager; defer everything else until navigation.
+import HomePage from "@/app/pages/HomePage";
+import LoginPage from "@/app/pages/LoginPage";
+import OAuthCallbackPage from "@/app/pages/OAuthCallbackPage";
+
+const AboutPage = lazy(() => import("@/app/pages/AboutPage"));
+const ResourcesPage = lazy(() => import("@/app/pages/ResourcesPage"));
+const TeamworkPage = lazy(() => import("@/app/pages/TeamworkPage"));
+const ContactPage = lazy(() => import("@/app/pages/ContactPage"));
+const AlarmsPage = lazy(() => import("@/app/pages/AlarmsPage"));
+const SignUpPage = lazy(() => import("@/app/pages/SignUpPage"));
+const ProfilePage = lazy(() => import("@/app/pages/ProfilePage"));
+const TermsOfServicePage = lazy(() => import("@/app/pages/TermsOfServicePage"));
+const MessagesPage = lazy(() => import("@/app/pages/MessagesPage"));
+const AdminPage = lazy(() => import("@/app/pages/AdminPage"));
 
 // ── NAVBAR ───────────────────────────────────────────────────────────────────
 function Navbar({ page, setPage, isDark, setIsDark, loggedIn, user, userAvatar, notifs, setNotifs, msgUnread, dmRequestCount, isAdmin, onLogout }: {
@@ -122,7 +136,7 @@ function Navbar({ page, setPage, isDark, setIsDark, loggedIn, user, userAvatar, 
       <div className="max-w-7xl mx-auto px-4 flex items-center justify-between h-16">
         <button onClick={() => go("home")} className="flex items-center gap-2.5">
           <div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold" style={{ background:C.primary, fontFamily:"Roboto" }}>NE</div>
-          <span className="font-medium text-lg" style={{ color:C.onSurface, fontFamily:"Roboto" }}>Ninja Era</span>
+          <span className="font-medium text-lg" style={{ color:C.onSurface, fontFamily:"'Trade Winds', cursive" }}>Ninja Era</span>
         </button>
         <div className="hidden md:flex items-center gap-0.5">
           {links.map(l => (
@@ -312,7 +326,19 @@ function Navbar({ page, setPage, isDark, setIsDark, loggedIn, user, userAvatar, 
           <div className="border-t" style={{ borderColor:C.outlineVar }}>
             {loggedIn ? (
               <>
-                <div className="flex items-center gap-3 px-5 py-4">
+                {isAdmin && (
+                  <button type="button" onClick={() => go("admin")} className="flex items-center gap-3 w-full px-5 py-3.5 text-sm hover:bg-[#6750A4]/6 transition-colors" style={{ color: page === "admin" ? C.primary : C.onSurface, fontFamily: "Roboto" }}>
+                    <AdminPanelSettingsIcon style={{ fontSize: 20, color: page === "admin" ? C.primary : C.onSurfaceVar }} />
+                    Admin Dashboard
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => go("profile")}
+                  aria-label={`Open profile for ${user?.username || "user"}`}
+                  className="flex items-center gap-3 w-full px-5 py-4 text-left hover:bg-[#6750A4]/6 active:bg-[#6750A4]/10 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset"
+                  style={{ color: C.onSurface, outlineColor: C.primary }}
+                >
                   <div className="w-11 h-11 rounded-full overflow-hidden flex items-center justify-center text-white font-medium text-base shrink-0" style={{ background: C.primary, fontFamily: "Roboto" }}>
                     {userAvatar ? <img src={userAvatar} alt="" className="w-full h-full object-cover" /> : (user?.username?.[0]?.toUpperCase() || "?")}
                   </div>
@@ -322,16 +348,6 @@ function Navbar({ page, setPage, isDark, setIsDark, loggedIn, user, userAvatar, 
                       {user?.isTeamMember ? "Team Member" : user?.isAdmin ? "Administrator" : "Member"}
                     </p>
                   </div>
-                </div>
-                {isAdmin && (
-                  <button type="button" onClick={() => go("admin")} className="flex items-center gap-3 w-full px-5 py-3.5 text-sm hover:bg-[#6750A4]/6 transition-colors" style={{ color: page === "admin" ? C.primary : C.onSurface, fontFamily: "Roboto" }}>
-                    <AdminPanelSettingsIcon style={{ fontSize: 20, color: page === "admin" ? C.primary : C.onSurfaceVar }} />
-                    Admin Dashboard
-                  </button>
-                )}
-                <button type="button" onClick={() => go("profile")} className="flex items-center gap-3 w-full px-5 py-3.5 text-sm hover:bg-[#6750A4]/6 transition-colors" style={{ color: page === "profile" ? C.primary : C.onSurface, fontFamily: "Roboto" }}>
-                  <PersonIcon style={{ fontSize: 20, color: page === "profile" ? C.primary : C.onSurfaceVar }} />
-                  Profile
                 </button>
                 <button type="button" onClick={() => { onLogout(); go("home"); }} className="flex items-center gap-3 w-full px-5 py-3.5 text-sm hover:bg-[#6750A4]/6 transition-colors border-t" style={{ color: C.error, borderColor: C.outlineVar, fontFamily: "Roboto" }}>
                   <LogoutIcon style={{ fontSize: 20 }} />
@@ -471,12 +487,19 @@ function Footer({ setPage }: { setPage:(p:Page)=>void }) {
 export default function App() {
   const [page, setPageState] = useState<Page>(() => pageFromLocation());
   const setPage = useCallback((p: Page) => {
+    appPerf.mark(`route:${p}`);
     setPageState(p);
     setPageInLocation(p);
     window.scrollTo(0, 0);
+    requestAnimationFrame(() => appPerf.measure(`route:${p}`));
   }, []);
   const [isDark, setIsDark] = useState(() => localStorage.getItem("ninja-era-theme") === "dark");
   const toggleTheme = (v: boolean) => { setIsDark(v); localStorage.setItem("ninja-era-theme", v ? "dark" : "light"); };
+
+  useEffect(() => {
+    appPerf.mark("app:boot");
+    return () => appPerf.measure("app:boot");
+  }, []);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", isDark);
@@ -491,6 +514,7 @@ export default function App() {
   const [dmRequestCount, setDmRequestCount] = useState(0);
   const [selectedConversationId, setSelectedConversationId] = useState<number | null>(null);
   const [focusMessageInput, setFocusMessageInput] = useState(false);
+  const convRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const clearSelectedConversation = useCallback(() => setSelectedConversationId(null), []);
   const clearFocusMessageInput = useCallback(() => setFocusMessageInput(false), []);
   const loggedIn = !!user;
@@ -522,6 +546,7 @@ export default function App() {
     setDmRequestCount(0);
     setSelectedConversationId(null);
     setAuthReady(true);
+    messageCache.clear();
     disconnectRealtime();
   }, []);
 
@@ -562,12 +587,16 @@ export default function App() {
 
   const refreshConversations = useCallback(() => {
     if (!loggedIn) return;
-    api.messages.conversations()
-      .then(r => {
-        setContacts(r.conversations as Contact[]);
-        setMsgUnread(r.conversations.filter(c => c.type === "dm").reduce((s, c) => s + c.unread, 0));
-      })
-      .catch(() => {});
+    if (convRefreshTimer.current) clearTimeout(convRefreshTimer.current);
+    convRefreshTimer.current = setTimeout(() => {
+      convRefreshTimer.current = null;
+      api.messages.conversations()
+        .then(r => {
+          setContacts(r.conversations as Contact[]);
+          setMsgUnread(r.conversations.filter(c => c.type === "dm").reduce((s, c) => s + c.unread, 0));
+        })
+        .catch(() => {});
+    }, 400);
   }, [loggedIn]);
 
   const refreshDmRequests = useCallback(() => {
@@ -604,12 +633,23 @@ export default function App() {
       onRealtimeEvent("dm_request:new", () => refreshDmRequests()),
       onRealtimeEvent("dm_request:resolved", () => refreshDmRequests()),
       onRealtimeEvent<{ userId: number; status: string; online: boolean }>("presence:update", ({ userId, status, online }) => {
-        setContacts(prev => prev.map(c => (
-          c.type === "dm" && c.otherUserId === userId ? { ...c, online, status } : c
-        )));
+        // Skip identity-preserving updates so App/Navbar don't thrash on identical presence.
+        setContacts(prev => {
+          let changed = false;
+          const next = prev.map(c => {
+            if (c.type !== "dm" || c.otherUserId !== userId) return c;
+            if (c.online === online && c.status === status) return c;
+            changed = true;
+            return { ...c, online, status };
+          });
+          return changed ? next : prev;
+        });
       }),
     ];
-    return () => { unsubs.forEach(u => u()); };
+    return () => {
+      unsubs.forEach(u => u());
+      if (convRefreshTimer.current) clearTimeout(convRefreshTimer.current);
+    };
   }, [loggedIn, refreshConversations, refreshNotifications, refreshDmRequests]);
 
   useEffect(() => {
@@ -723,19 +763,38 @@ export default function App() {
       ) : (
         <>
       {!noNav.includes(page) && <Navbar page={page} setPage={go} isDark={isDark} setIsDark={toggleTheme} loggedIn={loggedIn} user={user} userAvatar={userAvatar} notifs={notifs} setNotifs={setNotifs} msgUnread={msgUnread} dmRequestCount={dmRequestCount} isAdmin={user?.isAdmin} onLogout={handleLogout} />}
-      {page==="home"      && <HomePage setPage={go} />}
-      {page==="about"     && <AboutPage />}
-      {page==="resources" && <ResourcesPage isTeamMember={user?.isTeamMember} />}
-      {page==="teamwork"  && <TeamworkPage loggedIn={loggedIn} setPage={go} onAddDM={addDM} />}
-      {page==="contact"   && <ContactPage />}
-      {page==="alarms"    && <AlarmsPage setPage={go} onConversationsRefresh={refreshConversations} onNotificationsRefresh={refreshNotifications} />}
-      {page==="login"     && !loggedIn && <LoginPage setPage={go} onLogin={handleLogin} />}
-      {page==="signup"    && !loggedIn && <SignUpPage setPage={go} onLogin={handleLogin} />}
-      {page==="oauth-callback" && <OAuthCallbackPage setPage={go} onLogin={handleLogin} />}
-      {page==="messages"  && loggedIn && <MessagesPage settings={settings} showEmailToast={showEmailToast} showPushNotif={showPushNotif} contacts={contacts} setContacts={setContacts} onUnreadChange={setMsgUnread} currentUserId={user?.id ?? 0} currentUser={user} onUserUpdate={setUser} initialConversationId={selectedConversationId} focusInput={focusMessageInput} onFocusHandled={clearFocusMessageInput} onInitialConversationHandled={clearSelectedConversation} />}
-      {page==="profile"   && loggedIn && <ProfilePage setPage={go} isDark={isDark} setIsDark={toggleTheme} settings={settings} setSettings={setSettings} user={user} setUser={setUser} userAvatar={userAvatar} setUserAvatar={setUserAvatar} onLogout={handleLogout} />}
-      {page==="admin"     && loggedIn && user?.isAdmin && <AdminPage setPage={go} />}
-      {page==="terms"     && <TermsOfServicePage />}
+      <Suspense fallback={<RouteFallback />}>
+        {page==="home"      && <HomePage setPage={go} />}
+        {page==="about"     && <AboutPage />}
+        {page==="resources" && <ResourcesPage isTeamMember={user?.isTeamMember} />}
+        {page==="teamwork"  && <TeamworkPage loggedIn={loggedIn} setPage={go} onAddDM={addDM} />}
+        {page==="contact"   && <ContactPage />}
+        {page==="alarms"    && <AlarmsPage setPage={go} onConversationsRefresh={refreshConversations} onNotificationsRefresh={refreshNotifications} />}
+        {page==="login"     && !loggedIn && <LoginPage setPage={go} onLogin={handleLogin} />}
+        {page==="signup"    && !loggedIn && <SignUpPage setPage={go} onLogin={handleLogin} />}
+        {page==="oauth-callback" && <OAuthCallbackPage setPage={go} onLogin={handleLogin} />}
+        {page==="messages"  && loggedIn && (
+          <MessagesPage
+            settings={settings}
+            showEmailToast={showEmailToast}
+            showPushNotif={showPushNotif}
+            contacts={contacts}
+            setContacts={setContacts}
+            onUnreadChange={setMsgUnread}
+            onConversationsRefresh={refreshConversations}
+            currentUserId={user?.id ?? 0}
+            currentUser={user}
+            onUserUpdate={setUser}
+            initialConversationId={selectedConversationId}
+            focusInput={focusMessageInput}
+            onFocusHandled={clearFocusMessageInput}
+            onInitialConversationHandled={clearSelectedConversation}
+          />
+        )}
+        {page==="profile"   && loggedIn && <ProfilePage setPage={go} isDark={isDark} setIsDark={toggleTheme} settings={settings} setSettings={setSettings} user={user} setUser={setUser} userAvatar={userAvatar} setUserAvatar={setUserAvatar} onLogout={handleLogout} />}
+        {page==="admin"     && loggedIn && user?.isAdmin && <AdminPage setPage={go} />}
+        {page==="terms"     && <TermsOfServicePage />}
+      </Suspense>
       {!noFoot.includes(page) && <Footer setPage={go} />}
         </>
       )}

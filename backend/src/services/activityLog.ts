@@ -1,7 +1,7 @@
 import type { Request } from "express";
 import { db } from "../db/index.js";
 import { lookupGeo, saveUserLocation } from "./geoip.js";
-import { emitToAdmins } from "./realtime.js";
+import { emitToAdmins, scheduleAdminStatsRefresh } from "./realtime.js";
 
 export type ActivityInput = {
   req?: Request;
@@ -120,7 +120,8 @@ export async function logActivity(input: ActivityInput) {
   );
 
   emitToAdmins("admin:activity", { logId: result.lastInsertRowid });
-  emitToAdmins("admin:stats", {});
+  // Coalesce expensive /admin/stats fan-out instead of emitting on every log insert.
+  scheduleAdminStatsRefresh(1000);
 }
 
 export function logActivitySync(input: ActivityInput) {

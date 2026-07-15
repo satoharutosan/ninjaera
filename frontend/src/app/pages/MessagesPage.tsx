@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, type ReactNode } from "react";
+import { useState, useRef, useEffect, useCallback, memo, type ReactNode } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import AudioPlayer from "react-h5-audio-player";
 import "react-h5-audio-player/lib/styles.css";
@@ -47,20 +47,13 @@ import {
   getConversationReadState,
   saveConversationReadState,
 } from "@/app/conversationState";
-
-const CHAT_MSGS = [
-  { id:1, user:"Ryuu Ashikaga", msg:"Hey! Are you free tonight for the Dragon Sanctum raid?", time:"7:42 PM", self:false },
-  { id:2, user:"You", msg:"Yeah I'm in! What time are we starting?", time:"7:43 PM", self:true },
-  { id:3, user:"Ryuu Ashikaga", msg:"9PM server time. Kazuki and Sakura are already confirmed.", time:"7:43 PM", self:false },
-  { id:4, user:"You", msg:"Perfect. I'll make sure my gear is repaired and stocked.", time:"7:45 PM", self:true },
-  { id:5, user:"Ryuu Ashikaga", msg:"Bring fire resist gear — the boss has a nasty AoE flame phase.", time:"7:46 PM", self:false },
-  { id:6, user:"You", msg:"Got it, I have the Ember Cloak set ready!", time:"7:47 PM", self:true },
-];
+import { LazyVisible } from "@/app/messaging/LazyVisible";
+import { messageCache } from "@/app/messaging/messageCache";
+import { msgPerf } from "@/app/messaging/msgPerf";
+import { useMessageThread } from "@/app/messaging/useMessageThread";
+import { toChatMsg, type ChatMsg } from "@/app/messaging/types";
 
 const STATUS_COLORS: Record<string,string> = { Online:"#386A20", Away:"#F59E0B", "Do Not Disturb":"#B3261E", Offline:"#79747E" };
-const MESSAGE_PAGE_SIZE = 50;
-const VIRTUOSO_START_INDEX = 10_000_000;
-const MAX_RESTORE_PAGES = 30;
 const COMPOSER_MAX_HEIGHT = 160;
 
 function ConversationDetailsBody({
@@ -151,7 +144,7 @@ const GIF_LIST = [
 ];
 
 type ChatMsg = {
-  id: number; user: string; msg: string; time: string; self: boolean;
+  id: number; userId?: number; user: string; msg: string; time: string; self: boolean;
   avatarUrl?: string | null;
   mediaUrl?: string; mediaType?: "image"|"video"|"audio"|"gif"|"file";
   fileName?: string; fileSize?: number;
@@ -342,37 +335,44 @@ function MediaBubble({ msg, self, C, onScrollTo, onLightbox }: { msg:ChatMsg; se
 
   if (msg.mediaType === "file") return shell(<FileBubble msg={msg} self={self} C={C} />);
   if (msg.mediaType === "image") return shell(
-    <div
-      className="cursor-zoom-in overflow-hidden rounded-2xl"
-      style={{ maxWidth: 420, width: "fit-content", boxShadow: SH1 }}
-      onClick={() => msg.mediaUrl && onLightbox?.(msg.mediaUrl)}
-    >
-      <img
-        src={msg.mediaUrl}
-        alt=""
-        className="block hover:brightness-90 transition-all"
-        style={{ width: "auto", height: "auto", maxWidth: "100%", maxHeight: 360, verticalAlign: "middle" }}
-        decoding="async"
-      />
-      {msg.msg && <div className="px-3 py-1.5 text-sm min-w-0 text-left" style={{ background: bg, color: fg, fontFamily: "Roboto" }}><TextWithLinks text={msg.msg} fg={fg} /></div>}
-    </div>
+    <LazyVisible placeholderHeight={200}>
+      <div
+        className="cursor-zoom-in overflow-hidden rounded-2xl"
+        style={{ maxWidth: 420, width: "fit-content", boxShadow: SH1 }}
+        onClick={() => msg.mediaUrl && onLightbox?.(msg.mediaUrl)}
+      >
+        <img
+          src={msg.mediaUrl}
+          alt=""
+          className="block hover:brightness-90 transition-all"
+          style={{ width: "auto", height: "auto", maxWidth: "100%", maxHeight: 360, verticalAlign: "middle" }}
+          decoding="async"
+          loading="lazy"
+        />
+        {msg.msg && <div className="px-3 py-1.5 text-sm min-w-0 text-left" style={{ background: bg, color: fg, fontFamily: "Roboto" }}><TextWithLinks text={msg.msg} fg={fg} /></div>}
+      </div>
+    </LazyVisible>
   );
   if (msg.mediaType === "video") return shell(
-    <>
+    <LazyVisible placeholderHeight={200}>
       <VideoPlayer src={msg.mediaUrl} />
       {msg.msg && <div className="px-3 py-1.5 text-sm rounded-b-2xl max-w-[min(320px,100%)] min-w-0" style={{ background:bg, color:fg, fontFamily:"Roboto" }}><TextWithLinks text={msg.msg} fg={fg} /></div>}
-    </>
+    </LazyVisible>
   );
   if (msg.mediaType === "audio") return shell(
-    <div className={`voice-msg rounded-2xl overflow-hidden ${corner} ${self ? "voice-msg--self" : "voice-msg--peer"}`} style={{ boxShadow:SH1, background: bg, color: voiceFg, width: "min(300px, 100%)" }}>
-      <AudioPlayer src={msg.mediaUrl} showJumpControls={false} customAdditionalControls={[]} layout="horizontal-reverse" style={{ background: "transparent", boxShadow:"none", width: "100%", color: voiceFg }} />
-      {msg.msg && <div className="px-3 py-1.5 text-sm min-w-0" style={{ background:bg, color:fg, fontFamily:"Roboto" }}><TextWithLinks text={msg.msg} fg={fg} /></div>}
-    </div>
+    <LazyVisible placeholderHeight={72}>
+      <div className={`voice-msg rounded-2xl overflow-hidden ${corner} ${self ? "voice-msg--self" : "voice-msg--peer"}`} style={{ boxShadow:SH1, background: bg, color: voiceFg, width: "min(300px, 100%)" }}>
+        <AudioPlayer src={msg.mediaUrl} showJumpControls={false} customAdditionalControls={[]} layout="horizontal-reverse" style={{ background: "transparent", boxShadow:"none", width: "100%", color: voiceFg }} />
+        {msg.msg && <div className="px-3 py-1.5 text-sm min-w-0" style={{ background:bg, color:fg, fontFamily:"Roboto" }}><TextWithLinks text={msg.msg} fg={fg} /></div>}
+      </div>
+    </LazyVisible>
   );
   if (msg.mediaType === "gif") return shell(
-    <div className="overflow-hidden rounded-2xl" style={{ maxWidth: 320, width: "fit-content", boxShadow: SH1 }}>
-      <img src={msg.mediaUrl} alt="gif" className="block" style={{ width: "auto", height: "auto", maxWidth: "100%" }} />
-    </div>
+    <LazyVisible placeholderHeight={160}>
+      <div className="overflow-hidden rounded-2xl" style={{ maxWidth: 320, width: "fit-content", boxShadow: SH1 }}>
+        <img src={msg.mediaUrl} alt="gif" className="block" style={{ width: "auto", height: "auto", maxWidth: "100%" }} loading="lazy" decoding="async" />
+      </div>
+    </LazyVisible>
   );
   if (!msg.msg) return null;
   return shell(
@@ -566,13 +566,162 @@ function ImageLightbox({ src, onClose }: { src: string; onClose: () => void }) {
 }
 type ListFilter = "all" | "channel" | "dm" | "dm-requests";
 
-function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setContacts, onUnreadChange, currentUserId, currentUser, onUserUpdate, initialConversationId, focusInput, onFocusHandled, onInitialConversationHandled }: {
+type MessageRowProps = {
+  m: ChatMsg;
+  prev?: ChatMsg;
+  lastReadMessageId: number | null;
+  currentUserId: number;
+  isMobile: boolean;
+  C: ColorTheme;
+  editingId: number | null;
+  editText: string;
+  setEditText: (v: string) => void;
+  setEditingId: (id: number | null) => void;
+  registerRef: (id: number, el: HTMLDivElement | null) => void;
+  onScrollTo: (id: number) => void;
+  onLightbox: (url: string) => void;
+  onReply: (m: ChatMsg) => void;
+  onReact: (id: number, emoji: string) => void;
+  onDelete: (id: number) => void;
+  onReport: (id: number) => void;
+  onCommitEdit: (id: number) => void;
+  onOpenProfile: (m: ChatMsg) => void | Promise<void>;
+};
+
+const MessageRow = memo(function MessageRow({
+  m,
+  prev,
+  lastReadMessageId,
+  currentUserId,
+  isMobile,
+  C,
+  editingId,
+  editText,
+  setEditText,
+  setEditingId,
+  registerRef,
+  onScrollTo,
+  onLightbox,
+  onReply,
+  onReact,
+  onDelete,
+  onReport,
+  onCommitEdit,
+  onOpenProfile,
+}: MessageRowProps) {
+  const [hovered, setHovered] = useState(false);
+  const [reactionOpen, setReactionOpen] = useState(false);
+  const showHeader = !prev || prev.user !== m.user || prev.time !== m.time;
+  const showUnreadDivider = !!(
+    lastReadMessageId
+    && !m.self
+    && m.id > lastReadMessageId
+    && (!prev || prev.id <= lastReadMessageId || prev.self)
+  );
+
+  return (
+    <div className="pb-3 min-w-0 max-w-full">
+      {showUnreadDivider && (
+        <div className="flex items-center gap-3 my-3">
+          <div className="flex-1 h-px" style={{ background: C.error }} />
+          <span className="text-[10px] font-medium uppercase tracking-wider" style={{ color: C.error, fontFamily: "Roboto" }}>New</span>
+          <div className="flex-1 h-px" style={{ background: C.error }} />
+        </div>
+      )}
+      <div className={`flex gap-2.5 min-w-0 max-w-full ${m.self ? "flex-row-reverse" : ""}`}>
+        {!m.self ? (
+          showHeader
+            ? (
+              <button
+                type="button"
+                className="self-end shrink-0 rounded-full focus:outline-none focus-visible:ring-2 p-0 border-0 bg-transparent"
+                onClick={e => { e.stopPropagation(); void onOpenProfile(m); }}
+                aria-label={isMobile ? `View ${m.user}'s profile` : undefined}
+                tabIndex={isMobile ? 0 : -1}
+                style={{ cursor: isMobile ? "pointer" : "default" }}
+              >
+                <ChatAvatar name={m.user} avatarUrl={m.avatarUrl} size={32} />
+              </button>
+            )
+            : <div className="w-8 shrink-0" />
+        ) : <div className="w-8 shrink-0" />}
+        <div className={`flex flex-col gap-1 min-w-0 max-w-[min(100%,20rem)] lg:max-w-md ${m.self ? "items-end" : "items-start"}`}>
+          {showHeader && (
+            <span className="text-[11px] mb-0.5 mx-1 flex items-center gap-2" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
+              <span style={{ fontFamily: "Roboto Mono,monospace" }}>{m.time}</span>
+              {!m.self && <span>{m.user}</span>}
+            </span>
+          )}
+          <div
+            ref={el => registerRef(m.id, el)}
+            className="relative min-w-0 max-w-full"
+            onMouseEnter={() => setHovered(true)}
+            onMouseLeave={() => { setHovered(false); setReactionOpen(false); }}
+          >
+            {hovered && (
+              <div className="absolute -top-8 right-0 flex items-center gap-0.5 px-1.5 py-1 rounded-full shadow-lg z-20" style={{ background: C.surface, border: `1px solid ${C.outlineVar}` }}>
+                <div className="relative">
+                  <button title="React" onClick={e => { e.stopPropagation(); setReactionOpen(o => !o); }} className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-black/8 transition-colors text-sm" style={{ color: C.onSurfaceVar }}>😊</button>
+                  {reactionOpen && (
+                    <div
+                      className={`absolute bottom-full mb-1 flex gap-1 px-2 py-1.5 rounded-full shadow-lg ${m.self ? "right-0" : "left-0"}`}
+                      style={{ background: C.surface, border: `1px solid ${C.outlineVar}` }}
+                      onClick={e => e.stopPropagation()}
+                    >
+                      {QUICK_REACTIONS.map(emoji => (
+                        <button key={emoji} onClick={() => { onReact(m.id, emoji); setReactionOpen(false); }} className="text-lg hover:scale-125 transition-transform w-7 h-7 flex items-center justify-center rounded-full hover:bg-black/8">{emoji}</button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <button title="Reply" onClick={e => { e.stopPropagation(); onReply(m); }} className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-black/8 transition-colors" style={{ color: C.onSurfaceVar }}><ReplyIcon style={{ fontSize: 14 }} /></button>
+                {m.self && editingId !== m.id && (
+                  <button title="Edit" onClick={e => { e.stopPropagation(); setEditingId(m.id); setEditText(m.msg); }} className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-black/8 transition-colors" style={{ color: C.onSurfaceVar }}><EditIcon style={{ fontSize: 14 }} /></button>
+                )}
+                {m.self && (
+                  <button title="Delete" onClick={e => { e.stopPropagation(); onDelete(m.id); }} className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-black/8 transition-colors" style={{ color: C.error }}><DeleteIcon style={{ fontSize: 14 }} /></button>
+                )}
+                {!m.self && (
+                  <button title="Report" onClick={e => { e.stopPropagation(); onReport(m.id); }} className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-black/8 transition-colors" style={{ color: C.error }}><FlagIcon style={{ fontSize: 14 }} /></button>
+                )}
+              </div>
+            )}
+            {editingId === m.id ? (
+              <div className="flex items-center gap-2 px-3 py-2 rounded-2xl border min-w-0 max-w-full" style={{ background: C.surfaceVar, borderColor: C.primary }}>
+                <input autoFocus value={editText} onChange={e => setEditText(e.target.value)} onKeyDown={e => { if (e.key === "Enter") onCommitEdit(m.id); if (e.key === "Escape") setEditingId(null); }} className="flex-1 min-w-0 bg-transparent text-sm focus:outline-none" style={{ color: C.onSurface, fontFamily: "Roboto" }} />
+                <button onClick={() => onCommitEdit(m.id)} className="w-6 h-6 flex items-center justify-center rounded-full text-white shrink-0" style={{ background: C.primary }}><CheckIcon style={{ fontSize: 12 }} /></button>
+                <button onClick={() => setEditingId(null)} className="w-6 h-6 flex items-center justify-center rounded-full shrink-0" style={{ background: C.surfaceVar, color: C.onSurfaceVar }}><CloseIcon style={{ fontSize: 12 }} /></button>
+              </div>
+            ) : (
+              <div>
+                <MediaBubble msg={m} self={m.self} C={C} onScrollTo={onScrollTo} onLightbox={onLightbox} />
+                {m.reactions && Object.keys(m.reactions).length > 0 && (
+                  <div className={`flex flex-wrap gap-1 mt-1 ${m.self ? "justify-end" : "justify-start"}`}>
+                    {Object.entries(m.reactions).map(([emoji, users]) => (
+                      <button key={emoji} onClick={() => onReact(m.id, emoji)} className="flex items-center gap-1 px-2 py-0.5 rounded-full text-xs border transition-all hover:scale-105" style={{ background: users.includes(String(currentUserId)) ? C.primaryCont : C.surface, borderColor: users.includes(String(currentUserId)) ? C.primary : C.outlineVar, color: C.onSurface, fontFamily: "Roboto" }}>
+                        <span>{emoji}</span><span className="font-medium">{users.length}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setContacts, onUnreadChange, onConversationsRefresh, currentUserId, currentUser, onUserUpdate, initialConversationId, focusInput, onFocusHandled, onInitialConversationHandled }: {
   settings: AppSettings;
   showEmailToast: (title:string, body:string, page:Page)=>void;
   showPushNotif: (title:string, body:string, page:Page)=>void;
   contacts: Contact[];
   setContacts: React.Dispatch<React.SetStateAction<Contact[]>>;
   onUnreadChange?: (n: number) => void;
+  /** Shared App-level coalesced conversation refresh (avoids duplicate list fetches). */
+  onConversationsRefresh?: () => void;
   currentUserId: number;
   currentUser?: import("@/app/api").ApiUser | null;
   onUserUpdate?: (u: import("@/app/api").ApiUser) => void;
@@ -588,17 +737,9 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
   const emptyContact: Contact = { id: 0, name: "Select a conversation", msg: "", time: "", unread: 0, online: false, bio: "", type: "dm" };
   const [sel, setSel] = useState<Contact>(contacts[0] ?? emptyContact);
   const [input, setInput] = useState("");
-  const [msgs, setMsgs] = useState<ChatMsg[]>([]);
-  const [hasMoreHistory, setHasMoreHistory] = useState(false);
-  const [loadingOlder, setLoadingOlder] = useState(false);
-  const [showJumpBtn, setShowJumpBtn] = useState(false);
-  const [unreadBelow, setUnreadBelow] = useState(0);
-  const [threadBootId, setThreadBootId] = useState(0);
-  const [initialScrollIndex, setInitialScrollIndex] = useState<number | null>(null);
-  const [lastReadMessageId, setLastReadMessageId] = useState<number | null>(null);
-  const [threadReady, setThreadReady] = useState(false);
   const [showSidebar, setShowSidebar] = useState(true);
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [detailsContact, setDetailsContact] = useState<Contact | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [myStatus, setMyStatus] = useState(currentUser?.status || "Online");
   const [myBio, setMyBio] = useState(currentUser?.bio || "");
@@ -608,8 +749,6 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
   const [replyingTo, setReplyingTo] = useState<ChatMsg|null>(null);
   const [editingId, setEditingId] = useState<number|null>(null);
   const [editText, setEditText] = useState("");
-  const [hoveredMsgId, setHoveredMsgId] = useState<number|null>(null);
-  const [reactionPickerMsgId, setReactionPickerMsgId] = useState<number|null>(null);
   const [headerMenu, setHeaderMenu] = useState(false);
   const [ctxMenu, setCtxMenu] = useState<{x:number;y:number;contact:Contact}|null>(null);
   const [confirm, setConfirm] = useState<{title:string;body:string;onOk:()=>void}|null>(null);
@@ -631,17 +770,62 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
   const isTypingRef = useRef(false);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const msgRefs = useRef<Map<number,HTMLDivElement>>(new Map());
-  const msgsRef = useRef<ChatMsg[]>([]);
-  const isNearBottomRef = useRef(true);
-  const hasMoreRef = useRef(false);
-  const loadingOlderRef = useRef(false);
-  const pinToBottomRef = useRef(true);
-  const loadGenRef = useRef(0);
-  const firstItemIndexRef = useRef(VIRTUOSO_START_INDEX);
-  const [firstItemIndex, setFirstItemIndex] = useState(VIRTUOSO_START_INDEX);
-  const visibleStartDataIndexRef = useRef(0);
-  const restoreTargetRef = useRef<number | null>(null);
-  const restoringRef = useRef(false);
+  const selIdRef = useRef(sel.id);
+  const refreshContactsTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const markReadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastMarkedReadRef = useRef<number | null>(null);
+
+  const refreshContacts = useCallback(() => {
+    // Prefer shared App coalescer when available so Messages + shell share one fetch.
+    if (onConversationsRefresh) {
+      onConversationsRefresh();
+      return;
+    }
+    if (refreshContactsTimer.current) clearTimeout(refreshContactsTimer.current);
+    refreshContactsTimer.current = setTimeout(() => {
+      refreshContactsTimer.current = null;
+      api.messages.conversations()
+        .then(r => {
+          setContacts(r.conversations as Contact[]);
+          onUnreadChange?.(r.conversations.filter(c => c.type === "dm").reduce((sum, c) => sum + c.unread, 0));
+        })
+        .catch(() => {});
+    }, 350);
+  }, [setContacts, onUnreadChange, onConversationsRefresh]);
+
+  /** Coalesce read receipts — avoid hammering /read while pinned to bottom under traffic. */
+  const scheduleMarkRead = useCallback((conversationId: number) => {
+    if (!conversationId) return;
+    if (lastMarkedReadRef.current === conversationId && markReadTimer.current) return;
+    if (markReadTimer.current) clearTimeout(markReadTimer.current);
+    markReadTimer.current = setTimeout(() => {
+      markReadTimer.current = null;
+      lastMarkedReadRef.current = conversationId;
+      api.messages.markRead(conversationId).then(() => refreshContacts()).catch(() => {});
+    }, 500);
+  }, [refreshContacts]);
+
+  const thread = useMessageThread({
+    conversationId: sel.id,
+    currentUserId,
+    onContactsRefresh: refreshContacts,
+  });
+
+  const {
+    msgs, msgsRef,
+    hasMoreOlder, hasMoreNewer, loadingOlder, loadingNewer,
+    threadReady, threadBootId, initialScrollIndex,
+    lastReadMessageId, setLastReadMessageId,
+    firstItemIndex, firstItemIndexRef,
+    showJumpBtn, setShowJumpBtn,
+    unreadBelow, setUnreadBelow,
+    isNearBottomRef, pinToBottomRef, visibleStartDataIndexRef,
+    loadOlderMessages, loadNewerMessages,
+    applyNewMessage, applyUpdatedMessage, applyDeletedMessage, applyReaction,
+    jumpToLatest, appendLocal, updateLocal,
+  } = thread;
+
+  useEffect(() => { selIdRef.current = sel.id; }, [sel.id]);
 
   useEffect(() => {
     if (currentUser) {
@@ -649,20 +833,6 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
       setMyBio(currentUser.bio || "");
     }
   }, [currentUser]);
-
-  useEffect(() => {
-    msgsRef.current = msgs;
-  }, [msgs]);
-
-  const toChatMsg = useCallback((m: ApiMessage, viewerId: number): ChatMsg => {
-    const isSelf = m.userId === viewerId;
-    return {
-      id: m.id, user: isSelf ? "You" : m.user, msg: m.msg, time: m.time, self: isSelf,
-      avatarUrl: m.avatarUrl,
-      mediaUrl: m.mediaUrl, mediaType: m.mediaType as ChatMsg["mediaType"],
-      fileName: m.fileName, fileSize: m.fileSize, replyTo: m.replyTo, edited: m.edited, reactions: m.reactions,
-    };
-  }, []);
 
   const adjustComposerHeight = useCallback(() => {
     const el = inputRef.current;
@@ -676,12 +846,8 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
     isNearBottomRef.current = true;
     setShowJumpBtn(false);
     setUnreadBelow(0);
-    virtuosoRef.current?.scrollToIndex({
-      index: "LAST",
-      align: "end",
-      behavior,
-    });
-  }, []);
+    virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior });
+  }, [pinToBottomRef, isNearBottomRef, setShowJumpBtn, setUnreadBelow]);
 
   const persistConversation = useCallback((conversationId: number) => {
     const list = msgsRef.current;
@@ -697,137 +863,12 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
       lastReadMessageId: atBottom ? newest : (prev?.lastReadMessageId ?? anchor),
       lastOpenedAt: Date.now(),
     });
-  }, [currentUserId]);
+  }, [currentUserId, msgsRef, isNearBottomRef, visibleStartDataIndexRef]);
 
-  const loadOlderMessages = useCallback(async (): Promise<number> => {
-    if (!sel?.id || loadingOlderRef.current || !hasMoreRef.current) return 0;
-    const current = msgsRef.current;
-    if (!current.length) return 0;
-    const oldestId = current[0].id;
-    const gen = loadGenRef.current;
-    loadingOlderRef.current = true;
-    setLoadingOlder(true);
-    try {
-      const r = await api.messages.getMessages(sel.id, { limit: MESSAGE_PAGE_SIZE, before: oldestId });
-      if (gen !== loadGenRef.current) return 0;
-      const older = (r.messages as ApiMessage[]).map(m => toChatMsg(m, currentUserId));
-      if (!older.length) {
-        setHasMoreHistory(false);
-        hasMoreRef.current = false;
-        return 0;
-      }
-      const unique = older.filter(m => !current.some(c => c.id === m.id));
-      if (!unique.length) {
-        setHasMoreHistory(!!r.hasMore);
-        hasMoreRef.current = !!r.hasMore;
-        return 0;
-      }
-      const next = [...unique, ...current];
-      msgsRef.current = next;
-      firstItemIndexRef.current -= unique.length;
-      setFirstItemIndex(firstItemIndexRef.current);
-      setMsgs(next);
-      setHasMoreHistory(!!r.hasMore);
-      hasMoreRef.current = !!r.hasMore;
-      return unique.length;
-    } catch {
-      return 0;
-    } finally {
-      loadingOlderRef.current = false;
-      setLoadingOlder(false);
-    }
-  }, [sel?.id, currentUserId, toChatMsg]);
-
-  const ensureAnchorLoaded = useCallback(async (anchorId: number, gen: number) => {
-    let pages = 0;
-    while (pages < MAX_RESTORE_PAGES) {
-      if (gen !== loadGenRef.current) return false;
-      if (msgsRef.current.some(m => m.id === anchorId)) return true;
-      if (!hasMoreRef.current) return false;
-      const added = await loadOlderMessages();
-      if (!added) return msgsRef.current.some(m => m.id === anchorId);
-      pages += 1;
-    }
-    return msgsRef.current.some(m => m.id === anchorId);
-  }, [loadOlderMessages]);
-
-  // Persist reading position when leaving a conversation or unmounting Messages.
   useEffect(() => {
     const convId = sel.id;
-    return () => {
-      if (convId) persistConversation(convId);
-    };
+    return () => { if (convId) persistConversation(convId); };
   }, [sel.id, persistConversation]);
-
-  useEffect(() => {
-    if (!sel?.id) return;
-    const gen = ++loadGenRef.current;
-    joinConversation(sel.id);
-
-    const saved = getConversationReadState(currentUserId, sel.id);
-    const shouldRestore = !!(saved && !saved.atBottom && saved.anchorMessageId);
-
-    setMsgs([]);
-    setHasMoreHistory(false);
-    hasMoreRef.current = false;
-    setShowJumpBtn(false);
-    setUnreadBelow(0);
-    setTypingUsers([]);
-    setThreadReady(false);
-    setInitialScrollIndex(null);
-    setLastReadMessageId(saved?.lastReadMessageId ?? null);
-    firstItemIndexRef.current = VIRTUOSO_START_INDEX;
-    setFirstItemIndex(VIRTUOSO_START_INDEX);
-    restoreTargetRef.current = shouldRestore ? saved!.anchorMessageId : null;
-    restoringRef.current = shouldRestore;
-    pinToBottomRef.current = !shouldRestore;
-    isNearBottomRef.current = !shouldRestore;
-
-    api.messages.getMessages(sel.id, { limit: MESSAGE_PAGE_SIZE })
-      .then(async r => {
-        if (gen !== loadGenRef.current) return;
-        let mapped = (r.messages as ApiMessage[]).map(m => toChatMsg(m, currentUserId));
-        setMsgs(mapped);
-        msgsRef.current = mapped;
-        setHasMoreHistory(!!r.hasMore);
-        hasMoreRef.current = !!r.hasMore;
-
-        if (shouldRestore && restoreTargetRef.current) {
-          const found = await ensureAnchorLoaded(restoreTargetRef.current, gen);
-          if (gen !== loadGenRef.current) return;
-          mapped = msgsRef.current;
-          const idx = found ? mapped.findIndex(m => m.id === restoreTargetRef.current) : -1;
-          if (idx >= 0) {
-            setInitialScrollIndex(idx);
-            pinToBottomRef.current = false;
-            isNearBottomRef.current = false;
-            setShowJumpBtn(true);
-          } else {
-            setInitialScrollIndex(Math.max(0, mapped.length - 1));
-            pinToBottomRef.current = true;
-            isNearBottomRef.current = true;
-          }
-        } else {
-          setInitialScrollIndex(Math.max(0, mapped.length - 1));
-          pinToBottomRef.current = true;
-          isNearBottomRef.current = true;
-        }
-
-        setThreadBootId(id => id + 1);
-        setThreadReady(true);
-        restoringRef.current = false;
-        refreshContacts();
-      })
-      .catch(() => {
-        if (gen !== loadGenRef.current) return;
-        setMsgs([]);
-        setHasMoreHistory(false);
-        hasMoreRef.current = false;
-        setThreadReady(true);
-        setInitialScrollIndex(0);
-        restoringRef.current = false;
-      });
-  }, [sel.id, currentUserId, toChatMsg, ensureAnchorLoaded]);
 
   useEffect(() => {
     if (!initialConversationId) return;
@@ -836,7 +877,6 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
     setSel(target);
     setListFilter(target.type === "dm" ? "dm" : "all");
     if (isMobile) setShowSidebar(false);
-    // One-shot: clear parent navigation state so later sidebar clicks are not overwritten.
     onInitialConversationHandled?.();
   }, [initialConversationId, contacts, onInitialConversationHandled, isMobile]);
 
@@ -863,25 +903,23 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
   useEffect(() => { loadDmRequests(); }, []);
 
   useEffect(() => {
-    if (dmRequests.length === 0 && listFilter === "dm-requests") {
-      setListFilter("all");
-    }
+    if (dmRequests.length === 0 && listFilter === "dm-requests") setListFilter("all");
   }, [dmRequests.length, listFilter]);
 
   useEffect(() => {
     const unsubs = [
       onRealtimeEvent<{ conversationId: number; message: ApiMessage }>("message:new", ({ conversationId, message }) => {
-        if (conversationId === sel.id) {
-          const chatMsg = toChatMsg(message, currentUserId);
-          setMsgs(prev => prev.some(m => m.id === chatMsg.id) ? prev : [...prev, chatMsg]);
-          if (isNearBottomRef.current || chatMsg.self) {
+        if (conversationId === selIdRef.current) {
+          applyNewMessage(message);
+          const isSelf = message.userId === currentUserId;
+          if (isNearBottomRef.current || isSelf) {
             pinToBottomRef.current = true;
             requestAnimationFrame(() => forceScrollToBottom("auto"));
-            if (!message.self && message.userId !== currentUserId) {
-              api.messages.markRead(conversationId).then(() => refreshContacts()).catch(() => {});
-              setLastReadMessageId(chatMsg.id);
+            if (!isSelf) {
+              scheduleMarkRead(conversationId);
+              setLastReadMessageId(message.id);
             }
-          } else if (!chatMsg.self) {
+          } else if (!isSelf) {
             setUnreadBelow(n => n + 1);
             setShowJumpBtn(true);
           }
@@ -889,25 +927,25 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
         refreshContacts();
       }),
       onRealtimeEvent<{ conversationId: number; message: ApiMessage }>("message:updated", ({ conversationId, message }) => {
-        if (conversationId === sel.id) {
-          const chatMsg = toChatMsg(message, currentUserId);
-          setMsgs(prev => prev.map(m => m.id === chatMsg.id ? chatMsg : m));
-        }
+        if (conversationId === selIdRef.current) applyUpdatedMessage(message);
+        else messageCache.upsertMessage(conversationId, toChatMsg(message, currentUserId));
       }),
       onRealtimeEvent<{ conversationId: number; messageId: number }>("message:deleted", ({ conversationId, messageId }) => {
-        if (conversationId === sel.id) setMsgs(prev => prev.filter(m => m.id !== messageId));
+        if (conversationId === selIdRef.current) applyDeletedMessage(messageId);
+        else messageCache.removeMessage(conversationId, messageId);
         refreshContacts();
       }),
       onRealtimeEvent<{ conversationId: number; messageId: number; reactions: Record<string, string[]> }>("message:reaction", ({ conversationId, messageId, reactions }) => {
-        if (conversationId === sel.id) setMsgs(prev => prev.map(m => m.id === messageId ? { ...m, reactions } : m));
+        if (conversationId === selIdRef.current) applyReaction(messageId, reactions);
+        else messageCache.patchMessage(conversationId, messageId, { reactions });
       }),
-      onRealtimeEvent<{ conversationId: number }>("conversation:update", () => refreshContacts()),
+      // conversation:update is owned by App shell — avoid a second list fetch here
       onRealtimeEvent<{ conversationId: number }>("conversation:new", ({ conversationId }) => {
         joinConversation(conversationId);
         refreshContacts();
       }),
       onRealtimeEvent<{ conversationId: number; userId: number; username: string; typing: boolean }>("typing", ({ conversationId, userId, username, typing }) => {
-        if (conversationId !== sel.id || userId === currentUserId) return;
+        if (conversationId !== selIdRef.current || userId === currentUserId) return;
         setTypingUsers(prev => {
           const filtered = prev.filter(u => u.userId !== userId);
           return typing ? [...filtered, { userId, username }] : filtered;
@@ -916,15 +954,41 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
       onRealtimeEvent("dm_request:new", () => loadDmRequests()),
       onRealtimeEvent("dm_request:resolved", () => loadDmRequests()),
       onRealtimeEvent<{ userId: number; status: string; online: boolean }>("presence:update", ({ userId, status, online }) => {
-        setContacts(prev => prev.map(c => {
-          if (c.type !== "dm" || c.otherUserId !== userId) return c;
-          return { ...c, online, status };
-        }));
-        setSel(prev => (prev.otherUserId === userId ? { ...prev, online, status } : prev));
+        setContacts(prev => {
+          let changed = false;
+          const next = prev.map(c => {
+            if (c.type !== "dm" || c.otherUserId !== userId) return c;
+            if (c.online === online && c.status === status) return c;
+            changed = true;
+            return { ...c, online, status };
+          });
+          return changed ? next : prev;
+        });
+        setSel(prev => {
+          if (prev.otherUserId !== userId) return prev;
+          if (prev.online === online && prev.status === status) return prev;
+          return { ...prev, online, status };
+        });
       }),
     ];
-    return () => { unsubs.forEach(u => u()); };
-  }, [sel.id, currentUserId, toChatMsg, forceScrollToBottom]);
+    return () => {
+      unsubs.forEach(u => u());
+      if (refreshContactsTimer.current) clearTimeout(refreshContactsTimer.current);
+      if (markReadTimer.current) clearTimeout(markReadTimer.current);
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+        typingTimeoutRef.current = null;
+      }
+      if (isTypingRef.current && selIdRef.current) {
+        isTypingRef.current = false;
+        emitTyping(selIdRef.current, false);
+      }
+    };
+  }, [
+    currentUserId, applyNewMessage, applyUpdatedMessage, applyDeletedMessage, applyReaction,
+    forceScrollToBottom, refreshContacts, scheduleMarkRead, setContacts, setLastReadMessageId, setUnreadBelow,
+    setShowJumpBtn, isNearBottomRef, pinToBottomRef,
+  ]);
 
   useEffect(() => {
     if (!emojiOpen || !emojiBtnRef.current) return;
@@ -936,14 +1000,7 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
     setEmojiPickerPos({ right, bottom: window.innerHeight - rect.top + margin });
   }, [emojiOpen]);
 
-  const refreshContacts = () => {
-    api.messages.conversations()
-      .then(r => {
-        setContacts(r.conversations as Contact[]);
-        onUnreadChange?.(r.conversations.filter(c => c.type === "dm").reduce((s, c) => s + c.unread, 0));
-      })
-      .catch(() => {});
-  };
+  useEffect(() => { setTypingUsers([]); }, [sel.id]);
 
   const saveMyProfile = async () => {
     setSavingProfile(true);
@@ -976,21 +1033,87 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
 
   const openConversationDetails = useCallback(() => {
     if (!isMobile || sel.id <= 0) return;
+    setDetailsContact(sel);
     setDetailsOpen(true);
-  }, [isMobile, sel.id]);
+  }, [isMobile, sel]);
+
+  const apiUserToContact = useCallback((user: import("@/app/api").ApiUser, fallback?: Partial<Contact>): Contact => ({
+    id: -(user.id || 0),
+    name: user.username,
+    msg: "",
+    time: "",
+    unread: 0,
+    online: (user.status || "Online") === "Online",
+    bio: user.bio || "",
+    type: "dm",
+    avatarUrl: user.avatarUrl ?? fallback?.avatarUrl,
+    otherUserId: user.id,
+    status: user.status,
+    village: user.village,
+    clan: user.clan,
+    level: user.level,
+    rank: user.rank,
+    memberSince: user.memberSince,
+    isTeamMember: user.isTeamMember,
+    country: user.country,
+    city: user.city,
+  }), []);
+
+  const openUserProfileFromMessage = useCallback(async (m: ChatMsg) => {
+    if (!isMobile || m.self) return;
+    const userId = m.userId;
+    if (!userId) {
+      // Fall back to conversation peer only for DMs when metadata lacks userId
+      if (sel.type === "dm" && sel.id > 0) {
+        setDetailsContact(sel);
+        setDetailsOpen(true);
+      }
+      return;
+    }
+    const existing = contacts.find(c => c.type === "dm" && c.otherUserId === userId);
+    if (existing) {
+      setDetailsContact(existing);
+      setDetailsOpen(true);
+      return;
+    }
+    const provisional: Contact = {
+      id: -userId,
+      name: m.user,
+      msg: "",
+      time: "",
+      unread: 0,
+      online: false,
+      bio: "",
+      type: "dm",
+      avatarUrl: m.avatarUrl,
+      otherUserId: userId,
+    };
+    setDetailsContact(provisional);
+    setDetailsOpen(true);
+    try {
+      const { user } = await api.users.get(userId);
+      setDetailsContact(apiUserToContact(user, { avatarUrl: m.avatarUrl }));
+    } catch {
+      /* keep provisional profile from message metadata */
+    }
+  }, [isMobile, sel, contacts, apiUserToContact]);
 
   const dismissConversationDetails = useCallback(() => {
     if (typeof window !== "undefined" && window.history.state && (window.history.state as { msgDetails?: boolean }).msgDetails) {
       window.history.back();
     } else {
       setDetailsOpen(false);
+      setDetailsContact(null);
     }
   }, []);
 
   useEffect(() => {
     if (!detailsOpen) return;
     window.history.pushState({ ...(window.history.state || {}), msgDetails: true }, "");
-    const onPop = () => setDetailsOpen(false);
+    const onPop = () => {
+      setDetailsOpen(false);
+      setDetailsContact(null);
+    };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, [detailsOpen]);
@@ -1023,13 +1146,14 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
   };
 
   const nowTime = () => new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
-  const closeAll = () => { setEmojiOpen(false); setHeaderMenu(false); setCtxMenu(null); setReactionPickerMsgId(null); };
+  const closeAll = () => { setEmojiOpen(false); setHeaderMenu(false); setCtxMenu(null); };
 
   const askConfirm = (title:string, body:string, onOk:()=>void) => setConfirm({ title, body, onOk });
 
   const send = async (extra?: Partial<ChatMsg>) => {
     const trimmed = input.trim();
     if (!trimmed && !extra?.mediaUrl) return;
+    const replySnap = replyingTo;
     setInput(""); setReplyingTo(null); setEmojiOpen(false);
     requestAnimationFrame(() => {
       if (inputRef.current) {
@@ -1040,19 +1164,15 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
     pinToBottomRef.current = true;
     isNearBottomRef.current = true;
     try {
-      const { message } = await api.messages.send(sel.id, trimmed, replyingTo?.id);
-      setMsgs(prev => {
-        const chatMsg = toChatMsg(message, currentUserId);
-        return prev.some(m => m.id === chatMsg.id) ? prev : [...prev, chatMsg];
-      });
+      const { message } = await api.messages.send(sel.id, trimmed, replySnap?.id);
+      appendLocal(toChatMsg(message, currentUserId));
       refreshContacts();
     } catch {
-      const newMsg: ChatMsg = {
+      appendLocal({
         id: Date.now(), user: "You", msg: trimmed, time: nowTime(), self: true,
-        ...(replyingTo ? { replyTo: { id: replyingTo.id, user: replyingTo.user, preview: replyingTo.msg.slice(0,60) || replyingTo.mediaType || "" } } : {}),
+        ...(replySnap ? { replyTo: { id: replySnap.id, user: replySnap.user, preview: replySnap.msg.slice(0,60) || replySnap.mediaType || "" } } : {}),
         ...extra,
-      };
-      setMsgs(prev => [...prev, newMsg]);
+      });
     }
     requestAnimationFrame(() => forceScrollToBottom("auto"));
   };
@@ -1060,15 +1180,13 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
   const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    const replySnap = replyingTo;
     setReplyingTo(null); e.target.value = "";
     pinToBottomRef.current = true;
     isNearBottomRef.current = true;
     try {
-      const { message } = await api.messages.sendMedia(sel.id, file, replyingTo?.id);
-      setMsgs(prev => {
-        const chatMsg = toChatMsg(message, currentUserId);
-        return prev.some(m => m.id === chatMsg.id) ? prev : [...prev, chatMsg];
-      });
+      const { message } = await api.messages.sendMedia(sel.id, file, replySnap?.id);
+      appendLocal(toChatMsg(message, currentUserId));
       refreshContacts();
     } catch {
       const url = URL.createObjectURL(file);
@@ -1076,10 +1194,10 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
       const isVideo = file.type.startsWith("video/");
       const isAudio = file.type.startsWith("audio/");
       const type = isImage ? "image" : isVideo ? "video" : isAudio ? "audio" : "file";
-      setMsgs(prev => [...prev, {
+      appendLocal({
         id:Date.now(), user:"You", msg:"", time:nowTime(), self:true,
         mediaUrl:url, mediaType:type, fileName:file.name, fileSize:file.size,
-      }]);
+      });
     }
     requestAnimationFrame(() => forceScrollToBottom("auto"));
   };
@@ -1088,33 +1206,37 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
     if (!editText.trim()) return;
     try {
       const { message } = await api.messages.edit(id, editText.trim());
-      setMsgs(prev => prev.map(m => m.id===id ? toChatMsg(message, currentUserId) : m));
+      updateLocal(id, toChatMsg(message, currentUserId));
     } catch {
-      setMsgs(prev => prev.map(m => m.id===id ? { ...m, msg:editText.trim(), edited:true } : m));
+      updateLocal(id, { msg: editText.trim(), edited: true });
     }
     setEditingId(null);
   };
 
   const deleteMsg = async (id: number) => {
     try { await api.messages.delete(id); } catch { /* */ }
-    setMsgs(prev => prev.filter(m => m.id !== id));
+    applyDeletedMessage(id);
   };
 
   const addReaction = async (msgId: number, emoji: string) => {
     try {
       const { reactions } = await api.messages.react(msgId, emoji);
-      setMsgs(prev => prev.map(m => m.id === msgId ? { ...m, reactions } : m));
+      applyReaction(msgId, reactions);
     } catch {
-      setMsgs(prev => prev.map(m => {
-        if (m.id !== msgId) return m;
-        const r = { ...(m.reactions||{}) };
-        const users = r[emoji] ? [...r[emoji]] : [];
-        if (users.includes("You")) { const f = users.filter(u=>u!=="You"); if(f.length===0) delete r[emoji]; else r[emoji]=f; }
-        else r[emoji] = [...users, "You"];
-        return { ...m, reactions:r };
-      }));
+      const m = msgsRef.current.find(x => x.id === msgId);
+      if (!m) return;
+      const r = { ...(m.reactions || {}) };
+      const users = r[emoji] ? [...r[emoji]] : [];
+      const me = String(currentUserId);
+      if (users.includes(me) || users.includes("You")) {
+        const f = users.filter(u => u !== me && u !== "You");
+        if (f.length === 0) delete r[emoji];
+        else r[emoji] = f;
+      } else {
+        r[emoji] = [...users, me];
+      }
+      applyReaction(msgId, r);
     }
-    setReactionPickerMsgId(null);
   };
 
   const deleteContact = async (contactId: number) => {
@@ -1261,7 +1383,7 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
   );
 
   return (
-    <div className="h-screen flex overflow-hidden pt-16" style={{ background:C.bg }} onClick={closeAll}>
+    <div className="h-screen flex overflow-hidden pt-16 max-w-[100vw]" style={{ background:C.bg }} onClick={closeAll}>
       {/* New DM modal */}
       {newDmOpen && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onClick={() => setNewDmOpen(false)}>
@@ -1345,10 +1467,14 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
           </div>
         </div>
       )}
-      {/* Left chrome: filter rail + conversation list (mobile: full-width together) */}
+      {/* Left chrome: filter rail + conversation list (mobile: exactly 100vw, no overflow) */}
       {showLeftPanel && (
-        <div className={`flex shrink-0 min-h-0 ${isMobile ? "w-full flex-1" : ""}`}>
-          <div className="w-[72px] border-r flex flex-col items-center py-4 gap-2 shrink-0" style={{ background:C.surfaceVar, borderColor:C.outlineVar }}>
+        <div
+          className={isMobile
+            ? "grid grid-cols-[72px_minmax(0,1fr)] w-full max-w-full min-w-0 min-h-0 flex-1 overflow-hidden"
+            : "flex shrink-0 min-h-0"}
+        >
+          <div className="w-[72px] border-r flex flex-col items-center py-4 gap-2 shrink-0 min-w-[72px] max-w-[72px]" style={{ background:C.surfaceVar, borderColor:C.outlineVar }}>
             {sidebarFilters.map(({ Icon, l, id, badge }) => {
               const active = listFilter === id;
               return (
@@ -1371,7 +1497,12 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
             </button>
           </div>
           {showConversationList && (
-            <div className={`border-r flex flex-col shrink-0 min-h-0 ${isMobile ? "flex-1 w-auto" : "w-72"}`} style={{ background:C.surface, borderColor:C.outlineVar, boxShadow:SH1 }}>
+            <div
+              className={isMobile
+                ? "border-r flex flex-col min-h-0 min-w-0 overflow-hidden"
+                : "w-72 border-r flex flex-col shrink-0 min-h-0"}
+              style={{ background:C.surface, borderColor:C.outlineVar, boxShadow:SH1 }}
+            >
               <div className="p-4 border-b" style={{ borderColor:C.outlineVar }}>
                 <div className="flex items-center gap-2">
                   <div className="flex items-center gap-2 px-3 py-2.5 rounded-full border flex-1" style={{ background:C.surfaceVar, borderColor:C.outlineVar }}>
@@ -1520,22 +1651,18 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
               increaseViewportBy={{ top: 600, bottom: 600 }}
               defaultItemHeight={72}
               followOutput={() => (pinToBottomRef.current ? "auto" : false)}
-              startReached={() => {
-                if (!restoringRef.current && hasMoreRef.current && !loadingOlderRef.current) {
-                  void loadOlderMessages();
-                }
-              }}
+              startReached={() => { void loadOlderMessages(); }}
+              endReached={() => { void loadNewerMessages(); }}
               atBottomStateChange={(atBottom) => {
-                if (restoringRef.current) return;
                 isNearBottomRef.current = atBottom;
                 pinToBottomRef.current = atBottom;
                 setShowJumpBtn(!atBottom && sel.id > 0);
                 if (atBottom) {
                   setUnreadBelow(0);
-                  if (sel.id && msgsRef.current.length) {
+                  if (sel.id && msgsRef.current.length && !hasMoreNewer) {
                     const newest = msgsRef.current[msgsRef.current.length - 1].id;
                     setLastReadMessageId(newest);
-                    api.messages.markRead(sel.id).then(() => refreshContacts()).catch(() => {});
+                    scheduleMarkRead(sel.id);
                   }
                 }
               }}
@@ -1554,13 +1681,14 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
               }}
               rangeChanged={(range) => {
                 visibleStartDataIndexRef.current = Math.max(0, range.startIndex - firstItemIndexRef.current);
+                msgPerf.renderedRows(range.endIndex - range.startIndex + 1);
               }}
               components={{
                 Header: () => (
                   <div className="flex flex-col items-center justify-center min-h-[28px] py-3 gap-1">
                     {loadingOlder ? (
                       <CircularProgress size={18} thickness={4} style={{ color: C.primary }} />
-                    ) : !hasMoreHistory ? (
+                    ) : !hasMoreOlder ? (
                       <span className="text-[11px]" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>Beginning of conversation</span>
                     ) : (
                       <span className="text-[11px] opacity-50" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>Scroll for older messages</span>
@@ -1569,6 +1697,11 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
                 ),
                 Footer: () => (
                   <div className="pb-3">
+                    {loadingNewer && (
+                      <div className="flex justify-center py-2">
+                        <CircularProgress size={16} thickness={4} style={{ color: C.primary }} />
+                      </div>
+                    )}
                     {typingLabel() && (
                       <p className="text-xs px-2 py-1 italic" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>{typingLabel()}</p>
                     )}
@@ -1578,104 +1711,31 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
               itemContent={(absoluteIndex, m) => {
                 const dataIndex = absoluteIndex - firstItemIndex;
                 const prev = dataIndex > 0 ? msgs[dataIndex - 1] : undefined;
-                const showHeader = !prev || prev.user !== m.user || prev.time !== m.time;
-                const showUnreadDivider = !!(
-                  lastReadMessageId
-                  && !m.self
-                  && m.id > lastReadMessageId
-                  && (!prev || prev.id <= lastReadMessageId || prev.self)
-                );
                 return (
-                  <div className="pb-3 min-w-0 max-w-full">
-                    {showUnreadDivider && (
-                      <div className="flex items-center gap-3 my-3">
-                        <div className="flex-1 h-px" style={{ background: C.error }} />
-                        <span className="text-[10px] font-medium uppercase tracking-wider" style={{ color: C.error, fontFamily: "Roboto" }}>New</span>
-                        <div className="flex-1 h-px" style={{ background: C.error }} />
-                      </div>
-                    )}
-                    <div className={`flex gap-2.5 min-w-0 max-w-full ${m.self ? "flex-row-reverse" : ""}`}>
-                      {!m.self ? (
-                        showHeader
-                          ? (
-                            <button
-                              type="button"
-                              className="self-end shrink-0 rounded-full focus:outline-none focus-visible:ring-2 p-0 border-0 bg-transparent"
-                              onClick={e => { e.stopPropagation(); openConversationDetails(); }}
-                              aria-label={isMobile ? "View conversation details" : undefined}
-                              tabIndex={isMobile ? 0 : -1}
-                              style={{ cursor: isMobile ? "pointer" : "default" }}
-                            >
-                              <ChatAvatar name={m.user} avatarUrl={m.avatarUrl} size={32} />
-                            </button>
-                          )
-                          : <div className="w-8 shrink-0" />
-                      ) : <div className="w-8 shrink-0" />}
-                      <div className={`flex flex-col gap-1 min-w-0 max-w-[min(100%,20rem)] lg:max-w-md ${m.self ? "items-end" : "items-start"}`}>
-                        {showHeader && (
-                          <span className="text-[11px] mb-0.5 mx-1 flex items-center gap-2" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
-                            <span style={{ fontFamily: "Roboto Mono,monospace" }}>{m.time}</span>
-                            {!m.self && <span>{m.user}</span>}
-                          </span>
-                        )}
-                        <div
-                          ref={el => { if (el) msgRefs.current.set(m.id, el); else msgRefs.current.delete(m.id); }}
-                          className="relative min-w-0 max-w-full"
-                          onMouseEnter={() => setHoveredMsgId(m.id)}
-                          onMouseLeave={() => setHoveredMsgId(null)}
-                        >
-                          {hoveredMsgId === m.id && (
-                            <div className="absolute -top-8 right-0 flex items-center gap-0.5 px-1.5 py-1 rounded-full shadow-lg z-20" style={{ background: C.surface, border: `1px solid ${C.outlineVar}` }}>
-                              <div className="relative">
-                                <button title="React" onClick={e => { e.stopPropagation(); setReactionPickerMsgId(rp => rp === m.id ? null : m.id); }} className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-black/8 transition-colors text-sm" style={{ color: C.onSurfaceVar }}>😊</button>
-                                {reactionPickerMsgId === m.id && (
-                                  <div
-                                    className={`absolute bottom-full mb-1 flex gap-1 px-2 py-1.5 rounded-full shadow-lg ${m.self ? "right-0" : "left-0"}`}
-                                    style={{ background: C.surface, border: `1px solid ${C.outlineVar}` }}
-                                    onClick={e => e.stopPropagation()}
-                                  >
-                                    {QUICK_REACTIONS.map(emoji => (
-                                      <button key={emoji} onClick={() => addReaction(m.id, emoji)} className="text-lg hover:scale-125 transition-transform w-7 h-7 flex items-center justify-center rounded-full hover:bg-black/8">{emoji}</button>
-                                    ))}
-                                  </div>
-                                )}
-                              </div>
-                              <button title="Reply" onClick={e => { e.stopPropagation(); setReplyingTo(m); }} className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-black/8 transition-colors" style={{ color: C.onSurfaceVar }}><ReplyIcon style={{ fontSize: 14 }} /></button>
-                              {m.self && editingId !== m.id && (
-                                <button title="Edit" onClick={e => { e.stopPropagation(); setEditingId(m.id); setEditText(m.msg); }} className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-black/8 transition-colors" style={{ color: C.onSurfaceVar }}><EditIcon style={{ fontSize: 14 }} /></button>
-                              )}
-                              {m.self && (
-                                <button title="Delete" onClick={e => { e.stopPropagation(); askConfirm("Delete Message", "Delete this message permanently?", () => deleteMsg(m.id)); }} className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-black/8 transition-colors" style={{ color: C.error }}><DeleteIcon style={{ fontSize: 14 }} /></button>
-                              )}
-                              {!m.self && (
-                                <button title="Report" onClick={e => { e.stopPropagation(); askConfirm("Report Message", "Report this message for inappropriate content?", () => { api.messages.report({ messageId: m.id }).catch(() => {}); }); }} className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-black/8 transition-colors" style={{ color: C.error }}><FlagIcon style={{ fontSize: 14 }} /></button>
-                              )}
-                            </div>
-                          )}
-                          {editingId === m.id ? (
-                            <div className="flex items-center gap-2 px-3 py-2 rounded-2xl border min-w-0 max-w-full" style={{ background: C.surfaceVar, borderColor: C.primary }}>
-                              <input autoFocus value={editText} onChange={e => setEditText(e.target.value)} onKeyDown={e => { if (e.key === "Enter") commitEdit(m.id); if (e.key === "Escape") setEditingId(null); }} className="flex-1 min-w-0 bg-transparent text-sm focus:outline-none" style={{ color: C.onSurface, fontFamily: "Roboto" }} />
-                              <button onClick={() => commitEdit(m.id)} className="w-6 h-6 flex items-center justify-center rounded-full text-white shrink-0" style={{ background: C.primary }}><CheckIcon style={{ fontSize: 12 }} /></button>
-                              <button onClick={() => setEditingId(null)} className="w-6 h-6 flex items-center justify-center rounded-full shrink-0" style={{ background: C.surfaceVar, color: C.onSurfaceVar }}><CloseIcon style={{ fontSize: 12 }} /></button>
-                            </div>
-                          ) : (
-                            <div>
-                              <MediaBubble msg={m} self={m.self} C={C} onScrollTo={scrollTo} onLightbox={setLightbox} />
-                              {m.reactions && Object.keys(m.reactions).length > 0 && (
-                                <div className={`flex flex-wrap gap-1 mt-1 ${m.self ? "justify-end" : "justify-start"}`}>
-                                  {Object.entries(m.reactions).map(([emoji, users]) => (
-                                    <button key={emoji} onClick={() => addReaction(m.id, emoji)} className="flex items-center gap-1 px-2 py-0.5 rounded-full text-xs border transition-all hover:scale-105" style={{ background: users.includes(String(currentUserId)) ? C.primaryCont : C.surface, borderColor: users.includes(String(currentUserId)) ? C.primary : C.outlineVar, color: C.onSurface, fontFamily: "Roboto" }}>
-                                      <span>{emoji}</span><span className="font-medium">{users.length}</span>
-                                    </button>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
+                  <MessageRow
+                    m={m}
+                    prev={prev}
+                    lastReadMessageId={lastReadMessageId}
+                    currentUserId={currentUserId}
+                    isMobile={isMobile}
+                    C={C}
+                    editingId={editingId}
+                    editText={editingId === m.id ? editText : ""}
+                    setEditText={setEditText}
+                    setEditingId={setEditingId}
+                    registerRef={(id, el) => {
+                      if (el) msgRefs.current.set(id, el);
+                      else msgRefs.current.delete(id);
+                    }}
+                    onScrollTo={scrollTo}
+                    onLightbox={setLightbox}
+                    onReply={setReplyingTo}
+                    onReact={addReaction}
+                    onDelete={(id) => askConfirm("Delete Message", "Delete this message permanently?", () => deleteMsg(id))}
+                    onReport={(id) => askConfirm("Report Message", "Report this message for inappropriate content?", () => { api.messages.report({ messageId: id }).catch(() => {}); })}
+                    onCommitEdit={commitEdit}
+                    onOpenProfile={openUserProfileFromMessage}
+                  />
                 );
               }}
             />
@@ -1703,15 +1763,13 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
               >
                 <button
                   type="button"
-                  onClick={() => {
-                    pinToBottomRef.current = true;
+                  onClick={async () => {
+                    await jumpToLatest();
                     forceScrollToBottom("smooth");
                     if (sel?.id) {
-                      api.messages.markRead(sel.id).then(() => refreshContacts()).catch(() => {});
+                      scheduleMarkRead(sel.id);
                       if (msgsRef.current.length) setLastReadMessageId(msgsRef.current[msgsRef.current.length - 1].id);
                     }
-                    setUnreadBelow(0);
-                    setShowJumpBtn(false);
                   }}
                   className="w-12 h-12 rounded-full flex items-center justify-center hover:opacity-95 focus-visible:outline-none focus-visible:ring-2 transition-transform hover:scale-105"
                   style={{
@@ -1757,7 +1815,7 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
                 ) : (
                   <div className="p-3 grid grid-cols-2 gap-2 max-h-52 overflow-y-auto ninja-scroll" onScroll={onScrollReveal}>
                     {GIF_LIST.map(g => (
-                      <button key={g.label} onClick={() => { setMsgs(prev => [...prev, { id:Date.now(), user:"You", msg:"", time:nowTime(), self:true, mediaUrl:g.url, mediaType:"gif" }]); setEmojiOpen(false); pinToBottomRef.current = true; requestAnimationFrame(() => forceScrollToBottom("auto")); }} className="rounded-xl overflow-hidden border hover:opacity-80 transition-opacity" style={{ borderColor:C.outlineVar }}>
+                      <button key={g.label} onClick={() => { appendLocal({ id:Date.now(), user:"You", msg:"", time:nowTime(), self:true, mediaUrl:g.url, mediaType:"gif" }); setEmojiOpen(false); pinToBottomRef.current = true; requestAnimationFrame(() => forceScrollToBottom("auto")); }} className="rounded-xl overflow-hidden border hover:opacity-80 transition-opacity" style={{ borderColor:C.outlineVar }}>
                         <img src={g.url} alt={g.label} className="w-full h-16 object-cover" />
                         <p className="text-[10px] py-1 text-center" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>{g.label}</p>
                       </button>
@@ -1813,13 +1871,13 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
         <ConversationDetailsBody sel={sel} C={C} presenceColor={presenceColor} presenceLabel={presenceLabel} />
       </div>
       )}
-      {/* Mobile conversation details modal */}
-      {detailsOpen && isMobile && sel.id > 0 && (
+      {/* Mobile conversation / user details modal */}
+      {detailsOpen && isMobile && detailsContact && (
         <div
           className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-sm p-0 sm:p-4"
           role="dialog"
           aria-modal="true"
-          aria-label="Conversation details"
+          aria-label={detailsContact.type === "channel" ? "Channel details" : "User profile"}
           onClick={dismissConversationDetails}
         >
           <div
@@ -1830,7 +1888,7 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
           >
             <div className="flex items-center justify-between mb-4">
               <h3 className="font-medium text-base" style={{ color: C.onSurface, fontFamily: "Roboto" }}>
-                {sel.type === "channel" ? "Channel Info" : "Profile"}
+                {detailsContact.type === "channel" ? "Channel Info" : "Profile"}
               </h3>
               <button
                 type="button"
@@ -1842,7 +1900,7 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
                 <CloseIcon style={{ fontSize: 18 }} />
               </button>
             </div>
-            <ConversationDetailsBody sel={sel} C={C} presenceColor={presenceColor} presenceLabel={presenceLabel} />
+            <ConversationDetailsBody sel={detailsContact} C={C} presenceColor={presenceColor} presenceLabel={presenceLabel} />
           </div>
         </div>
       )}

@@ -24,42 +24,66 @@ router.get("/", optionalAuth, (req, res) => {
   const userId = req.user?.id;
 
   const globalNotifs = db.prepare(`
-    SELECT * FROM notifications WHERE user_id IS NULL ORDER BY pinned DESC, created_at DESC
+    SELECT * FROM notifications WHERE user_id IS NULL ORDER BY pinned DESC, created_at DESC LIMIT 200
   `).all() as Record<string, unknown>[];
 
   let personalNotifs: Record<string, unknown>[] = [];
   if (userId) {
     personalNotifs = db.prepare(`
-      SELECT * FROM notifications WHERE user_id = ? ORDER BY pinned DESC, created_at DESC
+      SELECT * FROM notifications WHERE user_id = ? ORDER BY pinned DESC, created_at DESC LIMIT 200
     `).all(userId) as Record<string, unknown>[];
   }
 
+  // Cache auth fields once for recipient matching instead of per-notification user lookup.
+  const authUser = userId
+    ? db.prepare("SELECT is_admin, is_team_member FROM users WHERE id = ?").get(userId) as { is_admin: number; is_team_member: number } | undefined
+    : undefined;
+
+  const matchesRecipient = (recipientType: string, recipientIds: number[]) => {
+    if (!userId) return recipientType === "everyone";
+    if (!authUser) return false;
+    switch (recipientType) {
+      case "everyone": return true;
+      case "users": return recipientIds.includes(userId);
+      case "team": return authUser.is_team_member === 1;
+      case "admins": return authUser.is_admin === 1;
+      default: return true;
+    }
+  };
+
   const allNotifs = [...personalNotifs, ...globalNotifs.filter(n => {
-    if (!userId) return (n.recipient_type as string || "everyone") === "everyone";
     const recipientType = (n.recipient_type as string) || "everyone";
     const recipientIds = JSON.parse((n.recipient_ids as string) || "[]") as number[];
-    return userMatchesRecipient(userId, recipientType, recipientIds);
+    return matchesRecipient(recipientType, recipientIds);
   })];
 
   const seen = new Set<number>();
-  const result = allNotifs.filter(n => {
+  const unique = allNotifs.filter(n => {
     const id = n.id as number;
     if (seen.has(id)) return false;
     seen.add(id);
     return true;
-  }).map(n => {
-    let read = false;
-    if (userId) {
-      const r = db.prepare("SELECT 1 FROM notification_reads WHERE user_id = ? AND notification_id = ?").get(userId, n.id);
-      read = !!r;
-    }
+  });
+
+  const readIds = new Set<number>();
+  if (userId && unique.length) {
+    const ids = unique.map(n => n.id as number);
+    const ph = ids.map(() => "?").join(",");
+    const rows = db.prepare(`
+      SELECT notification_id FROM notification_reads
+      WHERE user_id = ? AND notification_id IN (${ph})
+    `).all(userId, ...ids) as { notification_id: number }[];
+    for (const r of rows) readIds.add(r.notification_id);
+  }
+
+  const result = unique.map(n => {
     const metadata = JSON.parse((n.metadata as string) || "{}");
     return {
       id: n.id,
       title: n.title,
       body: n.body,
       time: timeAgo(n.created_at as string),
-      read,
+      read: userId ? readIds.has(n.id as number) : false,
       page: n.page,
       source: n.source,
       pinned: n.pinned === 1,

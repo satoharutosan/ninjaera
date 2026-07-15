@@ -1,7 +1,11 @@
 import { db } from "../db/index.js";
-import { broadcast } from "./realtime.js";
+import { broadcast, scheduleAdminStatsRefresh } from "./realtime.js";
 
 const ONLINE_WINDOW_MS = 5 * 60 * 1000;
+/** Skip redundant last_seen writes within this window (cuts SQLite write amp on free hosts). */
+const TOUCH_THROTTLE_MS = 45_000;
+
+const lastTouchWrite = new Map<number, number>();
 
 export type PresencePayload = {
   userId: number;
@@ -31,9 +35,16 @@ export function getPresencePayload(userId: number): PresencePayload | null {
 export function emitPresenceUpdate(userId: number) {
   const payload = getPresencePayload(userId);
   if (payload) broadcast("presence:update", payload);
+  // Keep admin "Online Users" / overview in sync without flooding the bus.
+  scheduleAdminStatsRefresh(1500);
 }
 
 export function touchPresence(userId: number) {
+  const nowMs = Date.now();
+  const last = lastTouchWrite.get(userId) ?? 0;
+  if (nowMs - last < TOUCH_THROTTLE_MS) return;
+  lastTouchWrite.set(userId, nowMs);
+
   const ts = new Date().toISOString();
   const row = readStatus(userId);
   // Don't force Online if user explicitly set Offline

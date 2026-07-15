@@ -166,22 +166,23 @@ function TonalBtn({ children, onClick, cls="" }: { children:React.ReactNode; onC
   );
 }
 
-function Field({ label, type="text", value, onChange, placeholder="", rows, suffix, cls="" }: {
-  label:string; type?:string; value?:string; onChange?:(v:string)=>void; placeholder?:string; rows?:number; suffix?:React.ReactNode; cls?:string;
+function Field({ label, type="text", value, onChange, placeholder="", rows, suffix, cls="", bg }: {
+  label:string; type?:string; value?:string; onChange?:(v:string)=>void; placeholder?:string; rows?:number; suffix?:React.ReactNode; cls?:string; bg?: string;
 }) {
   const C = useC();
+  const inputBg = bg ?? C.surface;
   return (
     <div className={`relative mt-1 ${cls}`}>
       {rows ? (
-        <textarea rows={rows} placeholder={placeholder}
+        <textarea rows={rows} placeholder={placeholder} value={value}
           className="w-full h-full px-4 pt-4 pb-2 rounded-[4px] border text-sm focus:outline-none resize-none"
-          style={{ borderColor:C.outline, color:C.onSurface, background:C.surface, fontFamily:"Roboto" }}
+          style={{ borderColor:C.outline, color:C.onSurface, background:inputBg, fontFamily:"Roboto" }}
           onChange={e => onChange?.(e.target.value)} />
       ) : (
         <div className="relative">
           <input type={type} placeholder={placeholder} value={value}
             className="w-full px-4 py-3.5 rounded-[4px] border text-sm focus:outline-none"
-            style={{ borderColor:C.outline, color:C.onSurface, background:C.surface, fontFamily:"Roboto" }}
+            style={{ borderColor:C.outline, color:C.onSurface, background:inputBg, fontFamily:"Roboto" }}
             onChange={e => onChange?.(e.target.value)} />
           {suffix && <div className="absolute right-3 top-1/2 -translate-y-1/2">{suffix}</div>}
         </div>

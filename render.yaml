@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: ninja-era
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "3001"
+      - key: DATABASE_PATH
+        value: /data/ninja-era.db
+      - key: UPLOAD_DIR
+        value: /data/uploads
+      - key: CORS_ORIGIN
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+    disk:
+      name: ninja-era-data
+      mountPath: /data
+      sizeGB: 1

@@ -169,7 +169,60 @@ export function runMigrations() {
       created_at TEXT NOT NULL,
       expires_at TEXT NOT NULL
     );
+
+    CREATE INDEX IF NOT EXISTS idx_conversation_participants_user
+      ON conversation_participants(user_id);
+    CREATE INDEX IF NOT EXISTS idx_notification_reads_notif
+      ON notification_reads(notification_id);
+    CREATE INDEX IF NOT EXISTS idx_contact_replies_ticket
+      ON contact_replies(ticket_id);
+    CREATE INDEX IF NOT EXISTS idx_resources_enabled_sort
+      ON resources(enabled, sort_order, published_at);
+    CREATE INDEX IF NOT EXISTS idx_conversations_type_archived
+      ON conversations(type, archived);
+    CREATE INDEX IF NOT EXISTS idx_users_npc_deleted
+      ON users(is_npc, is_deleted);
   `);
+
+  addColumn("conversations", "last_message_at", "TEXT");
+  addColumn("conversations", "last_message_preview", "TEXT");
+
+  // Backfill denormalized last-message fields once (only where still null)
+  const needsBackfill = db.prepare(`
+    SELECT id FROM conversations WHERE last_message_at IS NULL LIMIT 1
+  `).get();
+  if (needsBackfill) {
+    const convs = db.prepare("SELECT id FROM conversations").all() as { id: number }[];
+    const lastMsg = db.prepare(`
+      SELECT content, media_type, file_name, created_at
+      FROM messages WHERE conversation_id = ?
+      ORDER BY created_at DESC, id DESC LIMIT 1
+    `);
+    const updateConv = db.prepare(`
+      UPDATE conversations SET last_message_at = ?, last_message_preview = ? WHERE id = ?
+    `);
+    const tx = db.transaction(() => {
+      for (const { id } of convs) {
+        const last = lastMsg.get(id) as {
+          content: string; media_type: string | null; file_name: string | null; created_at: string;
+        } | undefined;
+        if (!last) continue;
+        let preview = last.content || "";
+        if (!preview) {
+          switch (last.media_type) {
+            case "image": preview = "📷 Image"; break;
+            case "gif": preview = "GIF"; break;
+            case "video": preview = "🎬 Video"; break;
+            case "audio": preview = "🎤 Voice message"; break;
+            case "file": preview = last.file_name ? `📎 ${last.file_name}` : "📎 File"; break;
+            default: preview = "No messages yet";
+          }
+        }
+        updateConv.run(last.created_at, preview.slice(0, 200), id);
+      }
+    });
+    tx();
+  }
 
   // Ensure demo admin account
   db.prepare("UPDATE users SET is_admin = 1 WHERE email = ?").run("ninja@example.com");

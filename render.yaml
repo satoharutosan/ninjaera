@@ -9,13 +9,33 @@ services:
         value: production
       - key: PORT
         value: "3001"
+      - key: DATABASE_PROVIDER
+        value: sqlite
       - key: DATABASE_PATH
         value: /data/ninja-era.db
+      - key: STORAGE_PROVIDER
+        value: local
       - key: UPLOAD_DIR
         value: /data/uploads
+      - key: DATA_DIR
+        value: /data
       - key: CORS_ORIGIN
         sync: false
       - key: JWT_SECRET
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: MAIL_FROM_NAME
+        value: Ninja Era
+      - key: MAIL_FROM_ADDRESS
+        value: softfuture28@gmail.com
+      - key: SMTP_HOST
+        value: smtp.gmail.com
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USER
+        value: softfuture28@gmail.com
+      - key: SMTP_PASS
         sync: false
     disk:
       name: ninja-era-data

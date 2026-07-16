@@ -1,0 +1,44 @@
+import DashboardIcon from "@mui/icons-material/Dashboard";
+import PeopleIcon from "@mui/icons-material/People";
+import NotificationsIcon from "@mui/icons-material/Notifications";
+import TagIcon from "@mui/icons-material/Tag";
+import WorkIcon from "@mui/icons-material/Work";
+import MenuBookIcon from "@mui/icons-material/MenuBook";
+import SportsEsportsIcon from "@mui/icons-material/SportsEsports";
+import HistoryIcon from "@mui/icons-material/History";
+import ContactMailIcon from "@mui/icons-material/ContactMail";
+import StorageIcon from "@mui/icons-material/Storage";
+import ForumIcon from "@mui/icons-material/Forum";
+import AutoStoriesIcon from "@mui/icons-material/AutoStories";
+import { api } from "@/app/api";
+
+export type Section = "dashboard" | "users" | "notifications" | "contacts" | "channels" | "applications" | "resources" | "game-downloads" | "messaging-history" | "activity-logs" | "database" | "about-our-story";
+
+export type DashboardStats = Awaited<ReturnType<typeof api.admin.stats>>;
+
+export const EMPTY_STATS: DashboardStats = {
+  totalUsers: 0, onlineUsers: 0, totalChannels: 0, totalDms: 0, pendingApplications: 0, teamMembers: 0, unreadNotifications: 0,
+  unreadContacts: 0, totalContacts: 0, repliedContacts: 0, pendingContactReplies: 0,
+  totalMessages: 0, pendingDmRequests: 0, totalResources: 0, totalDownloads: 0,
+  approvedApplications: 0, rejectedApplications: 0,
+  userDistribution: [], userGrowth: [], activityTimeline: [], downloadsByPlatform: [],
+  mostDownloadedResource: null, recentUsers: [], recentApplications: [], recentContacts: [], recentActivity: [],
+};
+
+export const CHART_COLORS = ["#6750A4", "#386A20", "#B3261E", "#006A6A", "#7D5260", "#625B71"];
+
+export const SECTIONS: { id: Section; label: string; Icon: typeof DashboardIcon }[] = [
+  { id: "dashboard", label: "Dashboard", Icon: DashboardIcon },
+  { id: "users", label: "Users", Icon: PeopleIcon },
+  { id: "contacts", label: "Contact Management", Icon: ContactMailIcon },
+  { id: "notifications", label: "Notifications", Icon: NotificationsIcon },
+  { id: "channels", label: "Channels", Icon: TagIcon },
+  { id: "about-our-story", label: "Our Story", Icon: AutoStoriesIcon },
+  { id: "applications", label: "Teamwork Applications", Icon: WorkIcon },
+  { id: "resources", label: "Resources", Icon: MenuBookIcon },
+  { id: "game-downloads", label: "Game Downloads", Icon: SportsEsportsIcon },
+  { id: "messaging-history", label: "Messaging History", Icon: ForumIcon },
+  { id: "activity-logs", label: "Activity Logs", Icon: HistoryIcon },
+  { id: "database", label: "Database", Icon: StorageIcon },
+];
+

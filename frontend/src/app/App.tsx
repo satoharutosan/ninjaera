@@ -33,32 +33,42 @@ import {
   FilledBtn, OutlinedBtn,
 } from "@/app/shared";
 import { connectRealtime, disconnectRealtime, onRealtimeEvent, joinConversation } from "@/app/realtime";
-import { messageCache } from "@/app/messaging/messageCache";
-import { appPerf } from "@/app/perf";
-import { pageFromLocation, setPageInLocation } from "@/app/routing";
+import { messageCache } from "@/features/messages/messageCache";
+import { appPerf } from "@/shared/perf";
+import { pageFromLocation, setPageInLocation } from "@/shared/routing";
+import { BrandLogo } from "@/shared/BrandLogo";
+import { BRAND_LOGO_SRC, BRAND_NAME } from "@/shared/branding";
+import { getCachedUser, setCachedUser, clearAuthStorage, getStoredToken } from "@/shared/authStorage";
 import { api, setToken, ApiError, type ApiUser, type ApiNotification } from "@/app/api";
-import { SOCIAL_LINKS, isSocialUrlConfigured, type SocialPlatform } from "@/app/socialLinks";
-import { SECTION_IDS, scrollToSection, scrollToSectionWhenReady } from "@/app/scrollToSection";
+import { SOCIAL_LINKS, isSocialUrlConfigured, type SocialPlatform } from "@/shared/socialLinks";
+import { SECTION_IDS, scrollToSection, scrollToSectionWhenReady } from "@/shared/scrollToSection";
+import { CallProvider } from "@/features/calling/CallProvider";
+import { CallOverlays } from "@/features/calling/CallOverlays";
 
 // Eager page imports — avoids Suspense flash on route changes (native-feeling navigation).
-import HomePage from "@/app/pages/HomePage";
-import LoginPage from "@/app/pages/LoginPage";
-import OAuthCallbackPage from "@/app/pages/OAuthCallbackPage";
-import AboutPage from "@/app/pages/AboutPage";
-import ResourcesPage from "@/app/pages/ResourcesPage";
-import TeamworkPage from "@/app/pages/TeamworkPage";
-import ContactPage from "@/app/pages/ContactPage";
-import AlarmsPage from "@/app/pages/AlarmsPage";
-import SignUpPage from "@/app/pages/SignUpPage";
-import ProfilePage from "@/app/pages/ProfilePage";
-import TermsOfServicePage from "@/app/pages/TermsOfServicePage";
-import MessagesPage from "@/app/pages/MessagesPage";
-import AdminPage from "@/app/pages/AdminPage";
-import HelpCenterPage from "@/app/pages/HelpCenterPage";
-import BugReportsPage from "@/app/pages/BugReportsPage";
-import ServerStatusPage from "@/app/pages/ServerStatusPage";
-import PatchNotesPage from "@/app/pages/PatchNotesPage";
+import HomePage from "@/features/landing/HomePage";
+import LoginPage from "@/features/auth/LoginPage";
+import OAuthCallbackPage from "@/features/auth/OAuthCallbackPage";
+import ForgotPasswordPage from "@/features/auth/ForgotPasswordPage";
+import ResetPasswordPage from "@/features/auth/ResetPasswordPage";
+import AboutPage from "@/features/landing/AboutPage";
+import ResourcesPage from "@/features/resources/ResourcesPage";
+import TeamworkPage from "@/features/teamwork/TeamworkPage";
+import ContactPage from "@/features/landing/ContactPage";
+import AlarmsPage from "@/features/notifications/AlarmsPage";
+import SignUpPage from "@/features/auth/SignUpPage";
+import VerifyEmailPage from "@/features/auth/VerifyEmailPage";
+import ProfilePage from "@/features/profile/ProfilePage";
+import TermsOfServicePage from "@/features/landing/TermsOfServicePage";
+import PrivacyPolicyPage from "@/features/landing/PrivacyPolicyPage";
+import MessagesPage from "@/features/messages/MessagesPage";
+import AdminPage from "@/features/admin/AdminPage";
+import HelpCenterPage from "@/features/landing/HelpCenterPage";
+import BugReportsPage from "@/features/landing/BugReportsPage";
+import ServerStatusPage from "@/features/landing/ServerStatusPage";
+import PatchNotesPage from "@/features/landing/PatchNotesPage";
 
+/** Shared navbar badge — identical styling for notifications and messages (top-right). */
 function NavIconBadge({
   badgeContent,
   children,
@@ -80,15 +90,17 @@ function NavIconBadge({
         "& .MuiBadge-badge": {
           backgroundColor: BADGE_BG,
           color: "#fff",
-          fontSize: "0.55rem",
+          fontSize: "8px",
           fontWeight: 700,
+          lineHeight: 1,
           minWidth: 14,
           height: 14,
-          padding: "0 3px",
+          padding: "0 2px",
+          borderRadius: "9999px",
         },
       }}
     >
-      <span className="inline-flex leading-none">{children}</span>
+      {children}
     </Badge>
   );
 }
@@ -163,9 +175,9 @@ function Navbar({ page, setPage, isDark, setIsDark, loggedIn, user, userAvatar, 
   return (
     <nav className="fixed top-0 left-0 right-0 z-50" style={{ background:C.surface, boxShadow:SH2 }} onClick={closeOverlays}>
       <div className="max-w-7xl mx-auto px-4 flex items-center justify-between h-16">
-        <button onClick={() => go("home")} className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold" style={{ background:C.primary, fontFamily:"Roboto" }}>NE</div>
-          <span className="font-medium text-lg" style={{ color:C.onSurface, fontFamily:"'Trade Winds', cursive" }}>Ninja Era</span>
+        <button onClick={() => go("home")} className="flex items-center gap-2.5" aria-label={`${BRAND_NAME} home`}>
+          <BrandLogo size={32} priority />
+          <span className="font-medium text-lg" style={{ color:C.onSurface, fontFamily:"'Trade Winds', cursive" }}>{BRAND_NAME}</span>
         </button>
         <div className="hidden md:flex items-center gap-0.5">
           {links.map(l => (
@@ -235,12 +247,20 @@ function Navbar({ page, setPage, isDark, setIsDark, loggedIn, user, userAvatar, 
                   <AdminPanelSettingsIcon style={{ fontSize: 20 }} />
                 </button>
               )}
-              <button onClick={() => go("messages")} className="relative flex items-center justify-center hover:bg-[#6750A4]/8 rounded-full transition-colors" style={{ padding: showLabels ? "8px 16px" : "8px", gap: showLabels ? "6px" : 0, color:C.primary, fontFamily:"Roboto", fontSize:"0.875rem", fontWeight:500 }}>
-                <NavIconBadge badgeContent={msgUnread} max={9}>
+              <button onClick={() => go("messages")} className="flex items-center justify-center hover:bg-[#6750A4]/8 rounded-full transition-colors" style={{ padding: showLabels ? "8px 16px" : "8px", gap: showLabels ? "6px" : 0, color:C.primary, fontFamily:"Roboto", fontSize:"0.875rem", fontWeight:500 }} aria-label={`Messages${msgUnread > 0 ? ` (${msgUnread} unread)` : ""}${dmRequestCount > 0 ? `, ${dmRequestCount} requests` : ""}`}>
+                <NavIconBadge badgeContent={msgUnread}>
                   <ChatBubbleIcon style={{ fontSize:18 }} />
                 </NavIconBadge>
-                {showLabels && "Messages"}
-                {dmRequestCount > 0 && <span className="absolute bottom-0.5 right-0.5 min-w-[14px] h-3.5 px-0.5 rounded-full text-white text-[8px] flex items-center justify-center font-bold" style={{ background: BADGE_BG }}>{dmRequestCount}</span>}
+                {showLabels && (
+                  <span className="inline-flex items-center gap-1">
+                    Messages
+                    {dmRequestCount > 0 && (
+                      <span className="text-[10px] font-bold tabular-nums" style={{ color: BADGE_BG }} title="DM requests">
+                        ({dmRequestCount})
+                      </span>
+                    )}
+                  </span>
+                )}
               </button>
               <button
                 ref={avatarBtnRef}
@@ -310,18 +330,13 @@ function Navbar({ page, setPage, isDark, setIsDark, loggedIn, user, userAvatar, 
               <button
                 type="button"
                 onClick={() => go("messages")}
-                aria-label={`Messages${msgUnread > 0 ? ` (${msgUnread} unread)` : ""}`}
-                className="w-10 h-10 rounded-full flex items-center justify-center relative hover:bg-black/5 transition-colors"
+                aria-label={`Messages${msgUnread > 0 ? ` (${msgUnread} unread)` : ""}${dmRequestCount > 0 ? `, ${dmRequestCount} requests` : ""}`}
+                className="w-10 h-10 rounded-full flex items-center justify-center hover:bg-black/5 transition-colors"
                 style={{ color: page === "messages" ? C.primary : C.onSurfaceVar }}
               >
-                <NavIconBadge badgeContent={msgUnread} max={9}>
+                <NavIconBadge badgeContent={msgUnread}>
                   <ChatBubbleIcon style={{ fontSize: 20 }} />
                 </NavIconBadge>
-                {dmRequestCount > 0 && (
-                  <span className="absolute bottom-1 right-1 min-w-[12px] h-3 px-0.5 rounded-full text-white text-[7px] flex items-center justify-center font-bold leading-none" style={{ background: BADGE_BG }}>
-                    {dmRequestCount}
-                  </span>
-                )}
               </button>
             </>
           )}
@@ -433,8 +448,8 @@ function Footer({ setPage, onGoToDownload }: { setPage:(p:Page)=>void; onGoToDow
         <div className="grid grid-cols-2 md:grid-cols-4 gap-8 mb-12">
           <div className="col-span-2 md:col-span-1">
             <div className="flex items-center gap-2.5 mb-4">
-              <div className="w-9 h-9 rounded-full flex items-center justify-center text-white text-sm font-bold shrink-0" style={{ background:C.primary }}>NE</div>
-              <span className="text-white font-medium text-xl" style={{ fontFamily:"Roboto" }}>Ninja Era</span>
+              <BrandLogo size={36} priority />
+              <span className="text-white font-medium text-xl" style={{ fontFamily:"Roboto" }}>{BRAND_NAME}</span>
             </div>
             <p className="text-sm leading-relaxed mb-5" style={{ color:"#CAC4D0", fontFamily:"Roboto" }}>An immersive MMORPG in a world of shinobi, ancient clans, and forbidden jutsu.</p>
             <div className="flex flex-wrap gap-2" role="list" aria-label="Social media">
@@ -509,10 +524,10 @@ function Footer({ setPage, onGoToDownload }: { setPage:(p:Page)=>void; onGoToDow
           </div>
         </div>
         <div className="border-t pt-6 flex flex-col sm:flex-row justify-between items-center gap-3" style={{ borderColor:"#49454F" }}>
-          <p className="text-xs text-center sm:text-left" style={{ color:"#79747E", fontFamily:"Roboto" }}>© 2025 Ninja Era Studio. All rights reserved.</p>
+          <p className="text-xs text-center sm:text-left" style={{ color:"#79747E", fontFamily:"Roboto" }}>© 2026 {BRAND_NAME} Studio. All rights reserved.</p>
           <div className="flex flex-wrap justify-center gap-4">
             <button type="button" onClick={() => go("terms")} className="text-xs hover:text-white transition-colors" style={{ color:"#79747E", fontFamily:"Roboto" }}>Terms of Service</button>
-            <a href="#" className="text-xs hover:text-white transition-colors" style={{ color:"#79747E", fontFamily:"Roboto" }}>Privacy Policy</a>
+            <button type="button" onClick={() => go("privacy")} className="text-xs hover:text-white transition-colors" style={{ color:"#79747E", fontFamily:"Roboto" }}>Privacy Policy</button>
             <a href="#" className="text-xs hover:text-white transition-colors" style={{ color:"#79747E", fontFamily:"Roboto" }}>Cookie Policy</a>
           </div>
         </div>
@@ -528,7 +543,13 @@ export default function App() {
   const setPage = useCallback((p: Page) => {
     appPerf.mark(`route:${p}`);
     setPageState(p);
-    setPageInLocation(p);
+    // Preserve hash query (e.g. verify-email?token= / ?email=) when navigating to the same page
+    const current = pageFromLocation();
+    const hash = window.location.hash.replace(/^#\/?/, "");
+    const hasQuery = hash.includes("?");
+    if (!(p === current && hasQuery)) {
+      setPageInLocation(p);
+    }
     if (!pendingSectionRef.current) window.scrollTo(0, 0);
     requestAnimationFrame(() => appPerf.measure(`route:${p}`));
   }, []);
@@ -559,10 +580,21 @@ export default function App() {
   useEffect(() => {
     document.documentElement.classList.toggle("dark", isDark);
   }, [isDark]);
-  const [user, setUser] = useState<ApiUser | null>(null);
-  const [authReady, setAuthReady] = useState(() => !localStorage.getItem("ninja-era-token"));
+  const [user, setUser] = useState<ApiUser | null>(() => {
+    // Optimistic restore so protected routes don't flash Login on refresh
+    return getStoredToken() ? getCachedUser() : null;
+  });
+  const [authReady, setAuthReady] = useState(() => {
+    const token = getStoredToken();
+    if (!token) return true;
+    // Cached profile → show app immediately while revalidating in the background
+    return !!getCachedUser();
+  });
   const [settings, setSettings] = useState<AppSettings>({ emailNotif:true, pushNotif:false, twoFA:false, publicProfile:true });
-  const [userAvatar, setUserAvatar] = useState<string|null>(null);
+  const [userAvatar, setUserAvatar] = useState<string|null>(() => {
+    const cached = getStoredToken() ? getCachedUser() : null;
+    return cached?.avatarUrl ?? null;
+  });
   const [contacts, setContacts] = useState<Contact[]>(MSGS_DATA_INIT);
   const [notifs, setNotifs] = useState<ApiNotification[]>(ADMIN_NOTIFICATIONS.map(n => ({ ...n, page: "alarms" })));
   const [msgUnread, setMsgUnread] = useState(0);
@@ -574,8 +606,8 @@ export default function App() {
   const clearFocusMessageInput = useCallback(() => setFocusMessageInput(false), []);
   const loggedIn = !!user;
   const theme = isDark ? DARK_C : LIGHT_C;
-  const noNav: Page[] = ["oauth-callback"];
-  const noFoot: Page[] = ["messages","login","signup","oauth-callback","admin"];
+  const noNav: Page[] = ["oauth-callback", "verify-email", "forgot-password", "reset-password"];
+  const noFoot: Page[] = ["messages","login","signup","oauth-callback","admin","forgot-password","reset-password","verify-email"];
   const go = setPage;
 
   useEffect(() => {
@@ -587,12 +619,19 @@ export default function App() {
 
   const handleLogin = useCallback((u: ApiUser) => {
     setUser(u);
+    setCachedUser(u);
     setAuthReady(true);
     if (u.avatarUrl) setUserAvatar(u.avatarUrl);
   }, []);
 
+  // Keep local profile snapshot in sync for instant restore after refresh
+  useEffect(() => {
+    if (user) setCachedUser(user);
+  }, [user]);
+
   const handleLogout = useCallback(() => {
     api.auth.logout().catch(() => {});
+    clearAuthStorage();
     setToken(null);
     setUser(null);
     setUserAvatar(null);
@@ -606,37 +645,52 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const token = localStorage.getItem("ninja-era-token");
+    const token = getStoredToken();
     if (!token) {
+      clearAuthStorage();
       setAuthReady(true);
       return;
     }
+
     let cancelled = false;
-    api.auth.me()
-      .then(r => {
+
+    (async () => {
+      try {
+        const { user: me } = await api.auth.me();
         if (cancelled) return;
-        setUser(r.user);
-        if (r.user.avatarUrl) setUserAvatar(r.user.avatarUrl);
-        return api.users.me();
-      })
-      .then(r => {
-        if (cancelled || !r) return;
-        setSettings({
-          emailNotif: r.settings.emailNotif,
-          pushNotif: r.settings.pushNotif,
-          twoFA: r.settings.twoFA,
-          publicProfile: r.settings.publicProfile,
-        });
-      })
-      .catch(() => {
-        if (!cancelled) {
+        setUser(me);
+        setCachedUser(me);
+        if (me.avatarUrl) setUserAvatar(me.avatarUrl);
+        // Settings are best-effort — failure must not log the user out
+        try {
+          const r = await api.users.me();
+          if (cancelled) return;
+          setSettings({
+            emailNotif: r.settings.emailNotif,
+            pushNotif: r.settings.pushNotif,
+            twoFA: r.settings.twoFA,
+            publicProfile: r.settings.publicProfile,
+          });
+          if (r.user?.avatarUrl) setUserAvatar(r.user.avatarUrl);
+        } catch {
+          /* keep session; settings stay at defaults / previous */
+        }
+      } catch (e) {
+        if (cancelled) return;
+        const status = e instanceof ApiError ? e.status : 0;
+        // Only clear the persistent session when the server rejects the token
+        if (status === 401 || status === 403) {
+          clearAuthStorage();
           setToken(null);
           setUser(null);
+          setUserAvatar(null);
         }
-      })
-      .finally(() => {
+        // Network / 5xx: keep cached user so refresh doesn't force logout
+      } finally {
         if (!cancelled) setAuthReady(true);
-      });
+      }
+    })();
+
     return () => { cancelled = true; };
   }, []);
 
@@ -799,18 +853,28 @@ export default function App() {
   const showPushNotif = (title: string, body: string, targetPage: Page) => {
     if (!settings.pushNotif) return;
     if ("Notification" in window && Notification.permission === "granted") {
-      const n = new Notification(title, { body, icon:"/favicon.ico" });
+      const n = new Notification(title, { body, icon: BRAND_LOGO_SRC });
       n.onclick = () => { window.focus(); go(targetPage); };
     }
   };
 
   return (
     <ThemeCtx.Provider value={theme}>
-    <div style={{ minHeight:"100vh", background:theme.bg, fontFamily:"Roboto, sans-serif" }}>
+    <CallProvider>
+    <div style={{
+      minHeight: page === "admin" || page === "messages" ? undefined : "100vh",
+      height: page === "admin" || page === "messages" ? "100dvh" : undefined,
+      maxHeight: page === "admin" || page === "messages" ? "100dvh" : undefined,
+      overflow: page === "admin" || page === "messages" ? "hidden" : undefined,
+      background: theme.bg,
+      fontFamily: "Roboto, sans-serif",
+    }}>
       <Toaster position="top-right" richColors />
+      <CallOverlays />
       {!authReady ? (
         <div className="min-h-screen flex items-center justify-center" aria-busy="true" aria-label="Restoring session">
           <div className="flex flex-col items-center gap-3">
+            <BrandLogo size={48} priority />
             <div className="w-10 h-10 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: theme.primary, borderTopColor: "transparent" }} />
             <p className="text-sm" style={{ color: theme.onSurfaceVar, fontFamily: "Roboto" }}>Restoring session…</p>
           </div>
@@ -819,13 +883,16 @@ export default function App() {
         <>
       {!noNav.includes(page) && <Navbar page={page} setPage={go} isDark={isDark} setIsDark={toggleTheme} loggedIn={loggedIn} user={user} userAvatar={userAvatar} notifs={notifs} setNotifs={setNotifs} msgUnread={msgUnread} dmRequestCount={dmRequestCount} isAdmin={user?.isAdmin} onLogout={handleLogout} />}
         {page==="home"      && <HomePage setPage={go} onGoToDownload={goToDownload} />}
-        {page==="about"     && <AboutPage />}
-        {page==="resources" && <ResourcesPage isTeamMember={user?.isTeamMember} />}
+        {page==="about"     && <AboutPage setPage={go} />}
+        {page==="resources" && <ResourcesPage isTeamMember={user?.isTeamMember} isAdmin={user?.isAdmin} />}
         {page==="teamwork"  && <TeamworkPage loggedIn={loggedIn} setPage={go} onAddDM={addDM} />}
         {page==="contact"   && <ContactPage />}
         {page==="alarms"    && <AlarmsPage setPage={go} onConversationsRefresh={refreshConversations} onNotificationsRefresh={refreshNotifications} />}
         {page==="login"     && !loggedIn && <LoginPage setPage={go} onLogin={handleLogin} />}
-        {page==="signup"    && !loggedIn && <SignUpPage setPage={go} onLogin={handleLogin} />}
+        {page==="signup"    && !loggedIn && <SignUpPage setPage={go} />}
+        {page==="verify-email" && !loggedIn && <VerifyEmailPage setPage={go} onLogin={handleLogin} />}
+        {page==="forgot-password" && !loggedIn && <ForgotPasswordPage setPage={go} />}
+        {page==="reset-password" && <ResetPasswordPage setPage={go} onComplete={handleLogout} />}
         {page==="oauth-callback" && <OAuthCallbackPage setPage={go} onLogin={handleLogin} />}
         {page==="messages"  && loggedIn && (
           <MessagesPage
@@ -847,7 +914,8 @@ export default function App() {
         )}
         {page==="profile"   && loggedIn && <ProfilePage setPage={go} isDark={isDark} setIsDark={toggleTheme} settings={settings} setSettings={setSettings} user={user} setUser={setUser} userAvatar={userAvatar} setUserAvatar={setUserAvatar} onLogout={handleLogout} />}
         {page==="admin"     && loggedIn && user?.isAdmin && <AdminPage setPage={go} />}
-        {page==="terms"     && <TermsOfServicePage />}
+        {page==="terms"     && <TermsOfServicePage setPage={go} />}
+        {page==="privacy"   && <PrivacyPolicyPage setPage={go} />}
         {page==="help"      && <HelpCenterPage />}
         {page==="bugs"      && <BugReportsPage setPage={go} />}
         {page==="status"    && <ServerStatusPage />}
@@ -856,6 +924,7 @@ export default function App() {
         </>
       )}
     </div>
+    </CallProvider>
     </ThemeCtx.Provider>
   );
 }

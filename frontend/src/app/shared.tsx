@@ -1,6 +1,6 @@
 import { useState, useEffect, createContext, useContext } from "react";
 
-export type Page = "home" | "about" | "resources" | "teamwork" | "contact" | "login" | "signup" | "oauth-callback" | "messages" | "profile" | "alarms" | "admin" | "terms" | "help" | "bugs" | "status" | "patches";
+export type Page = "home" | "about" | "resources" | "teamwork" | "contact" | "login" | "signup" | "oauth-callback" | "verify-email" | "forgot-password" | "reset-password" | "messages" | "profile" | "alarms" | "admin" | "terms" | "privacy" | "help" | "bugs" | "status" | "patches";
 export type AppSettings = { emailNotif:boolean; pushNotif:boolean; twoFA:boolean; publicProfile:boolean };
 // ── MD3 Color tokens ─────────────────────────────────────────────────────────
 const LIGHT_C = {
@@ -71,7 +71,7 @@ const ADMIN_NOTIFICATIONS = [
 ];
 
 // ── Country → flag emoji + cities ─────────────────────────────────────────────
-import { COUNTRY_ISO as FULL_COUNTRY_ISO } from "./countryIso";
+import { COUNTRY_ISO as FULL_COUNTRY_ISO } from "@/shared/countryIso";
 
 // Re-export full ISO map
 const COUNTRY_ISO: Record<string,string> = FULL_COUNTRY_ISO;
@@ -110,26 +110,50 @@ const MSGS_DATA_INIT: Contact[] = [];
 const AVATAR_COLORS = ["#6750A4","#B3261E","#7D5260","#386A20","#006688","#625B71","#4A4458"];
 const avatarColor = (name: string) => AVATAR_COLORS[name.charCodeAt(0) % AVATAR_COLORS.length];
 
-function ChatAvatar({ name, avatarUrl, size = 40, channel = false, className = "" }: {
-  name: string; avatarUrl?: string | null; size?: number; channel?: boolean; className?: string;
+function ChatAvatar({ name, avatarUrl, size = 40, channel = false, className = "", deleted = false }: {
+  name: string; avatarUrl?: string | null; size?: number; channel?: boolean; className?: string; deleted?: boolean;
 }) {
-  const style = { width: size, height: size, background: avatarColor(name), fontFamily: "Roboto" as const };
+  const label = deleted || name === "Deleted User" ? "Deleted User" : (name || "Deleted User");
+  const isDeleted = deleted || label === "Deleted User";
+  const style = {
+    width: size,
+    height: size,
+    background: isDeleted ? "#79747E" : avatarColor(label),
+    fontFamily: "Roboto" as const,
+  };
   if (channel) {
+    if (avatarUrl && !isDeleted) {
+      return (
+        <div className={`relative shrink-0 overflow-hidden rounded-xl ${className}`} style={{ width: size, height: size }}>
+          <div className="absolute inset-0 flex items-center justify-center text-white font-bold" style={{ ...style, borderRadius: 0, fontSize: size * 0.4 }}>
+            #
+          </div>
+          <img
+            src={avatarUrl}
+            alt={label}
+            className="absolute inset-0 object-cover"
+            style={{ width: size, height: size }}
+            onError={e => { e.currentTarget.style.display = "none"; }}
+          />
+        </div>
+      );
+    }
     return (
       <div className={`flex items-center justify-center text-white font-bold shrink-0 rounded-xl ${className}`} style={{ ...style, fontSize: size * 0.4 }}>
         #
       </div>
     );
   }
-  if (avatarUrl) {
+  // Deleted accounts never show a profile photo
+  if (avatarUrl && !isDeleted) {
     return (
       <div className={`relative shrink-0 ${className}`} style={{ width: size, height: size }}>
         <div className="absolute inset-0 flex items-center justify-center text-white font-medium rounded-full" style={{ ...style, fontSize: size * 0.38 }}>
-          {name[0]?.toUpperCase() || "?"}
+          {label[0]?.toUpperCase() || "?"}
         </div>
         <img
           src={avatarUrl}
-          alt={name}
+          alt={label}
           className="absolute inset-0 object-cover rounded-full"
           style={{ width: size, height: size }}
           onError={e => { e.currentTarget.style.display = "none"; }}
@@ -138,56 +162,66 @@ function ChatAvatar({ name, avatarUrl, size = 40, channel = false, className = "
     );
   }
   return (
-    <div className={`flex items-center justify-center text-white font-medium shrink-0 rounded-full ${className}`} style={{ ...style, fontSize: size * 0.38 }}>
-      {name[0]?.toUpperCase() || "?"}
+    <div
+      className={`flex items-center justify-center text-white font-medium shrink-0 rounded-full ${className}`}
+      style={{ ...style, fontSize: size * 0.38 }}
+      title={isDeleted ? "Deleted User" : label}
+      aria-label={isDeleted ? "Deleted User" : label}
+    >
+      {isDeleted ? "?" : (label[0]?.toUpperCase() || "?")}
     </div>
   );
 }
 // ── Reusable MD3 components ──────────────────────────────────────────────────
-function FilledBtn({ children, onClick, cls="" }: { children:React.ReactNode; onClick?:()=>void; cls?:string }) {
+function FilledBtn({ children, onClick, cls="", disabled }: { children:React.ReactNode; onClick?:()=>void; cls?:string; disabled?: boolean }) {
   const C = useC();
   return (
-    <button onClick={onClick} className={`inline-flex items-center gap-2 px-6 py-2.5 rounded-full text-sm font-medium text-white transition-all hover:shadow-md active:scale-95 ${cls}`}
+    <button type="button" disabled={disabled} onClick={onClick} className={`inline-flex items-center gap-2 px-6 py-2.5 rounded-full text-sm font-medium text-white transition-all hover:shadow-md active:scale-95 disabled:opacity-50 disabled:pointer-events-none ${cls}`}
       style={{ background:C.primary, fontFamily:"Roboto" }}>{children}</button>
   );
 }
-function OutlinedBtn({ children, onClick, cls="" }: { children:React.ReactNode; onClick?:()=>void; cls?:string }) {
+function OutlinedBtn({ children, onClick, cls="", disabled }: { children:React.ReactNode; onClick?:()=>void; cls?:string; disabled?: boolean }) {
   const C = useC();
   return (
-    <button onClick={onClick} className={`inline-flex items-center gap-2 px-6 py-2.5 rounded-full text-sm font-medium border transition-all hover:bg-[#6750A4]/8 active:scale-95 ${cls}`}
+    <button type="button" disabled={disabled} onClick={onClick} className={`inline-flex items-center gap-2 px-6 py-2.5 rounded-full text-sm font-medium border transition-all hover:bg-[#6750A4]/8 active:scale-95 disabled:opacity-50 disabled:pointer-events-none ${cls}`}
       style={{ borderColor:C.outline, color:C.primary, fontFamily:"Roboto" }}>{children}</button>
   );
 }
-function TonalBtn({ children, onClick, cls="" }: { children:React.ReactNode; onClick?:()=>void; cls?:string }) {
+function TonalBtn({ children, onClick, cls="", disabled }: { children:React.ReactNode; onClick?:()=>void; cls?:string; disabled?: boolean }) {
   const C = useC();
   return (
-    <button onClick={onClick} className={`inline-flex items-center gap-2 px-6 py-2.5 rounded-full text-sm font-medium transition-all hover:shadow-md active:scale-95 ${cls}`}
+    <button type="button" disabled={disabled} onClick={onClick} className={`inline-flex items-center gap-2 px-6 py-2.5 rounded-full text-sm font-medium transition-all hover:shadow-md active:scale-95 disabled:opacity-50 disabled:pointer-events-none ${cls}`}
       style={{ background:C.secondaryCont, color:C.onSecondaryCont, fontFamily:"Roboto" }}>{children}</button>
   );
 }
 
-function Field({ label, type="text", value, onChange, placeholder="", rows, suffix, cls="", bg }: {
+function Field({ label, type="text", value, onChange, placeholder="", rows, suffix, cls="", bg, error }: {
   label:string; type?:string; value?:string; onChange?:(v:string)=>void; placeholder?:string; rows?:number; suffix?:React.ReactNode; cls?:string; bg?: string;
+  error?: string;
 }) {
   const C = useC();
   const inputBg = bg ?? C.surface;
+  const borderColor = error ? C.error : C.outline;
   return (
     <div className={`relative mt-1 ${cls}`}>
       {rows ? (
         <textarea rows={rows} placeholder={placeholder} value={value}
           className="w-full h-full px-4 pt-4 pb-2 rounded-[4px] border text-sm focus:outline-none resize-none"
-          style={{ borderColor:C.outline, color:C.onSurface, background:inputBg, fontFamily:"Roboto" }}
-          onChange={e => onChange?.(e.target.value)} />
+          style={{ borderColor, color:C.onSurface, background:inputBg, fontFamily:"Roboto" }}
+          onChange={e => onChange?.(e.target.value)}
+          aria-invalid={!!error} />
       ) : (
         <div className="relative">
           <input type={type} placeholder={placeholder} value={value}
             className="w-full px-4 py-3.5 rounded-[4px] border text-sm focus:outline-none"
-            style={{ borderColor:C.outline, color:C.onSurface, background:inputBg, fontFamily:"Roboto" }}
-            onChange={e => onChange?.(e.target.value)} />
+            style={{ borderColor, color:C.onSurface, background:inputBg, fontFamily:"Roboto" }}
+            onChange={e => onChange?.(e.target.value)}
+            aria-invalid={!!error} />
           {suffix && <div className="absolute right-3 top-1/2 -translate-y-1/2">{suffix}</div>}
         </div>
       )}
-      <span className="absolute left-3 -top-2 px-1 text-xs" style={{ color:C.primary, background:C.surface, fontFamily:"Roboto" }}>{label}</span>
+      <span className="absolute left-3 -top-2 px-1 text-xs" style={{ color: error ? C.error : C.primary, background:C.surface, fontFamily:"Roboto" }}>{label}</span>
+      {error && <p className="mt-1.5 text-xs px-1" style={{ color: C.error, fontFamily: "Roboto" }}>{error}</p>}
     </div>
   );
 }
@@ -231,14 +265,19 @@ export type Contact = {
   status?: string;
   muted?: boolean;
   otherUserId?: number;
+  isDeleted?: boolean;
   village?: string;
   clan?: string;
   level?: number;
   rank?: string;
   memberSince?: string;
   isTeamMember?: boolean;
+  isAdmin?: boolean;
   country?: string;
   city?: string | null;
+  previewKind?: string | null;
+  previewFileName?: string | null;
+  lastActivityAt?: string | null;
 };
 
 export {

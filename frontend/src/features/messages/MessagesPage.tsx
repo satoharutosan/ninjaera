@@ -1,0 +1,1574 @@
+import { useState, useRef, useEffect, useCallback, lazy, Suspense } from "react";
+import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
+import SearchIcon from "@mui/icons-material/Search";
+import SendIcon from "@mui/icons-material/Send";
+import EmojiEmotionsIcon from "@mui/icons-material/EmojiEmotions";
+import AttachFileIcon from "@mui/icons-material/AttachFile";
+import MenuIcon from "@mui/icons-material/Menu";
+import CloseIcon from "@mui/icons-material/Close";
+import ReplyIcon from "@mui/icons-material/Reply";
+import SettingsIcon from "@mui/icons-material/Settings";
+import TagIcon from "@mui/icons-material/Tag";
+import ChatBubbleIcon from "@mui/icons-material/ChatBubble";
+import GroupsIcon from "@mui/icons-material/Groups";
+import MoreVertIcon from "@mui/icons-material/MoreVert";
+import FiberManualRecordIcon from "@mui/icons-material/FiberManualRecord";
+import VolumeOffIcon from "@mui/icons-material/VolumeOff";
+import BlockIcon from "@mui/icons-material/Block";
+import FlagIcon from "@mui/icons-material/Flag";
+import DeleteIcon from "@mui/icons-material/Delete";
+import PersonIcon from "@mui/icons-material/Person";
+import PersonAddIcon from "@mui/icons-material/PersonAdd";
+import InboxIcon from "@mui/icons-material/Inbox";
+import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
+import CircularProgress from "@mui/material/CircularProgress";
+import Badge from "@mui/material/Badge";
+import CallIcon from "@mui/icons-material/Call";
+import CallEndIcon from "@mui/icons-material/CallEnd";
+import VideocamIcon from "@mui/icons-material/Videocam";
+import { toast } from "sonner";
+import { VoiceRecorderButton } from "@/features/messages/VoiceRecorder";
+import { useCallOptional } from "@/features/calling/CallProvider";
+import { CALL_DENIED_MESSAGE, canPlaceCall } from "@/features/calling/permissions";
+import { MediaPreviewLine } from "@/features/messages/MediaPreviewLine";
+import type { GifItem } from "@/features/messages/emojiData";
+import {
+  Page, AppSettings, Contact, useC, useWide, SH1, FilledBtn, OutlinedBtn, Field, ChatAvatar, BADGE_BG,
+} from "@/app/shared";
+import { api, ApiError } from "@/app/api";
+import { isMessageFileWithinLimit, MESSAGE_MAX_FILE_ERROR } from "@/shared/messageUpload";
+import { imageFileFromClipboard } from "@/features/messages/utils/clipboardImage";
+import { formatBytes } from "@/features/messages/utils/formatBytes";
+import { onRealtimeEvent, emitTyping, joinConversation } from "@/app/realtime";
+import {
+  getConversationReadState,
+  saveConversationReadState,
+} from "@/features/messages/conversationState";
+import { messageCache } from "@/features/messages/messageCache";
+import { msgPerf } from "@/features/messages/msgPerf";
+import { useMessageThread } from "@/features/messages/useMessageThread";
+import { toChatMsg, type ChatMsg } from "@/features/messages/types";
+import { STATUS_COLORS, COMPOSER_MAX_HEIGHT, type ListFilter } from "@/features/messages/constants";
+import { useScrollReveal } from "@/features/messages/hooks/useScrollReveal";
+import { ConversationDetailsBody } from "@/features/messages/components/ConversationDetailsBody";
+import { ImageLightbox } from "@/features/messages/components/ImageLightbox";
+import { MessageRow } from "@/features/messages/components/MessageRow";
+
+const EmojiGifPicker = lazy(() =>
+  import("@/features/messages/EmojiGifPicker").then((m) => ({ default: m.EmojiGifPicker })),
+);
+
+function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setContacts, onUnreadChange, onConversationsRefresh, currentUserId, currentUser, onUserUpdate, initialConversationId, focusInput, onFocusHandled, onInitialConversationHandled }: {
+  settings: AppSettings;
+  showEmailToast: (title:string, body:string, page:Page)=>void;
+  showPushNotif: (title:string, body:string, page:Page)=>void;
+  contacts: Contact[];
+  setContacts: React.Dispatch<React.SetStateAction<Contact[]>>;
+  onUnreadChange?: (n: number) => void;
+  /** Shared App-level coalesced conversation refresh (avoids duplicate list fetches). */
+  onConversationsRefresh?: () => void;
+  currentUserId: number;
+  currentUser?: import("@/app/api").ApiUser | null;
+  onUserUpdate?: (u: import("@/app/api").ApiUser) => void;
+  initialConversationId?: number | null;
+  focusInput?: boolean;
+  onFocusHandled?: () => void;
+  onInitialConversationHandled?: () => void;
+}) {
+  const C = useC();
+  const callApi = useCallOptional();
+  const isMobile = !useWide(767);
+  const onScrollReveal = useScrollReveal();
+  const virtuosoScrollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const emptyContact: Contact = { id: 0, name: "Select a conversation", msg: "", time: "", unread: 0, online: false, bio: "", type: "dm" };
+  const [sel, setSel] = useState<Contact>(contacts[0] ?? emptyContact);
+  const [input, setInput] = useState("");
+  const [showSidebar, setShowSidebar] = useState(true);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [detailsContact, setDetailsContact] = useState<Contact | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [myStatus, setMyStatus] = useState(currentUser?.status || "Online");
+  const [myBio, setMyBio] = useState(currentUser?.bio || "");
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [emojiOpen, setEmojiOpen] = useState(false);
+  const [voiceBusy, setVoiceBusy] = useState(false);
+  const [replyingTo, setReplyingTo] = useState<ChatMsg|null>(null);
+  const [editingId, setEditingId] = useState<number|null>(null);
+  const [editText, setEditText] = useState("");
+  const [headerMenu, setHeaderMenu] = useState(false);
+  const [ctxMenu, setCtxMenu] = useState<{x:number;y:number;contact:Contact}|null>(null);
+  const [confirm, setConfirm] = useState<{title:string;body:string;onOk:()=>void}|null>(null);
+  const [lightbox, setLightbox] = useState<string|null>(null);
+  const [listFilter, setListFilter] = useState<ListFilter>("all");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [newDmOpen, setNewDmOpen] = useState(false);
+  const [newDmUsername, setNewDmUsername] = useState("");
+  const [newDmError, setNewDmError] = useState("");
+  const [newDmLoading, setNewDmLoading] = useState(false);
+  const [dmRequests, setDmRequests] = useState<{ id: number; requesterId: number; requesterName: string; requesterAvatar?: string | null; requesterDisplayName?: string; time: string }[]>([]);
+  const [typingUsers, setTypingUsers] = useState<{ userId: number; username: string }[]>([]);
+  const [pendingPaste, setPendingPaste] = useState<{ file: File; previewUrl: string } | null>(null);
+  const [uploadingPaste, setUploadingPaste] = useState(false);
+  const pendingPasteRef = useRef<{ file: File; previewUrl: string } | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const emojiBtnRef = useRef<HTMLButtonElement>(null);
+  const emojiPickerRef = useRef<HTMLDivElement>(null);
+  const [emojiPickerPos, setEmojiPickerPos] = useState<{ right: number; bottom: number }>({ right: 20, bottom: 72 });
+  const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isTypingRef = useRef(false);
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
+  const msgRefs = useRef<Map<number,HTMLDivElement>>(new Map());
+  const selIdRef = useRef(sel.id);
+  const refreshContactsTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const markReadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastMarkedReadRef = useRef<number | null>(null);
+
+  const refreshContacts = useCallback(() => {
+    // Prefer shared App coalescer when available so Messages + shell share one fetch.
+    if (onConversationsRefresh) {
+      onConversationsRefresh();
+      return;
+    }
+    if (refreshContactsTimer.current) clearTimeout(refreshContactsTimer.current);
+    refreshContactsTimer.current = setTimeout(() => {
+      refreshContactsTimer.current = null;
+      api.messages.conversations()
+        .then(r => {
+          setContacts(r.conversations as Contact[]);
+          onUnreadChange?.(r.conversations.filter(c => c.type === "dm").reduce((sum, c) => sum + c.unread, 0));
+        })
+        .catch(() => {});
+    }, 350);
+  }, [setContacts, onUnreadChange, onConversationsRefresh]);
+
+  /** Coalesce read receipts — avoid hammering /read while pinned to bottom under traffic. */
+  const scheduleMarkRead = useCallback((conversationId: number) => {
+    if (!conversationId) return;
+    if (lastMarkedReadRef.current === conversationId && markReadTimer.current) return;
+    if (markReadTimer.current) clearTimeout(markReadTimer.current);
+    markReadTimer.current = setTimeout(() => {
+      markReadTimer.current = null;
+      lastMarkedReadRef.current = conversationId;
+      api.messages.markRead(conversationId).then(() => refreshContacts()).catch(() => {});
+    }, 500);
+  }, [refreshContacts]);
+
+  const thread = useMessageThread({
+    conversationId: sel.id,
+    currentUserId,
+    onContactsRefresh: refreshContacts,
+  });
+
+  const {
+    msgs, msgsRef,
+    hasMoreOlder, hasMoreNewer, loadingOlder, loadingNewer,
+    threadReady, threadBootId, initialScrollIndex,
+    lastReadMessageId, setLastReadMessageId,
+    firstItemIndex, firstItemIndexRef,
+    showJumpBtn, setShowJumpBtn,
+    unreadBelow, setUnreadBelow,
+    isNearBottomRef, pinToBottomRef, visibleStartDataIndexRef,
+    loadOlderMessages, loadNewerMessages,
+    applyNewMessage, applyUpdatedMessage, applyDeletedMessage, applyReaction,
+    jumpToLatest, appendLocal, updateLocal,
+  } = thread;
+
+  useEffect(() => { selIdRef.current = sel.id; }, [sel.id]);
+
+  const clearPendingPaste = useCallback(() => {
+    setPendingPaste(prev => {
+      if (prev?.previewUrl) URL.revokeObjectURL(prev.previewUrl);
+      return null;
+    });
+    pendingPasteRef.current = null;
+  }, []);
+
+  const stagePasteImage = useCallback((file: File) => {
+    if (!isMessageFileWithinLimit(file)) {
+      toast.error(MESSAGE_MAX_FILE_ERROR);
+      return;
+    }
+    const previewUrl = URL.createObjectURL(file);
+    setPendingPaste(prev => {
+      if (prev?.previewUrl) URL.revokeObjectURL(prev.previewUrl);
+      const next = { file, previewUrl };
+      pendingPasteRef.current = next;
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    clearPendingPaste();
+    setUploadingPaste(false);
+  }, [sel.id, clearPendingPaste]);
+
+  useEffect(() => () => {
+    const staged = pendingPasteRef.current;
+    if (staged?.previewUrl) URL.revokeObjectURL(staged.previewUrl);
+  }, []);
+
+  useEffect(() => {
+    if (currentUser) {
+      setMyStatus(currentUser.status || "Online");
+      setMyBio(currentUser.bio || "");
+    }
+  }, [currentUser]);
+
+  const adjustComposerHeight = useCallback(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, COMPOSER_MAX_HEIGHT)}px`;
+  }, []);
+
+  const forceScrollToBottom = useCallback((behavior: "auto" | "smooth" = "auto") => {
+    pinToBottomRef.current = true;
+    isNearBottomRef.current = true;
+    setShowJumpBtn(false);
+    setUnreadBelow(0);
+    virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior });
+  }, [pinToBottomRef, isNearBottomRef, setShowJumpBtn, setUnreadBelow]);
+
+  const persistConversation = useCallback((conversationId: number) => {
+    const list = msgsRef.current;
+    if (!conversationId || !list.length || !currentUserId) return;
+    const atBottom = isNearBottomRef.current;
+    const start = Math.max(0, Math.min(list.length - 1, visibleStartDataIndexRef.current));
+    const anchor = list[start]?.id ?? list[list.length - 1].id;
+    const newest = list[list.length - 1].id;
+    const prev = getConversationReadState(currentUserId, conversationId);
+    saveConversationReadState(currentUserId, conversationId, {
+      anchorMessageId: anchor,
+      atBottom,
+      lastReadMessageId: atBottom ? newest : (prev?.lastReadMessageId ?? anchor),
+      lastOpenedAt: Date.now(),
+    });
+  }, [currentUserId, msgsRef, isNearBottomRef, visibleStartDataIndexRef]);
+
+  useEffect(() => {
+    const convId = sel.id;
+    return () => { if (convId) persistConversation(convId); };
+  }, [sel.id, persistConversation]);
+
+  useEffect(() => {
+    if (!initialConversationId) return;
+    const target = contacts.find(c => c.id === initialConversationId);
+    if (!target) return;
+    setSel(target);
+    setListFilter(target.type === "dm" ? "dm" : "all");
+    if (isMobile) setShowSidebar(false);
+    onInitialConversationHandled?.();
+  }, [initialConversationId, contacts, onInitialConversationHandled, isMobile]);
+
+  useEffect(() => {
+    if (focusInput) {
+      setTimeout(() => { inputRef.current?.focus(); onFocusHandled?.(); }, 100);
+    }
+  }, [focusInput, sel.id, onFocusHandled]);
+
+  useEffect(() => {
+    if (contacts.length && !contacts.find(c => c.id === sel.id)) {
+      setSel(contacts[0]);
+    } else if (!contacts.length) {
+      setSel(emptyContact);
+    } else {
+      // Keep selected conversation in sync (avatar, name, bio, unread) after list refresh
+      const updated = contacts.find(c => c.id === sel.id);
+      if (updated && (
+        updated.avatarUrl !== sel.avatarUrl
+        || updated.name !== sel.name
+        || updated.bio !== sel.bio
+        || updated.msg !== sel.msg
+        || updated.unread !== sel.unread
+        || updated.muted !== sel.muted
+      )) {
+        setSel(updated);
+        setDetailsContact(prev => (prev && prev.id === updated.id ? updated : prev));
+      }
+    }
+  }, [contacts, sel.id, sel.avatarUrl, sel.name, sel.bio, sel.msg, sel.unread, sel.muted]);
+
+  const loadDmRequests = () => {
+    api.dm.listRequests()
+      .then(r => setDmRequests(r.incoming))
+      .catch(() => setDmRequests([]));
+  };
+
+  useEffect(() => { loadDmRequests(); }, []);
+
+  useEffect(() => {
+    if (dmRequests.length === 0 && listFilter === "dm-requests") setListFilter("all");
+  }, [dmRequests.length, listFilter]);
+
+  useEffect(() => {
+    const unsubs = [
+      onRealtimeEvent<{ conversationId: number; message: ApiMessage }>("message:new", ({ conversationId, message }) => {
+        if (conversationId === selIdRef.current) {
+          applyNewMessage(message);
+          const isSelf = message.userId === currentUserId;
+          if (isNearBottomRef.current || isSelf) {
+            pinToBottomRef.current = true;
+            requestAnimationFrame(() => forceScrollToBottom("auto"));
+            if (!isSelf) {
+              scheduleMarkRead(conversationId);
+              setLastReadMessageId(message.id);
+            }
+          } else if (!isSelf) {
+            setUnreadBelow(n => n + 1);
+            setShowJumpBtn(true);
+          }
+        }
+        refreshContacts();
+      }),
+      onRealtimeEvent<{ conversationId: number; message: ApiMessage }>("message:updated", ({ conversationId, message }) => {
+        if (conversationId === selIdRef.current) applyUpdatedMessage(message);
+        else messageCache.upsertMessage(conversationId, toChatMsg(message, currentUserId));
+      }),
+      onRealtimeEvent<{ conversationId: number; messageId: number }>("message:deleted", ({ conversationId, messageId }) => {
+        if (conversationId === selIdRef.current) applyDeletedMessage(messageId);
+        else messageCache.removeMessage(conversationId, messageId);
+        refreshContacts();
+      }),
+      onRealtimeEvent<{ conversationId: number; messageId: number; reactions: Record<string, string[]> }>("message:reaction", ({ conversationId, messageId, reactions }) => {
+        if (conversationId === selIdRef.current) applyReaction(messageId, reactions);
+        else messageCache.patchMessage(conversationId, messageId, { reactions });
+      }),
+      // conversation:update is owned by App shell — avoid a second list fetch here
+      onRealtimeEvent<{ conversationId: number }>("conversation:new", ({ conversationId }) => {
+        joinConversation(conversationId);
+        refreshContacts();
+      }),
+      onRealtimeEvent<{ conversationId: number; userId: number; username: string; typing: boolean }>("typing", ({ conversationId, userId, username, typing }) => {
+        if (conversationId !== selIdRef.current || userId === currentUserId) return;
+        setTypingUsers(prev => {
+          const filtered = prev.filter(u => u.userId !== userId);
+          return typing ? [...filtered, { userId, username }] : filtered;
+        });
+      }),
+      onRealtimeEvent("dm_request:new", () => loadDmRequests()),
+      onRealtimeEvent("dm_request:resolved", () => loadDmRequests()),
+      onRealtimeEvent<{ userId: number; status: string; online: boolean }>("presence:update", ({ userId, status, online }) => {
+        setContacts(prev => {
+          let changed = false;
+          const next = prev.map(c => {
+            if (c.type !== "dm" || c.otherUserId !== userId || c.isDeleted) return c;
+            if (c.online === online && c.status === status) return c;
+            changed = true;
+            return { ...c, online, status };
+          });
+          return changed ? next : prev;
+        });
+        setSel(prev => {
+          if (prev.otherUserId !== userId || prev.isDeleted) return prev;
+          if (prev.online === online && prev.status === status) return prev;
+          return { ...prev, online, status };
+        });
+      }),
+    ];
+    return () => {
+      unsubs.forEach(u => u());
+      if (refreshContactsTimer.current) clearTimeout(refreshContactsTimer.current);
+      if (markReadTimer.current) clearTimeout(markReadTimer.current);
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+        typingTimeoutRef.current = null;
+      }
+      if (isTypingRef.current && selIdRef.current) {
+        isTypingRef.current = false;
+        emitTyping(selIdRef.current, false);
+      }
+    };
+  }, [
+    currentUserId, applyNewMessage, applyUpdatedMessage, applyDeletedMessage, applyReaction,
+    forceScrollToBottom, refreshContacts, scheduleMarkRead, setContacts, setLastReadMessageId, setUnreadBelow,
+    setShowJumpBtn, isNearBottomRef, pinToBottomRef,
+  ]);
+
+  useEffect(() => {
+    if (!emojiOpen || !emojiBtnRef.current) return;
+    const rect = emojiBtnRef.current.getBoundingClientRect();
+    const pickerW = 320;
+    const margin = 8;
+    let right = window.innerWidth - rect.right;
+    if (rect.right - pickerW < margin) right = Math.max(margin, window.innerWidth - pickerW - margin);
+    setEmojiPickerPos({ right, bottom: window.innerHeight - rect.top + margin });
+  }, [emojiOpen]);
+
+  useEffect(() => { setTypingUsers([]); }, [sel.id]);
+
+  const saveMyProfile = async () => {
+    setSavingProfile(true);
+    try {
+      const { user: updated } = await api.users.update({ status: myStatus, bio: myBio });
+      onUserUpdate?.(updated);
+      setSettingsOpen(false);
+      toast.success("Profile saved");
+    } catch {
+      toast.error("Failed to save profile");
+    } finally {
+      setSavingProfile(false);
+    }
+  };
+
+  const presenceColor = (c: Contact) => {
+    if (c.type !== "dm") return C.outline;
+    return STATUS_COLORS[c.status || (c.online ? "Online" : "Offline")] || C.outline;
+  };
+
+  const presenceLabel = (c: Contact) => {
+    if (c.type === "channel") return "Channel";
+    return c.status || (c.online ? "Online" : "Offline");
+  };
+
+  const selectConversation = useCallback((m: Contact) => {
+    setSel(m);
+    if (isMobile) setShowSidebar(false);
+  }, [isMobile]);
+
+  const openConversationDetails = useCallback(() => {
+    if (!isMobile || sel.id <= 0) return;
+    setDetailsContact(sel);
+    setDetailsOpen(true);
+  }, [isMobile, sel]);
+
+  const apiUserToContact = useCallback((user: import("@/app/api").ApiUser, fallback?: Partial<Contact>): Contact => ({
+    id: -(user.id || 0),
+    name: user.isDeleted ? "Deleted User" : (user.username || "Deleted User"),
+    msg: "",
+    time: "",
+    unread: 0,
+    online: !user.isDeleted && (user.status || "Online") === "Online",
+    bio: user.isDeleted ? "" : (user.bio || ""),
+    type: "dm",
+    avatarUrl: user.isDeleted ? null : (user.avatarUrl ?? fallback?.avatarUrl),
+    otherUserId: user.id,
+    isDeleted: !!user.isDeleted,
+    status: user.isDeleted ? "Offline" : user.status,
+    village: user.isDeleted ? undefined : user.village,
+    clan: user.isDeleted ? undefined : user.clan,
+    level: user.isDeleted ? undefined : user.level,
+    rank: user.isDeleted ? undefined : user.rank,
+    memberSince: user.isDeleted ? undefined : user.memberSince,
+    isTeamMember: user.isDeleted ? false : user.isTeamMember,
+    country: user.isDeleted ? undefined : user.country,
+    city: user.isDeleted ? undefined : user.city,
+  }), []);
+
+  const openUserProfileFromMessage = useCallback(async (m: ChatMsg) => {
+    if (!isMobile || m.self) return;
+    if (m.isDeleted) {
+      setDetailsContact({
+        id: -(m.userId || 0),
+        name: "Deleted User",
+        msg: "",
+        time: "",
+        unread: 0,
+        online: false,
+        bio: "This account is no longer available.",
+        type: "dm",
+        avatarUrl: null,
+        otherUserId: m.userId,
+        isDeleted: true,
+        status: "Offline",
+      });
+      setDetailsOpen(true);
+      return;
+    }
+    const userId = m.userId;
+    if (!userId) {
+      // Fall back to conversation peer only for DMs when metadata lacks userId
+      if (sel.type === "dm" && sel.id > 0) {
+        setDetailsContact(sel);
+        setDetailsOpen(true);
+      }
+      return;
+    }
+    const existing = contacts.find(c => c.type === "dm" && c.otherUserId === userId);
+    if (existing) {
+      setDetailsContact(existing);
+      setDetailsOpen(true);
+      return;
+    }
+    const provisional: Contact = {
+      id: -userId,
+      name: m.user || "Deleted User",
+      msg: "",
+      time: "",
+      unread: 0,
+      online: false,
+      bio: "",
+      type: "dm",
+      avatarUrl: m.avatarUrl,
+      otherUserId: userId,
+      isDeleted: !!m.isDeleted,
+    };
+    setDetailsContact(provisional);
+    setDetailsOpen(true);
+    try {
+      const { user } = await api.users.get(userId);
+      setDetailsContact(apiUserToContact(user, { avatarUrl: m.avatarUrl }));
+    } catch {
+      /* keep provisional profile from message metadata */
+    }
+  }, [isMobile, sel, contacts, apiUserToContact]);
+
+  const dismissConversationDetails = useCallback(() => {
+    if (typeof window !== "undefined" && window.history.state && (window.history.state as { msgDetails?: boolean }).msgDetails) {
+      window.history.back();
+    } else {
+      setDetailsOpen(false);
+      setDetailsContact(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!detailsOpen) return;
+    window.history.pushState({ ...(window.history.state || {}), msgDetails: true }, "");
+    const onPop = () => {
+      setDetailsOpen(false);
+      setDetailsContact(null);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, [detailsOpen]);
+
+  const showLeftPanel = isMobile ? showSidebar : true;
+  const showConversationList = showSidebar;
+  const showChatPane = !isMobile || !showSidebar;
+
+  const handleInputChange = (value: string) => {
+    setInput(value);
+    if (!sel?.id) return;
+    if (!isTypingRef.current && value.trim()) {
+      isTypingRef.current = true;
+      emitTyping(sel.id, true);
+    }
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    typingTimeoutRef.current = setTimeout(() => {
+      if (isTypingRef.current) {
+        isTypingRef.current = false;
+        emitTyping(sel.id, false);
+      }
+    }, 2000);
+  };
+
+  const typingLabel = () => {
+    if (!typingUsers.length) return null;
+    if (sel.type === "dm") return `${typingUsers[0].username} is typing...`;
+    if (typingUsers.length === 1) return `${typingUsers[0].username} is typing...`;
+    return "Several users are typing...";
+  };
+
+  const nowTime = () => new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
+  const closeAll = () => { setEmojiOpen(false); setHeaderMenu(false); setCtxMenu(null); };
+
+  const askConfirm = (title:string, body:string, onOk:()=>void) => setConfirm({ title, body, onOk });
+
+  const sendPendingPaste = async () => {
+    const staged = pendingPasteRef.current;
+    if (!staged || !sel.id || uploadingPaste) return;
+    if (!isMessageFileWithinLimit(staged.file)) {
+      toast.error(MESSAGE_MAX_FILE_ERROR);
+      clearPendingPaste();
+      return;
+    }
+    const replySnap = replyingTo;
+    const file = staged.file;
+    setUploadingPaste(true);
+    setReplyingTo(null);
+    setEmojiOpen(false);
+    if (isTypingRef.current) { isTypingRef.current = false; emitTyping(sel.id, false); }
+    pinToBottomRef.current = true;
+    isNearBottomRef.current = true;
+    try {
+      const { message } = await api.messages.sendMedia(sel.id, file, replySnap?.id);
+      clearPendingPaste();
+      appendLocal(toChatMsg(message, currentUserId));
+      refreshContacts();
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Failed to upload screenshot");
+    } finally {
+      setUploadingPaste(false);
+    }
+    requestAnimationFrame(() => forceScrollToBottom("auto"));
+  };
+
+  const send = async (extra?: Partial<ChatMsg>) => {
+    if (pendingPasteRef.current) {
+      await sendPendingPaste();
+      return;
+    }
+    const trimmed = input.trim();
+    if (!trimmed && !extra?.mediaUrl) return;
+    const replySnap = replyingTo;
+    setInput(""); setReplyingTo(null); setEmojiOpen(false);
+    requestAnimationFrame(() => {
+      if (inputRef.current) {
+        inputRef.current.style.height = "auto";
+      }
+    });
+    if (isTypingRef.current) { isTypingRef.current = false; emitTyping(sel.id, false); }
+    pinToBottomRef.current = true;
+    isNearBottomRef.current = true;
+    try {
+      const { message } = await api.messages.send(sel.id, trimmed, replySnap?.id);
+      appendLocal(toChatMsg(message, currentUserId));
+      refreshContacts();
+    } catch {
+      appendLocal({
+        id: Date.now(), user: "You", msg: trimmed, time: nowTime(), self: true,
+        ...(replySnap ? { replyTo: { id: replySnap.id, user: replySnap.user, preview: replySnap.msg.slice(0,60) || replySnap.mediaType || "" } } : {}),
+        ...extra,
+      });
+    }
+    requestAnimationFrame(() => forceScrollToBottom("auto"));
+  };
+
+  const handleComposerPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const image = imageFileFromClipboard(e.clipboardData);
+    if (!image) return; // text / other — keep default paste
+    e.preventDefault();
+    if (!sel.id || voiceBusy || uploadingPaste) return;
+    stagePasteImage(image);
+  };
+
+  const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = "";
+    if (!isMessageFileWithinLimit(file)) {
+      toast.error(MESSAGE_MAX_FILE_ERROR);
+      return;
+    }
+    const replySnap = replyingTo;
+    setReplyingTo(null);
+    pinToBottomRef.current = true;
+    isNearBottomRef.current = true;
+    try {
+      const { message } = await api.messages.sendMedia(sel.id, file, replySnap?.id);
+      appendLocal(toChatMsg(message, currentUserId));
+      refreshContacts();
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Failed to upload file");
+    }
+    requestAnimationFrame(() => forceScrollToBottom("auto"));
+  };
+
+  const sendVoiceFile = async (file: File, meta: import("@/features/messages/voiceAudio").VoiceUploadMeta) => {
+    if (!isMessageFileWithinLimit(file)) {
+      toast.error(MESSAGE_MAX_FILE_ERROR);
+      return;
+    }
+    const replySnap = replyingTo;
+    setReplyingTo(null);
+    pinToBottomRef.current = true;
+    isNearBottomRef.current = true;
+    try {
+      const { message } = await api.messages.sendMedia(sel.id, file, replySnap?.id, {
+        durationMs: meta.durationMs,
+        mimeType: meta.mimeType,
+        codec: meta.codec,
+        sampleRate: meta.sampleRate,
+        channels: meta.channels,
+        waveform: meta.waveform,
+      });
+      appendLocal(toChatMsg(message, currentUserId));
+      refreshContacts();
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Failed to upload voice message");
+    }
+    requestAnimationFrame(() => forceScrollToBottom("auto"));
+  };
+
+  const sendGifItem = async (g: GifItem) => {
+    if (!sel.id) return;
+    const replySnap = replyingTo;
+    setReplyingTo(null);
+    setEmojiOpen(false);
+    pinToBottomRef.current = true;
+    isNearBottomRef.current = true;
+    try {
+      const { message } = await api.messages.sendGif(sel.id, g.url, g.label, replySnap?.id);
+      appendLocal(toChatMsg(message, currentUserId));
+      refreshContacts();
+    } catch {
+      appendLocal({
+        id: Date.now(),
+        user: "You",
+        msg: "",
+        time: nowTime(),
+        self: true,
+        mediaUrl: g.url,
+        mediaType: "gif",
+        ...(replySnap ? { replyTo: { id: replySnap.id, user: replySnap.user, preview: replySnap.msg.slice(0, 60) || "GIF" } } : {}),
+      });
+      toast.message("GIF sent locally — server sync failed");
+    }
+    requestAnimationFrame(() => forceScrollToBottom("auto"));
+  };
+
+  const startDmCall = (type: "voice" | "video") => {
+    if (sel.type !== "dm" || !sel.otherUserId || sel.isDeleted) {
+      if (sel.isDeleted) toast.message("This user is no longer available");
+      return;
+    }
+    if (!canPlaceCall(currentUser, { isTeamMember: sel.isTeamMember, isAdmin: sel.isAdmin })) {
+      toast.message(CALL_DENIED_MESSAGE);
+      return;
+    }
+    if (!callApi) {
+      toast.error("Calling is unavailable");
+      return;
+    }
+    callApi.startCall({
+      conversationId: sel.id,
+      calleeId: sel.otherUserId,
+      type,
+      peerName: sel.name,
+      peerAvatar: sel.avatarUrl,
+    });
+  };
+
+  const commitEdit = async (id: number) => {
+    if (!editText.trim()) return;
+    try {
+      const { message } = await api.messages.edit(id, editText.trim());
+      updateLocal(id, toChatMsg(message, currentUserId));
+    } catch {
+      updateLocal(id, { msg: editText.trim(), edited: true });
+    }
+    setEditingId(null);
+  };
+
+  const deleteMsg = async (id: number) => {
+    try { await api.messages.delete(id); } catch { /* */ }
+    applyDeletedMessage(id);
+  };
+
+  const addReaction = async (msgId: number, emoji: string) => {
+    try {
+      const { reactions } = await api.messages.react(msgId, emoji);
+      applyReaction(msgId, reactions);
+    } catch {
+      const m = msgsRef.current.find(x => x.id === msgId);
+      if (!m) return;
+      const r = { ...(m.reactions || {}) };
+      const users = r[emoji] ? [...r[emoji]] : [];
+      const me = String(currentUserId);
+      if (users.includes(me) || users.includes("You")) {
+        const f = users.filter(u => u !== me && u !== "You");
+        if (f.length === 0) delete r[emoji];
+        else r[emoji] = f;
+      } else {
+        r[emoji] = [...users, me];
+      }
+      applyReaction(msgId, r);
+    }
+  };
+
+  const deleteContact = async (contactId: number) => {
+    try { await api.messages.deleteContact(contactId); } catch { /* */ }
+    setContacts(prev => prev.filter(c => c.id !== contactId));
+    if (sel.id === contactId) { const remaining = contacts.filter(c=>c.id!==contactId); if(remaining.length) setSel(remaining[0]); }
+    refreshContacts();
+  };
+
+  const scrollTo = (id: number) => {
+    const el = msgRefs.current.get(id);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      el.animate([{ boxShadow: "0 0 0 3px " + C.primary + "66" }, { boxShadow: "0 0 0 0px transparent" }], { duration: 800 });
+      return;
+    }
+    const dataIndex = msgsRef.current.findIndex(m => m.id === id);
+    if (dataIndex >= 0) {
+      virtuosoRef.current?.scrollToIndex({
+        index: firstItemIndexRef.current + dataIndex,
+        align: "center",
+        behavior: "smooth",
+      });
+    }
+  };
+
+  const filteredContacts = contacts
+    .filter(c => {
+      if (listFilter === "dm-requests") return false;
+      if (listFilter !== "all" && c.type !== listFilter) return false;
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase();
+        return c.name.toLowerCase().includes(q) || c.msg.toLowerCase().includes(q);
+      }
+      return true;
+    })
+    // Telegram-style unified inbox: sort by most recent activity across channels + DMs.
+    .sort((a, b) => {
+      const ta = a.lastActivityAt ? Date.parse(a.lastActivityAt) : 0;
+      const tb = b.lastActivityAt ? Date.parse(b.lastActivityAt) : 0;
+      return tb - ta;
+    });
+
+  const sendDmRequest = async () => {
+    const username = newDmUsername.trim();
+    if (!username) { setNewDmError("Please enter a username"); return; }
+    setNewDmLoading(true);
+    setNewDmError("");
+    try {
+      const result = await api.dm.createRequest(username);
+      if (result.conversationId) {
+        const convs = await api.messages.conversations();
+        setContacts(convs.conversations as Contact[]);
+        const conv = convs.conversations.find(c => c.id === result.conversationId);
+        if (conv) setSel(conv as Contact);
+        setNewDmOpen(false);
+        setNewDmUsername("");
+        toast.success("Conversation opened");
+      } else {
+        setNewDmOpen(false);
+        setNewDmUsername("");
+        toast.success("Direct message request sent");
+      }
+    } catch (e) {
+      if (e instanceof ApiError && e.data?.conversationId != null) {
+        const convId = Number(e.data.conversationId);
+        const convs = await api.messages.conversations();
+        setContacts(convs.conversations as Contact[]);
+        const conv = convs.conversations.find(c => c.id === convId);
+        if (conv) setSel(conv as Contact);
+        setNewDmOpen(false);
+        setNewDmUsername("");
+        toast.success("Conversation opened");
+      } else {
+        setNewDmError(e instanceof Error ? e.message : "Could not send request");
+      }
+    } finally {
+      setNewDmLoading(false);
+    }
+  };
+
+  const acceptDmRequest = async (requestId: number) => {
+    try {
+      const { conversationId } = await api.dm.accept(requestId);
+      loadDmRequests();
+      joinConversation(conversationId);
+      const convs = await api.messages.conversations();
+      setContacts(convs.conversations as Contact[]);
+      const conv = convs.conversations.find(c => c.id === conversationId);
+      if (conv) {
+        setSel(conv as Contact);
+        setListFilter("dm");
+      }
+      toast.success("Request accepted");
+    } catch {
+      toast.error("Could not accept request");
+    }
+  };
+
+  const rejectDmRequest = async (requestId: number) => {
+    try {
+      await api.dm.reject(requestId);
+      loadDmRequests();
+      toast.success("Request declined");
+    } catch {
+      toast.error("Could not decline request");
+    }
+  };
+
+  const sidebarFilters: { id: ListFilter; Icon: typeof TagIcon; l: string; badge?: number }[] = [
+    { Icon: TagIcon, l: "All", id: "all" },
+    { Icon: GroupsIcon, l: "Channels", id: "channel" },
+    { Icon: ChatBubbleIcon, l: "DMs", id: "dm" },
+    ...(dmRequests.length > 0 ? [{ Icon: InboxIcon, l: "DM Requests", id: "dm-requests" as const, badge: dmRequests.length }] : []),
+  ];
+
+  const makeMenuItems = (contact: Contact, closeFn: ()=>void) => {
+    if (contact.type === "channel") {
+      return [
+        { Icon:VolumeOffIcon, label: contact.muted ? "Unmute Notifications" : "Mute Notifications", danger:false, action:() => {
+          api.messages.mute(contact.id).then(r => {
+            setContacts(prev => prev.map(c => c.id === contact.id ? { ...c, muted: r.muted } : c));
+            setSel(prev => prev.id === contact.id ? { ...prev, muted: r.muted } : prev);
+          }).catch(() => {});
+          closeFn();
+        } },
+      ];
+    }
+    return [
+      { Icon:VolumeOffIcon, label: contact.muted ? "Unmute Notifications" : "Mute Notifications", danger:false, action:() => {
+        api.messages.mute(contact.id).then(r => {
+          setContacts(prev => prev.map(c => c.id === contact.id ? { ...c, muted: r.muted } : c));
+          setSel(prev => prev.id === contact.id ? { ...prev, muted: r.muted } : prev);
+        }).catch(() => {});
+        closeFn();
+      } },
+      ...(!contact.isDeleted ? [
+        { Icon:BlockIcon,     label:"Block User",          danger:true,  action:() => { askConfirm("Block User", `Block ${contact.name}? They won't be able to message you.`, () => { if (contact.otherUserId) api.users.block(contact.otherUserId).catch(() => {}); closeFn(); }); } },
+        { Icon:FlagIcon,      label:"Report User",         danger:true,  action:() => { askConfirm("Report User", `Report ${contact.name} for inappropriate behaviour?`, () => { api.messages.report({ reason: `Reported user: ${contact.name}`, userId: contact.otherUserId }).then(() => toast.success("Report submitted")).catch(() => toast.error("Failed to submit report")); closeFn(); }); } },
+      ] : []),
+      { Icon:PersonIcon,    label:"Delete Contact",      danger:true,  action:() => { askConfirm("Delete Contact", `Remove ${contact.name} from your contacts?`, () => { deleteContact(contact.id); closeFn(); }); } },
+    ];
+  };
+
+  const DropdownMenu = ({ items, onClose }: { items: ReturnType<typeof makeMenuItems>; onClose: ()=>void }) => (
+    <div className="py-1" onClick={e => e.stopPropagation()}>
+      {items.map(item => (
+        <button key={item.label} onClick={item.action} className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-left hover:bg-black/5 transition-colors" style={{ color:item.danger?C.error:C.onSurface, fontFamily:"Roboto" }}>
+          <item.Icon style={{ fontSize:18 }} />{item.label}
+        </button>
+      ))}
+    </div>
+  );
+
+  return (
+    <div className="h-screen flex overflow-hidden pt-16 max-w-[100vw]" style={{ background:C.bg }} onClick={closeAll}>
+      {/* New DM modal */}
+      {newDmOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onClick={() => setNewDmOpen(false)}>
+          <div className="rounded-3xl p-6 w-full max-w-sm shadow-2xl" style={{ background: C.surface }} onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-medium text-base" style={{ color: C.onSurface, fontFamily: "Roboto" }}>New Direct Message</h3>
+              <button onClick={() => setNewDmOpen(false)} className="w-8 h-8 rounded-full flex items-center justify-center hover:bg-black/5" style={{ color: C.onSurfaceVar }}><CloseIcon style={{ fontSize: 18 }} /></button>
+            </div>
+            <Field label="Username" value={newDmUsername} onChange={v => { setNewDmUsername(v); setNewDmError(""); }} placeholder="Enter exact username" />
+            {newDmError && <p className="text-sm mt-2" style={{ color: C.error, fontFamily: "Roboto" }}>{newDmError}</p>}
+            <div className="flex gap-3 justify-end mt-6">
+              <OutlinedBtn onClick={() => setNewDmOpen(false)}>Cancel</OutlinedBtn>
+              <FilledBtn onClick={sendDmRequest} cls={newDmLoading ? "opacity-60 pointer-events-none" : ""}>
+                {newDmLoading ? "Sending…" : "Send Request"}
+              </FilledBtn>
+            </div>
+          </div>
+        </div>
+      )}
+      {confirm && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onClick={() => setConfirm(null)}>
+          <div className="rounded-3xl p-6 w-full max-w-xs shadow-2xl" style={{ background:C.surface }} onClick={e => e.stopPropagation()}>
+            <h3 className="font-medium text-base mb-2" style={{ color:C.onSurface, fontFamily:"Roboto" }}>{confirm.title}</h3>
+            <p className="text-sm mb-6" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>{confirm.body}</p>
+            <div className="flex gap-3 justify-end">
+              <button onClick={() => setConfirm(null)} className="px-4 py-2 rounded-full text-sm font-medium border transition-colors hover:bg-black/5" style={{ borderColor:C.outline, color:C.onSurface, fontFamily:"Roboto" }}>Cancel</button>
+              <button onClick={() => { confirm.onOk(); setConfirm(null); }} className="px-4 py-2 rounded-full text-sm font-medium text-white transition-colors hover:opacity-90" style={{ background:C.error, fontFamily:"Roboto" }}>Confirm</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Image lightbox */}
+      {lightbox && <ImageLightbox src={lightbox} onClose={() => setLightbox(null)} />}
+      {/* Right-click context menu */}
+      {ctxMenu && (
+        <div className="fixed z-50 rounded-2xl border shadow-xl overflow-hidden" style={{ top:ctxMenu.y, left:ctxMenu.x, background:C.surface, borderColor:C.outlineVar, minWidth:"13rem" }} onClick={e => e.stopPropagation()}>
+          <DropdownMenu items={makeMenuItems(ctxMenu.contact, ()=>setCtxMenu(null))} onClose={()=>setCtxMenu(null)} />
+        </div>
+      )}
+      {/* Settings Modal */}
+      {settingsOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[2px] p-4" onClick={() => setSettingsOpen(false)}>
+          <div className="rounded-3xl p-6 w-full max-w-sm" style={{ background:C.surface, boxShadow:"0 8px 32px rgba(0,0,0,.24)" }} onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="font-medium text-base" style={{ color:C.onSurface, fontFamily:"Roboto" }}>My Profile</h3>
+              <button onClick={() => setSettingsOpen(false)} className="w-8 h-8 rounded-full flex items-center justify-center hover:bg-black/5" style={{ color:C.onSurfaceVar }}><CloseIcon style={{ fontSize:18 }} /></button>
+            </div>
+            <div className="flex items-center gap-4 mb-6">
+              <div className="relative">
+                <ChatAvatar name={currentUser?.username || "?"} avatarUrl={currentUser?.avatarUrl} size={64} />
+                <div className="w-4 h-4 rounded-full border-2 border-white absolute bottom-0 right-0" style={{ background:STATUS_COLORS[myStatus] || STATUS_COLORS.Online }} />
+              </div>
+              <div>
+                <p className="font-medium text-sm" style={{ color:C.onSurface, fontFamily:"'Trade Winds', cursive" }}>{currentUser?.username || "Shinobi"}</p>
+                <p className="text-xs mt-0.5" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>
+                  {currentUser?.isTeamMember ? "Team Member" : currentUser?.isAdmin ? "Administrator" : "Member"}
+                  {currentUser?.memberSince ? ` · since ${currentUser.memberSince}` : ""}
+                </p>
+              </div>
+            </div>
+            <p className="text-xs font-medium mb-2 uppercase tracking-widest" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>Status</p>
+            <div className="flex flex-col gap-1.5 mb-5">
+              {(["Online","Away","Do Not Disturb","Offline"] as const).map(s => {
+                const checked = myStatus === s;
+                return (
+                  <label key={s} className="flex items-center gap-3 px-3 py-2.5 rounded-2xl border cursor-pointer transition-all" style={{ borderColor:checked?STATUS_COLORS[s]:C.outlineVar, background:checked?`${STATUS_COLORS[s]}18`:"transparent" }}>
+                    <input type="radio" name="status" value={s} checked={checked} onChange={() => setMyStatus(s)} className="sr-only" />
+                    <span className="w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 transition-all" style={{ borderColor:STATUS_COLORS[s], background:checked?STATUS_COLORS[s]:"transparent" }}>
+                      {checked && <span className="w-1.5 h-1.5 rounded-full bg-white" />}
+                    </span>
+                    <span className="flex items-center gap-2 text-xs font-medium" style={{ color:checked?STATUS_COLORS[s]:C.onSurfaceVar, fontFamily:"Roboto" }}>
+                      <span className="w-2 h-2 rounded-full shrink-0" style={{ background:STATUS_COLORS[s] }} />{s}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+            <p className="text-xs font-medium mb-2 uppercase tracking-widest" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>Bio</p>
+            <textarea rows={3} value={myBio} onChange={e => setMyBio(e.target.value)} className="w-full px-4 py-3 rounded-2xl border text-sm focus:outline-none resize-none mb-5" style={{ borderColor:C.outline, color:C.onSurface, background:C.surfaceVar, fontFamily:"Roboto" }} />
+            <FilledBtn cls={`w-full justify-center ${savingProfile ? "opacity-60 pointer-events-none" : ""}`} onClick={saveMyProfile}><CheckIcon style={{ fontSize:16 }} />{savingProfile ? "Saving…" : "Save"}</FilledBtn>
+          </div>
+        </div>
+      )}
+      {/* Left chrome: filter rail + conversation list (mobile: exactly 100vw, no overflow) */}
+      {showLeftPanel && (
+        <div
+          className={isMobile
+            ? "grid grid-cols-[72px_minmax(0,1fr)] w-full max-w-full min-w-0 min-h-0 flex-1 overflow-hidden"
+            : "flex shrink-0 min-h-0"}
+        >
+          <div className="w-[72px] border-r flex flex-col items-center py-4 gap-2 shrink-0 min-w-[72px] max-w-[72px]" style={{ background:C.surfaceVar, borderColor:C.outlineVar }}>
+            {sidebarFilters.map(({ Icon, l, id, badge }) => {
+              const active = listFilter === id;
+              return (
+                <button key={l} title={l} onClick={() => setListFilter(id)} aria-pressed={active}
+                  className="relative w-12 h-12 rounded-full flex items-center justify-center transition-all hover:scale-110 focus:outline-none focus-visible:ring-2"
+                  style={{
+                    background: active ? C.primaryCont : C.surface,
+                    color: active ? C.primary : C.onSurfaceVar,
+                    boxShadow: active ? `0 0 0 2px ${C.primary}` : SH1,
+                  }}>
+                  <Icon style={{ fontSize:20 }} />
+                  {badge != null && badge > 0 && (
+                    <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-0.5 rounded-full text-white text-[9px] flex items-center justify-center font-bold" style={{ background: BADGE_BG }}>{badge}</span>
+                  )}
+                </button>
+              );
+            })}
+            <button title="Settings" onClick={e => { e.stopPropagation(); setSettingsOpen(true); }} className="w-12 h-12 rounded-full flex items-center justify-center transition-all hover:scale-110 mt-auto" style={{ background:C.surface, color:C.onSurfaceVar, boxShadow:SH1 }}>
+              <SettingsIcon style={{ fontSize:20 }} />
+            </button>
+          </div>
+          {showConversationList && (
+            <div
+              className={isMobile
+                ? "border-r flex flex-col min-h-0 min-w-0 overflow-hidden"
+                : "w-72 border-r flex flex-col shrink-0 min-h-0"}
+              style={{ background:C.surface, borderColor:C.outlineVar, boxShadow:SH1 }}
+            >
+              <div className="p-4 border-b" style={{ borderColor:C.outlineVar }}>
+                <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 px-3 py-2.5 rounded-full border flex-1" style={{ background:C.surfaceVar, borderColor:C.outlineVar }}>
+                    <SearchIcon style={{ fontSize:18, color:C.onSurfaceVar }} />
+                    <input placeholder="Search messages..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="flex-1 bg-transparent text-sm focus:outline-none" style={{ color:C.onSurface, fontFamily:"Roboto" }} />
+                  </div>
+                  <button title="New Direct Message" onClick={e => { e.stopPropagation(); setNewDmOpen(true); setNewDmError(""); setNewDmUsername(""); }}
+                    className="w-10 h-10 rounded-full flex items-center justify-center shrink-0 transition-all hover:scale-105 focus:outline-none focus-visible:ring-2"
+                    style={{ background: C.primaryCont, color: C.primary, boxShadow: SH1 }}>
+                    <PersonAddIcon style={{ fontSize: 20 }} />
+                  </button>
+                </div>
+              </div>
+              <div className="flex-1 overflow-y-auto py-2 ninja-scroll" onScroll={onScrollReveal}>
+                {listFilter === "dm-requests" ? (
+                  <div className="px-4">
+                    <div className="px-4 pt-3 pb-1">
+                      <span className="text-[10px] font-semibold uppercase tracking-widest" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>Pending Requests</span>
+                    </div>
+                    <div className="space-y-2">
+                      {dmRequests.length === 0 ? (
+                        <p className="text-xs px-2 py-6 text-center" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>No pending requests.</p>
+                      ) : dmRequests.map(req => (
+                        <div key={req.id} className="flex items-center gap-3 p-2.5 rounded-2xl" style={{ background: C.surfaceVar }}>
+                          <ChatAvatar name={req.requesterName} avatarUrl={req.requesterAvatar} size={36} />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium truncate" style={{ color: C.onSurface, fontFamily: "Roboto" }}>{req.requesterDisplayName || req.requesterName}</p>
+                            <p className="text-[10px] truncate" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>@{req.requesterName}</p>
+                            <p className="text-[10px]" style={{ color: C.onSurfaceVar, fontFamily: "Roboto Mono,monospace" }}>{req.time}</p>
+                          </div>
+                          <div className="flex flex-col gap-1 shrink-0">
+                            <button onClick={() => acceptDmRequest(req.id)} className="px-2.5 py-1 rounded-full text-[10px] font-medium text-white" style={{ background: C.primary, fontFamily: "Roboto" }}>Accept</button>
+                            <button onClick={() => rejectDmRequest(req.id)} className="px-2.5 py-1 rounded-full text-[10px] font-medium border" style={{ borderColor: C.outline, color: C.error, fontFamily: "Roboto" }}>Reject</button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : filteredContacts.length === 0 ? (
+                  <p className="text-xs px-4 py-6 text-center" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
+                    {searchQuery.trim() ? "No conversations match your search." : "No conversations yet."}
+                  </p>
+                ) : (
+                  // Telegram-style unified chronological inbox (channels + DMs together).
+                  filteredContacts.map(m => (
+                    <button key={m.id} onClick={() => selectConversation(m)}
+                      onContextMenu={e => { e.preventDefault(); setCtxMenu({ x:e.clientX, y:e.clientY, contact:m }); }}
+                      className="w-full flex items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-[#6750A4]/6" style={{ background:sel.id===m.id?C.primaryCont:"transparent" }}>
+                      <div className="relative shrink-0">
+                        {m.type === "channel" ? (
+                          <ChatAvatar name={m.name} avatarUrl={m.avatarUrl} size={40} channel />
+                        ) : (
+                          <ChatAvatar name={m.name} avatarUrl={m.avatarUrl} size={40} deleted={!!m.isDeleted} />
+                        )}
+                        {m.type === "dm" && <FiberManualRecordIcon style={{ fontSize:12, color:presenceColor(m), position:"absolute", bottom:-1, right:-1 }} />}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex justify-between items-center gap-2">
+                          <span className="text-sm font-medium truncate" style={{ color:C.onSurface, fontFamily:"Roboto" }}>{m.name}</span>
+                          {m.muted && <VolumeOffIcon style={{ fontSize:14, color:C.onSurfaceVar }} titleAccess="Muted" />}
+                        </div>
+                        {/* Channels omit last-message preview for performance; DMs keep it. */}
+                        {m.type === "dm" && (
+                          <p className="text-xs truncate" style={{ color:C.onSurfaceVar }}>
+                            <MediaPreviewLine
+                              text={m.msg}
+                              previewKind={m.previewKind}
+                              fileName={m.previewFileName}
+                              color={C.onSurfaceVar}
+                              iconSize={13}
+                            />
+                          </p>
+                        )}
+                      </div>
+                      {m.type === "dm" && (
+                        <div className="w-5 h-5 shrink-0 flex items-center justify-center">
+                          {m.unread > 0 && (
+                            <div className="unread-badge rounded-full flex items-center justify-center text-white text-[10px] font-bold" style={{ background:BADGE_BG }}>{m.unread > 9 ? "9+" : m.unread}</div>
+                          )}
+                        </div>
+                      )}
+                    </button>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+      {/* Chat */}
+      {showChatPane && (
+      <div className="flex-1 flex flex-col min-w-0 relative">
+        {listFilter === "dm-requests" ? (
+          <div className="flex-1 flex items-center justify-center px-6" style={{ background: C.surfaceVar }}>
+            <div className="text-center max-w-sm">
+              <InboxIcon style={{ fontSize: 48, color: C.onSurfaceVar, marginBottom: 16 }} />
+              <p className="font-medium text-sm mb-2" style={{ color: C.onSurface, fontFamily: "Roboto" }}>Direct Message Requests</p>
+              <p className="text-sm" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>Select a request from the list to accept or decline.</p>
+            </div>
+          </div>
+        ) : (
+        <>
+        {/* Chat header */}
+        <div className="flex items-center gap-3 px-5 py-3 border-b shrink-0 relative" style={{ background:C.surface, borderColor:C.outlineVar, boxShadow:SH1 }}>
+          <button title={showSidebar?"Hide sidebar":"Show sidebar"} onClick={e => { e.stopPropagation(); setShowSidebar(!showSidebar); }} className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-black/5 shrink-0" style={{ color:C.onSurfaceVar }}>
+            <MenuIcon style={{ fontSize:20 }} />
+          </button>
+          <button
+            type="button"
+            className="relative shrink-0 rounded-full focus:outline-none focus-visible:ring-2"
+            onClick={e => { e.stopPropagation(); openConversationDetails(); }}
+            aria-label={isMobile ? `View ${sel.type === "channel" ? "channel" : "user"} details` : undefined}
+            style={{ cursor: isMobile && sel.id > 0 ? "pointer" : "default" }}
+            tabIndex={isMobile && sel.id > 0 ? 0 : -1}
+          >
+            {sel.type === "channel" ? (
+              <ChatAvatar name={sel.name} avatarUrl={sel.avatarUrl} size={36} channel />
+            ) : (
+              <ChatAvatar name={sel.name} avatarUrl={sel.avatarUrl} size={36} deleted={!!sel.isDeleted} />
+            )}
+            {sel.type === "dm" && !sel.isDeleted && <FiberManualRecordIcon style={{ fontSize:10, color:presenceColor(sel), position:"absolute", bottom:-1, right:-1 }} />}
+          </button>
+          <div>
+            <p className="font-medium text-sm" style={{ color:C.onSurface, fontFamily:"Roboto" }}>{sel.name || "Deleted User"}</p>
+            <p className="text-xs" style={{ color: sel.type==="channel" ? C.onSurfaceVar : (sel.isDeleted ? C.onSurfaceVar : presenceColor(sel)), fontFamily:"Roboto" }}>{sel.isDeleted ? "Account deleted" : presenceLabel(sel)}</p>
+          </div>
+          <div className="ml-auto flex items-center gap-1 relative">
+            {sel.type === "dm" && sel.otherUserId && !sel.isDeleted ? (
+              <>
+                <button
+                  type="button"
+                  title={canPlaceCall(currentUser, { isTeamMember: sel.isTeamMember, isAdmin: sel.isAdmin }) ? "Voice call" : CALL_DENIED_MESSAGE}
+                  aria-label="Start voice call"
+                  onClick={() => startDmCall("voice")}
+                  className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-black/5"
+                  style={{ color: canPlaceCall(currentUser, { isTeamMember: sel.isTeamMember, isAdmin: sel.isAdmin }) ? C.primary : C.onSurfaceVar, opacity: canPlaceCall(currentUser, { isTeamMember: sel.isTeamMember, isAdmin: sel.isAdmin }) ? 1 : 0.45 }}
+                >
+                  <CallIcon style={{ fontSize: 20 }} />
+                </button>
+                <button
+                  type="button"
+                  title={canPlaceCall(currentUser, { isTeamMember: sel.isTeamMember, isAdmin: sel.isAdmin }) ? "Video call" : CALL_DENIED_MESSAGE}
+                  aria-label="Start video call"
+                  onClick={() => startDmCall("video")}
+                  className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-black/5"
+                  style={{ color: canPlaceCall(currentUser, { isTeamMember: sel.isTeamMember, isAdmin: sel.isAdmin }) ? C.primary : C.onSurfaceVar, opacity: canPlaceCall(currentUser, { isTeamMember: sel.isTeamMember, isAdmin: sel.isAdmin }) ? 1 : 0.45 }}
+                >
+                  <VideocamIcon style={{ fontSize: 20 }} />
+                </button>
+              </>
+            ) : null}
+            <button onClick={e => { e.stopPropagation(); setHeaderMenu(o => !o); }} className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-black/5" style={{ color:C.onSurfaceVar }}><MoreVertIcon style={{ fontSize:20 }} /></button>
+            {headerMenu && (
+              <div className="absolute right-0 top-full mt-1 w-52 rounded-2xl border shadow-xl z-50 overflow-hidden" style={{ background:C.surface, borderColor:C.outlineVar }}>
+                <DropdownMenu items={makeMenuItems(sel, ()=>setHeaderMenu(false))} onClose={()=>setHeaderMenu(false)} />
+              </div>
+            )}
+          </div>
+        </div>
+        {/* Transient ignored-call banner — session-only, not persisted */}
+        {callApi?.phase === "ignored"
+          && callApi.invite
+          && callApi.invite.conversationId === sel.id
+          && (
+          <div
+            className="shrink-0 mx-4 mt-3 mb-1 px-4 py-3 rounded-2xl border flex flex-col sm:flex-row sm:items-center gap-3"
+            style={{ background: C.surface, borderColor: C.primary, boxShadow: SH1 }}
+            role="status"
+            aria-label="Incoming call request"
+          >
+            <div className="flex items-center gap-3 min-w-0 flex-1">
+              <ChatAvatar name={callApi.invite.callerName} avatarUrl={callApi.invite.callerAvatar} size={40} />
+              <div className="min-w-0">
+                <p className="text-sm font-medium truncate" style={{ color: C.onSurface, fontFamily: "Roboto" }}>
+                  Incoming {callApi.invite.type === "video" ? "video" : "voice"} call from {callApi.invite.callerName}
+                </p>
+                <p className="text-xs" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
+                  Still ringing — accept or decline
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                aria-label="Decline call"
+                onClick={() => callApi.declineIncoming()}
+                className="w-10 h-10 rounded-full flex items-center justify-center text-white"
+                style={{ background: C.error }}
+              >
+                <CallEndIcon style={{ fontSize: 18 }} />
+              </button>
+              <button
+                type="button"
+                aria-label="Accept call"
+                onClick={() => void callApi.acceptIncoming()}
+                className="w-10 h-10 rounded-full flex items-center justify-center text-white"
+                style={{ background: "#386A20" }}
+              >
+                <CallIcon style={{ fontSize: 18 }} />
+              </button>
+            </div>
+          </div>
+        )}
+        {/* Message list */}
+        <div className="flex-1 relative min-h-0 min-w-0 flex flex-col overflow-hidden" style={{ background:C.surfaceVar }} onClick={closeAll}>
+          {threadReady && msgs.length > 0 ? (
+            <Virtuoso
+              key={`${sel.id}-${threadBootId}`}
+              ref={virtuosoRef}
+              className="flex-1 px-5 min-w-0"
+              style={{ height: "100%", overflowX: "hidden" }}
+              data={msgs}
+              firstItemIndex={firstItemIndex}
+              initialTopMostItemIndex={initialScrollIndex ?? msgs.length - 1}
+              increaseViewportBy={{ top: 600, bottom: 600 }}
+              defaultItemHeight={72}
+              followOutput={() => (pinToBottomRef.current ? "auto" : false)}
+              startReached={() => { void loadOlderMessages(); }}
+              endReached={() => { void loadNewerMessages(); }}
+              atBottomStateChange={(atBottom) => {
+                isNearBottomRef.current = atBottom;
+                pinToBottomRef.current = atBottom;
+                setShowJumpBtn(!atBottom && sel.id > 0);
+                if (atBottom) {
+                  setUnreadBelow(0);
+                  if (sel.id && msgsRef.current.length && !hasMoreNewer) {
+                    const newest = msgsRef.current[msgsRef.current.length - 1].id;
+                    setLastReadMessageId(newest);
+                    scheduleMarkRead(sel.id);
+                  }
+                }
+              }}
+              scrollerRef={(ref) => {
+                if (ref instanceof HTMLElement) {
+                  ref.classList.add("ninja-scroll");
+                  if (!ref.dataset.scrollBound) {
+                    ref.dataset.scrollBound = "1";
+                    ref.addEventListener("scroll", () => {
+                      ref.classList.add("is-scrolling");
+                      if (virtuosoScrollTimer.current) clearTimeout(virtuosoScrollTimer.current);
+                      virtuosoScrollTimer.current = setTimeout(() => ref.classList.remove("is-scrolling"), 900);
+                    }, { passive: true });
+                  }
+                }
+              }}
+              rangeChanged={(range) => {
+                visibleStartDataIndexRef.current = Math.max(0, range.startIndex - firstItemIndexRef.current);
+                msgPerf.renderedRows(range.endIndex - range.startIndex + 1);
+              }}
+              components={{
+                Header: () => (
+                  <div className="flex flex-col items-center justify-center min-h-[28px] py-3 gap-1">
+                    {loadingOlder ? (
+                      <CircularProgress size={18} thickness={4} style={{ color: C.primary }} />
+                    ) : !hasMoreOlder ? (
+                      <span className="text-[11px]" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>Beginning of conversation</span>
+                    ) : (
+                      <span className="text-[11px] opacity-50" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>Scroll for older messages</span>
+                    )}
+                  </div>
+                ),
+                Footer: () => (
+                  <div className="pb-3">
+                    {loadingNewer && (
+                      <div className="flex justify-center py-2">
+                        <CircularProgress size={16} thickness={4} style={{ color: C.primary }} />
+                      </div>
+                    )}
+                    {typingLabel() && (
+                      <p className="text-xs px-2 py-1 italic" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>{typingLabel()}</p>
+                    )}
+                  </div>
+                ),
+              }}
+              itemContent={(absoluteIndex, m) => {
+                const dataIndex = absoluteIndex - firstItemIndex;
+                const prev = dataIndex > 0 ? msgs[dataIndex - 1] : undefined;
+                return (
+                  <MessageRow
+                    m={m}
+                    prev={prev}
+                    lastReadMessageId={lastReadMessageId}
+                    currentUserId={currentUserId}
+                    isMobile={isMobile}
+                    C={C}
+                    editingId={editingId}
+                    editText={editingId === m.id ? editText : ""}
+                    setEditText={setEditText}
+                    setEditingId={setEditingId}
+                    registerRef={(id, el) => {
+                      if (el) msgRefs.current.set(id, el);
+                      else msgRefs.current.delete(id);
+                    }}
+                    onScrollTo={scrollTo}
+                    onLightbox={setLightbox}
+                    onReply={setReplyingTo}
+                    onReact={addReaction}
+                    onDelete={(id) => askConfirm("Delete Message", "Delete this message permanently?", () => deleteMsg(id))}
+                    onAdminDelete={(id) => { void deleteMsg(id); }}
+                    canAdminDelete={!!currentUser?.isAdmin && sel.type === "channel"}
+                    onReport={(id) => askConfirm("Report Message", "Report this message for inappropriate content?", () => { api.messages.report({ messageId: id, reason: "Inappropriate content" }).then(() => toast.success("Report submitted")).catch(() => toast.error("Failed to submit report")); })}
+                    onCommitEdit={commitEdit}
+                    onOpenProfile={openUserProfileFromMessage}
+                  />
+                );
+              }}
+            />
+          ) : threadReady ? (
+            <div className="flex-1 flex items-center justify-center px-6">
+              <p className="text-sm text-center" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
+                {sel.id > 0 ? "No messages yet — say hello!" : "Select a conversation"}
+              </p>
+            </div>
+          ) : (
+            <div className="flex-1 flex items-center justify-center">
+              <CircularProgress size={28} thickness={4} style={{ color: C.primary }} />
+            </div>
+          )}
+          {showJumpBtn && sel.id > 0 && (
+            <div
+              className="absolute z-20 transition-all duration-200 ease-out animate-in fade-in zoom-in-95"
+              style={{ right: 28, bottom: 28 }}
+            >
+              <Badge
+                badgeContent={unreadBelow > 0 ? (unreadBelow > 99 ? "99+" : unreadBelow) : 0}
+                color="error"
+                overlap="circular"
+                invisible={unreadBelow <= 0}
+              >
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await jumpToLatest();
+                    forceScrollToBottom("smooth");
+                    if (sel?.id) {
+                      scheduleMarkRead(sel.id);
+                      if (msgsRef.current.length) setLastReadMessageId(msgsRef.current[msgsRef.current.length - 1].id);
+                    }
+                  }}
+                  className="w-12 h-12 rounded-full flex items-center justify-center hover:opacity-95 focus-visible:outline-none focus-visible:ring-2 transition-transform hover:scale-105"
+                  style={{
+                    background: C.bg === "#FFFBFE" ? "#1C1B1F" : "#FFFFFF",
+                    color: C.bg === "#FFFBFE" ? "#FFFFFF" : "#1C1B1F",
+                    boxShadow: SH1,
+                  }}
+                  aria-label="Jump to latest message"
+                  title="Jump to latest"
+                >
+                  <KeyboardArrowDownIcon style={{ fontSize: 26, color: "inherit" }} />
+                </button>
+              </Badge>
+            </div>
+          )}
+        </div>
+        {/* Input bar */}
+        <div className="border-t shrink-0" style={{ background:C.surface, borderColor:C.outlineVar }}>
+          {replyingTo && (
+            <div className="flex items-center gap-3 px-5 py-2 border-b" style={{ borderColor:C.outlineVar, background:C.surfaceVar }}>
+              <ReplyIcon style={{ fontSize:16, color:C.primary }} />
+              <div className="flex-1 min-w-0">
+                <span className="text-xs font-medium" style={{ color:C.primary, fontFamily:"Roboto" }}>Replying to {replyingTo.user}</span>
+                <p className="text-xs truncate" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>
+                  <MediaPreviewLine text={replyingTo.msg || "Attachment"} previewKind={replyingTo.mediaType} fileName={replyingTo.fileName} color={C.onSurfaceVar} iconSize={12} />
+                </p>
+              </div>
+              <button onClick={() => setReplyingTo(null)} className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-black/8" style={{ color:C.onSurfaceVar }}><CloseIcon style={{ fontSize:14 }} /></button>
+            </div>
+          )}
+          {(pendingPaste || uploadingPaste) && (
+            <div className="flex items-center gap-3 px-5 py-2.5 border-b" style={{ borderColor: C.outlineVar, background: C.surfaceVar }}>
+              <div
+                className="relative shrink-0 overflow-hidden rounded-lg border"
+                style={{ width: 56, height: 56, borderColor: C.outlineVar, background: C.bg }}
+              >
+                {pendingPaste ? (
+                  <img src={pendingPaste.previewUrl} alt="" className="w-full h-full object-cover" />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center">
+                    <CircularProgress size={22} thickness={4} style={{ color: C.primary }} />
+                  </div>
+                )}
+                {uploadingPaste && pendingPaste && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/40">
+                    <CircularProgress size={22} thickness={4} style={{ color: "#fff" }} />
+                  </div>
+                )}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium truncate" style={{ color: C.onSurface, fontFamily: "Roboto" }}>
+                  {pendingPaste?.file.name || "Uploading screenshot…"}
+                </p>
+                <p className="text-xs" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
+                  {pendingPaste ? formatBytes(pendingPaste.file.size) : "Please wait"}
+                  {pendingPaste ? " · Image" : ""}
+                </p>
+              </div>
+              {!uploadingPaste && (
+                <button
+                  type="button"
+                  onClick={clearPendingPaste}
+                  className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-black/8 shrink-0"
+                  style={{ color: C.onSurfaceVar }}
+                  title="Remove attachment"
+                  aria-label="Remove screenshot attachment"
+                >
+                  <CloseIcon style={{ fontSize: 18 }} />
+                </button>
+              )}
+            </div>
+          )}
+          <div className="px-5 py-3 relative">
+            {emojiOpen && (
+              <div ref={emojiPickerRef} className="fixed z-40" style={{ right: emojiPickerPos.right, bottom: emojiPickerPos.bottom }} onClick={e => e.stopPropagation()}>
+                <Suspense fallback={
+                  <div className="w-80 h-64 rounded-2xl border flex items-center justify-center" style={{ background: C.surface, borderColor: C.outlineVar }}>
+                    <CircularProgress size={28} />
+                  </div>
+                }>
+                  <EmojiGifPicker
+                    onPickEmoji={(em) => {
+                      setInput(i => i + em);
+                      requestAnimationFrame(adjustComposerHeight);
+                    }}
+                    onPickGif={(g) => { void sendGifItem(g); }}
+                  />
+                </Suspense>
+              </div>
+            )}
+            <input ref={fileRef} type="file" className="hidden" onChange={handleFile} />
+            <div
+              className="flex items-center gap-2 rounded-[24px] border px-4 py-2.5 cursor-text min-w-0"
+              style={{ borderColor:C.outlineVar }}
+              onMouseDown={e => {
+                const target = e.target as HTMLElement;
+                if (target.closest("button") || target.closest("a") || target.tagName === "TEXTAREA" || target.tagName === "AUDIO") return;
+                if (settingsOpen || newDmOpen || confirm || emojiOpen || voiceBusy) return;
+                e.preventDefault();
+                inputRef.current?.focus();
+              }}
+            >
+              {!voiceBusy && (
+                <button type="button" className="shrink-0 self-center" onClick={() => fileRef.current?.click()} style={{ color:C.onSurfaceVar }} title="Attach any file" aria-label="Attach file"><AttachFileIcon style={{ fontSize:20 }} /></button>
+              )}
+              <VoiceRecorderButton disabled={!sel.id || uploadingPaste} onSend={sendVoiceFile} onBusyChange={setVoiceBusy} />
+              {!voiceBusy && (
+                <>
+              <textarea
+                ref={inputRef}
+                rows={1}
+                value={input}
+                onChange={e => { handleInputChange(e.target.value); requestAnimationFrame(adjustComposerHeight); }}
+                onPaste={handleComposerPaste}
+                onKeyDown={e => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    if (!uploadingPaste) void send();
+                  } else if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+                    e.preventDefault();
+                    if (!uploadingPaste) void send();
+                  }
+                }}
+                placeholder={pendingPaste ? "Press Send to upload screenshot…" : `Message ${sel.name}...`}
+                className="flex-1 min-w-0 bg-transparent text-sm focus:outline-none resize-none leading-5 py-0.5"
+                style={{ color:C.onSurface, fontFamily:"Roboto", maxHeight: COMPOSER_MAX_HEIGHT, overflowY: "auto" }}
+                onClick={() => setEmojiOpen(false)}
+                disabled={uploadingPaste}
+              />
+              <button type="button" ref={emojiBtnRef} className="shrink-0 self-center" onClick={e => { e.stopPropagation(); setEmojiOpen(o => !o); }} style={{ color:emojiOpen?C.primary:C.onSurfaceVar }} title="Emoji / GIF" aria-label="Open emoji and GIF picker"><EmojiEmotionsIcon style={{ fontSize:20 }} /></button>
+              <button
+                type="button"
+                onClick={() => { if (!uploadingPaste) void send(); }}
+                disabled={uploadingPaste || (!input.trim() && !pendingPaste)}
+                className="w-8 h-8 rounded-full flex items-center justify-center ml-1 text-white hover:opacity-90 shrink-0 self-center disabled:opacity-50"
+                style={{ background:C.primary }}
+                aria-label="Send message"
+              >
+                {uploadingPaste ? <CircularProgress size={14} thickness={5} style={{ color: "#fff" }} /> : <SendIcon style={{ fontSize:16 }} />}
+              </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+        </>
+        )}
+      </div>
+      )}
+      {/* Right panel — desktop/tablet lg+ */}
+      {listFilter !== "dm-requests" && sel.id > 0 && (
+      <div className="hidden lg:flex w-72 border-l flex-col p-5 shrink-0 overflow-y-auto ninja-scroll" style={{ background:C.surface, borderColor:C.outlineVar }} onScroll={onScrollReveal}>
+        <ConversationDetailsBody sel={sel} C={C} presenceColor={presenceColor} presenceLabel={presenceLabel} />
+      </div>
+      )}
+      {/* Mobile conversation / user details modal */}
+      {detailsOpen && isMobile && detailsContact && (
+        <div
+          className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-sm p-0 sm:p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label={detailsContact.type === "channel" ? "Channel details" : "User profile"}
+          onClick={dismissConversationDetails}
+        >
+          <div
+            className="w-full sm:max-w-sm max-h-[85vh] overflow-y-auto ninja-scroll rounded-t-3xl sm:rounded-3xl p-5 shadow-2xl"
+            style={{ background: C.surface }}
+            onClick={e => e.stopPropagation()}
+            onScroll={onScrollReveal}
+          >
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-medium text-base" style={{ color: C.onSurface, fontFamily: "Roboto" }}>
+                {detailsContact.type === "channel" ? "Channel Info" : "Profile"}
+              </h3>
+              <button
+                type="button"
+                onClick={dismissConversationDetails}
+                className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-black/5"
+                style={{ color: C.onSurfaceVar }}
+                aria-label="Close details"
+              >
+                <CloseIcon style={{ fontSize: 18 }} />
+              </button>
+            </div>
+            <ConversationDetailsBody sel={detailsContact} C={C} presenceColor={presenceColor} presenceLabel={presenceLabel} />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default MessagesPage;
+

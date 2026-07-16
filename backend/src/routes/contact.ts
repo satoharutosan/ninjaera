@@ -1,14 +1,19 @@
 import { Router } from "express";
 import { v4 as uuid } from "uuid";
-import { db } from "../db/index.js";
+import { qRun } from "../db/query.js";
 import { optionalAuth } from "../middleware/auth.js";
+import { rateLimit, clientIp } from "../middleware/rateLimit.js";
 import { lookupGeo } from "../services/geoip.js";
 import { emitToAdmins, scheduleAdminStatsRefresh } from "../services/realtime.js";
 
 const router = Router();
 const now = () => new Date().toISOString();
 
-router.post("/", optionalAuth, async (req, res) => {
+router.post("/", optionalAuth, rateLimit({
+  keyFn: (req) => `contact:ip:${clientIp(req)}`,
+  max: 8,
+  windowMs: 60 * 60 * 1000,
+}), async (req, res) => {
   const { name, email, subject, category, message } = req.body;
   if (!name || !email || !subject || !category || !message) {
     res.status(400).json({ error: "All fields are required" });
@@ -29,13 +34,13 @@ router.post("/", optionalAuth, async (req, res) => {
     countryCode = geo.countryCode;
   } catch { /* ignore geo failures */ }
 
-  const result = db.prepare(`
+  const result = await qRun(`
     INSERT INTO contact_tickets (
       name, email, subject, category, message, status, created_at,
       user_id, guest_identifier, ip_address, country, country_code,
       is_read, reply_status, updated_at
     ) VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, 0, 'pending', ?)
-  `).run(name, email, subject, category, message, ts, userId, guestIdentifier, ipAddress, country, countryCode, ts);
+  `, name, email, subject, category, message, ts, userId, guestIdentifier, ipAddress, country, countryCode, ts);
 
   emitToAdmins("admin:contact", { contactId: result.lastInsertRowid });
   scheduleAdminStatsRefresh();

@@ -1,34 +1,155 @@
 import jwt from "jsonwebtoken";
 import type { Request, Response, NextFunction } from "express";
-import { db, type UserRow } from "../db/index.js";
+import type { UserRow } from "../db/index.js";
+import { qGet, qRun } from "../db/query.js";
 
 import { isUserActive } from "./admin.js";
 import { touchPresence } from "../services/presence.js";
+import { DELETED_USER_DISPLAY_NAME, isDeletedUser, toDisplayUser } from "../services/deletedUser.js";
 
-const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-me";
+const isProd = () => (process.env.NODE_ENV || "").toLowerCase() === "production";
 
-export type AuthPayload = { userId: number; email: string };
+const WEAK_SECRETS = new Set([
+  "",
+  "dev-secret-change-me",
+  "changeme",
+  "secret",
+  "jwt-secret",
+  "your-secret-here",
+]);
 
-export function signToken(payload: AuthPayload): string {
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: "7d" });
+function resolveJwtSecret(): string {
+  const raw = (process.env.JWT_SECRET || "").trim();
+  if (isProd()) {
+    if (!raw || WEAK_SECRETS.has(raw.toLowerCase()) || raw.length < 32) {
+      throw new Error(
+        "FATAL: JWT_SECRET must be set to a strong value (≥32 chars) in production. Refusing to start.",
+      );
+    }
+    return raw;
+  }
+  if (!raw) {
+    console.warn("[auth] JWT_SECRET not set — using insecure dev fallback. Never deploy like this.");
+    return "dev-secret-change-me";
+  }
+  return raw;
+}
+
+const JWT_SECRET = resolveJwtSecret();
+
+export type AuthPayload = {
+  userId: number;
+  email: string;
+  /** Session generation — must match users.token_version */
+  tv?: number;
+};
+
+type UserAuthRow = UserRow & {
+  is_admin?: number;
+  is_team_member?: number;
+  token_version?: number | null;
+};
+
+function userTokenVersion(user: UserAuthRow): number {
+  return Number(user.token_version ?? 0) || 0;
+}
+
+/**
+ * Session JWTs.
+ * Production: finite expiry required (default 7d unless JWT_EXPIRES_IN is set to a finite value).
+ * Development: may use "never" for convenience; set JWT_EXPIRES_IN to override.
+ */
+export function signToken(payload: { userId: number; email: string; tv?: number }): string {
+  const tv = payload.tv ?? 0;
+  const body: AuthPayload = { userId: payload.userId, email: payload.email, tv };
+  const raw = (process.env.JWT_EXPIRES_IN || "").trim().toLowerCase();
+
+  if (isProd()) {
+    const expiresIn = (!raw || raw === "never" || raw === "0" || raw === "none")
+      ? "7d"
+      : raw;
+    if (expiresIn === "never" || expiresIn === "0" || expiresIn === "none") {
+      throw new Error("JWT_EXPIRES_IN=never is not allowed in production");
+    }
+    return jwt.sign(body, JWT_SECRET, { expiresIn: expiresIn as jwt.SignOptions["expiresIn"] });
+  }
+
+  if (!raw || raw === "never" || raw === "0" || raw === "none") {
+    return jwt.sign(body, JWT_SECRET);
+  }
+  return jwt.sign(body, JWT_SECRET, { expiresIn: raw as jwt.SignOptions["expiresIn"] });
+}
+
+/** Issue a session JWT for an existing user row. */
+export function signTokenForUser(user: { id: number; email: string; token_version?: number | null }): string {
+  return signToken({
+    userId: user.id,
+    email: user.email,
+    tv: Number(user.token_version ?? 0) || 0,
+  });
 }
 
 export function verifyToken(token: string): AuthPayload {
   return jwt.verify(token, JWT_SECRET) as AuthPayload;
 }
 
-export function getUserById(id: number): UserRow | undefined {
-  return db.prepare("SELECT * FROM users WHERE id = ?").get(id) as UserRow | undefined;
+export async function getUserById(id: number): Promise<UserAuthRow | undefined> {
+  return qGet<UserAuthRow>("SELECT * FROM users WHERE id = ?", id);
 }
 
-export function publicUser(user: UserRow, viewerId?: number) {
-  const settings = db.prepare("SELECT public_profile FROM user_settings WHERE user_id = ?").get(user.id) as { public_profile: number } | undefined;
-  const isPublic = settings?.public_profile !== 0;
+/** Invalidate all existing JWTs for a user (logout, password change, admin force-logout, etc.). */
+export async function bumpTokenVersion(userId: number): Promise<number> {
+  await qRun(`
+    UPDATE users
+    SET token_version = COALESCE(token_version, 0) + 1, updated_at = ?
+    WHERE id = ?
+  `, new Date().toISOString(), userId);
+  const row = await qGet<{ token_version: number }>("SELECT token_version FROM users WHERE id = ?", userId);
+  return Number(row?.token_version ?? 0) || 0;
+}
+
+export async function publicUser(user: UserRow, viewerId?: number) {
+  const u = user as UserAuthRow;
+  const deleted = isDeletedUser(u);
   const isSelf = viewerId === user.id;
+
+  // Soft-deleted accounts: never expose real identity / PII to other clients
+  if (deleted) {
+    return {
+      id: user.id,
+      email: undefined,
+      hasPassword: undefined,
+      username: DELETED_USER_DISPLAY_NAME,
+      avatarUrl: null,
+      gender: undefined,
+      dateOfBirth: undefined,
+      country: undefined,
+      city: undefined,
+      status: "Offline",
+      bio: "",
+      memberSince: undefined,
+      village: undefined,
+      clan: undefined,
+      level: 1,
+      rank: undefined,
+      isNpc: false,
+      isAdmin: false,
+      isTeamMember: false,
+      isDeleted: true as const,
+    };
+  }
+
+  const settings = await qGet<{ public_profile: number }>(
+    "SELECT public_profile FROM user_settings WHERE user_id = ?",
+    user.id,
+  );
+  const isPublic = settings?.public_profile !== 0;
 
   return {
     id: user.id,
     email: isSelf ? user.email : undefined,
+    // Actual account state, not provider inference — drives adaptive password UI
+    hasPassword: isSelf ? Boolean(user.password_hash) : undefined,
     username: user.username,
     avatarUrl: user.avatar_url,
     gender: (isSelf || isPublic) ? user.gender : undefined,
@@ -43,12 +164,54 @@ export function publicUser(user: UserRow, viewerId?: number) {
     level: user.level,
     rank: user.rank,
     isNpc: user.is_npc === 1,
-    isAdmin: (user as UserRow & { is_admin?: number }).is_admin === 1,
-    isTeamMember: (user as UserRow & { is_team_member?: number }).is_team_member === 1,
+    isAdmin: u.is_admin === 1,
+    isTeamMember: u.is_team_member === 1,
+    isDeleted: false as const,
   };
 }
 
-export function requireAuth(req: Request, res: Response, next: NextFunction) {
+/** Resolve a user id to safe display fields (works if missing or soft-deleted). */
+export async function resolvePublicDisplayUser(userId: number, viewerId?: number) {
+  const row = await getUserById(userId);
+  if (!row) {
+    const t = toDisplayUser(null, userId);
+    return {
+      id: t.id,
+      username: t.username,
+      avatarUrl: t.avatarUrl,
+      isDeleted: true as const,
+      status: "Offline",
+      bio: "",
+      level: 1,
+      isNpc: false,
+      isAdmin: false,
+      isTeamMember: false,
+    };
+  }
+  return await publicUser(row, viewerId);
+}
+
+function attachAuth(req: Request, user: UserAuthRow, payload: AuthPayload) {
+  req.user = user;
+  req.auth = payload;
+  touchPresence(user.id);
+}
+
+async function resolveAuthUser(token: string): Promise<{ user: UserAuthRow; payload: AuthPayload } | null> {
+  const payload = verifyToken(token);
+  const user = await getUserById(payload.userId);
+  if (!user) return null;
+  if (!isUserActive(user)) return null;
+  // Reject tokens issued before the latest password change / forced invalidation.
+  // Missing tv (legacy tokens) are accepted once, then clients re-login naturally
+  // only when version was bumped — treat missing tv as 0.
+  const expected = userTokenVersion(user);
+  const got = Number(payload.tv ?? 0) || 0;
+  if (got !== expected) return null;
+  return { user, payload };
+}
+
+export async function requireAuth(req: Request, res: Response, next: NextFunction) {
   const header = req.headers.authorization;
   const token = header?.startsWith("Bearer ") ? header.slice(7) : req.cookies?.token;
 
@@ -58,36 +221,36 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
   }
 
   try {
-    const payload = verifyToken(token);
-    const user = getUserById(payload.userId);
-    if (!user) {
-      res.status(401).json({ error: "User not found" });
+    const resolved = await resolveAuthUser(token);
+    if (!resolved) {
+      // Distinguish disabled vs invalid without leaking which
+      const payload = (() => {
+        try { return verifyToken(token); } catch { return null; }
+      })();
+      if (payload) {
+        const user = await getUserById(payload.userId);
+        if (user && !isUserActive(user)) {
+          res.status(403).json({ error: "Account is disabled" });
+          return;
+        }
+      }
+      res.status(401).json({ error: "Invalid or expired token" });
       return;
     }
-    if (!isUserActive(user)) {
-      res.status(403).json({ error: "Account is disabled" });
-      return;
-    }
-    req.user = user;
-    req.auth = payload;
-    touchPresence(user.id);
+    attachAuth(req, resolved.user, resolved.payload);
     next();
   } catch {
     res.status(401).json({ error: "Invalid or expired token" });
   }
 }
 
-export function optionalAuth(req: Request, _res: Response, next: NextFunction) {
+export async function optionalAuth(req: Request, _res: Response, next: NextFunction) {
   const header = req.headers.authorization;
   const token = header?.startsWith("Bearer ") ? header.slice(7) : req.cookies?.token;
   if (token) {
     try {
-      const payload = verifyToken(token);
-      const user = getUserById(payload.userId);
-      if (user) {
-        req.user = user;
-        req.auth = payload;
-      }
+      const resolved = await resolveAuthUser(token);
+      if (resolved) attachAuth(req, resolved.user, resolved.payload);
     } catch { /* ignore */ }
   }
   next();

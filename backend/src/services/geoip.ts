@@ -1,4 +1,5 @@
 import type { Request } from "express";
+import { qRun } from "../db/query.js";
 
 export type GeoResult = {
   ip: string;
@@ -93,11 +94,9 @@ export async function lookupGeo(req: Request): Promise<GeoResult> {
   }
 }
 
-import { db } from "../db/index.js";
-
-export function saveUserLocation(userId: number, geo: GeoResult) {
+export async function saveUserLocation(userId: number, geo: GeoResult) {
   const ts = new Date().toISOString();
-  db.prepare(`
+  await qRun(`
     INSERT INTO user_locations (user_id, ip_address, country_code, country_name, is_vpn, vpn_ip, vpn_country_code, vpn_country_name, origin_ip, origin_country_code, origin_country_name, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(user_id) DO UPDATE SET
@@ -112,7 +111,7 @@ export function saveUserLocation(userId: number, geo: GeoResult) {
       origin_country_code = excluded.origin_country_code,
       origin_country_name = excluded.origin_country_name,
       updated_at = excluded.updated_at
-  `).run(
+  `,
     userId,
     geo.ip,
     geo.countryCode,

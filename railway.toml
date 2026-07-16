@@ -7,6 +7,20 @@ healthcheckPath = "/api/health"
 healthcheckTimeout = 30
 restartPolicyType = "ON_FAILURE"
 
+# Set these in the Railway dashboard (do not commit secrets):
+# JWT_SECRET=<secret>
+# CORS_ORIGIN=<public frontend URL>
+# FRONTEND_URL=<public frontend URL>
+# MAIL_FROM_* / SMTP_* as needed
+#
+# Database (pick one):
+#   DATABASE_PROVIDER=sqlite   + volume mount /data (default below)
+#   DATABASE_PROVIDER=postgres + DATABASE_URL=<Railway Postgres URL>
+#
+# Storage (pick one):
+#   STORAGE_PROVIDER=local + UPLOAD_DIR=/data/uploads (volume)
+#   STORAGE_PROVIDER=s3 + S3_BUCKET/S3_ENDPOINT/S3_ACCESS_KEY_ID/S3_SECRET_ACCESS_KEY/S3_PUBLIC_BASE_URL
+
 [[mounts]]
 source = "ninja-era-data"
 destination = "/data"

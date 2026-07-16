@@ -1,39 +1,100 @@
-import { Router } from "express";
+import { Router, type Response } from "express";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
 import Database from "better-sqlite3";
-import { db, dbPath, dataDirectory } from "../db/index.js";
-import { requireAuth, publicUser, timeAgo } from "../middleware/auth.js";
-import { requireAdmin } from "../middleware/admin.js";
-import { logActivitySync } from "../services/activityLog.js";
-import { emitToAdmins, emitToUser, broadcast, scheduleAdminStatsRefresh } from "../services/realtime.js";
-import { isUserOnline } from "../services/presence.js";
-import { syncPrivateChannelParticipants, syncPublicChannels, syncPrivateChannelsForUser } from "../services/channels.js";
+import { db, dbAsync, dbPath, dataDirectory, type UserRow } from "../db/index.js";
+import { qGet, qAll, qRun, qTransaction } from "../db/query.js";
+import { exportPortableBackup, currentSchemaVersion } from "../db/backup/portable.js";
+import { validatePortableBackup, restorePortableBackup } from "../db/backup/restore.js";
+import { createNativeBackup } from "../db/backup/native.js";
+import { requireAuth, publicUser, timeAgo, formatTime, bumpTokenVersion } from "../middleware/auth.js";
+import { requireAdmin, requireSuperAdmin } from "../middleware/admin.js";
+import { canManageTargetUser, canSelectTargetUser, isSuperAdmin } from "../services/adminPermissions.js";
+import { normalizeEmail } from "../services/emailVerification.js";
+import {
+  isUsernameConstraintError,
+  validateUsernameForWrite,
+  USERNAME_TAKEN_ERROR,
+} from "../services/username.js";
+import { normalizeResourceCategory, RESOURCE_CATEGORY_ERROR } from "../services/resourceCategories.js";
+import { logActivitySync, formatPlatformLabel } from "../services/activityLog.js";
+import { emitToAdmins, emitToUser, broadcast, scheduleAdminStatsRefresh, emitConversationUpdate } from "../services/realtime.js";
+import { isUserOnline, countOnlineUsers } from "../services/presence.js";
+import { syncPrivateChannelParticipants, syncPublicChannels, syncPrivateChannelsForUser, pruneIneligiblePrivateParticipants } from "../services/channels.js";
+import { forceLeaveConversationMany } from "../services/realtime.js";
+import { hardDeleteMessage } from "../services/messageModeration.js";
+import { formatDurationLabel, parseMediaMeta } from "../services/mediaMeta.js";
+import {
+  deleteTableRows,
+  getTableColumns,
+  insertTableRow,
+  listManageableTables,
+  listTableRows,
+  updateTableRow,
+} from "../services/adminDatabaseConsole.js";
+import { tombstoneSenderFields, DELETED_USER_DISPLAY_NAME } from "../services/deletedUser.js";
+import { deleteStoredUrl } from "../storage/index.js";
+import { createMemoryUploader, createTempDiskUploader, cleanupTempFile, persistMulterFile } from "../storage/multerUpload.js";
+import { validateUpload } from "../services/uploadValidation.js";
 
 const router = Router();
 const now = () => new Date().toISOString();
 
-const uploadDir = process.env.UPLOAD_DIR || "./uploads";
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+// Resources can be sizable (docs, archives); stream via a temp file, then push through storage.
+const upload = createTempDiskUploader({ limits: { fileSize: 100 * 1024 * 1024 }, prefix: "resource" });
 
-const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, uploadDir),
-  filename: (_req, file, cb) => {
-    const ext = path.extname(file.originalname);
-    cb(null, `resource-${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
+const CHANNEL_AVATAR_MAX_BYTES = 5 * 1024 * 1024;
+const CHANNEL_AVATAR_MIMES = new Set(["image/png", "image/jpeg", "image/webp"]);
+const channelAvatarUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: CHANNEL_AVATAR_MAX_BYTES },
+  fileFilter: (_req, file, cb) => {
+    const okMime = CHANNEL_AVATAR_MIMES.has(file.mimetype);
+    const okExt = /\.(png|jpe?g|webp)$/i.test(file.originalname);
+    // Require BOTH MIME and extension (closes extension-only bypass).
+    if (okMime && okExt) {
+      cb(null, true);
+      return;
+    }
+    cb(new Error("Only PNG, JPG, and WEBP images are allowed for channel avatars"));
   },
 });
-const upload = multer({ storage, limits: { fileSize: 100 * 1024 * 1024 } });
 
-const gameStorage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, uploadDir),
-  filename: (_req, file, cb) => {
-    const ext = path.extname(file.originalname);
-    cb(null, `game-${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
-  },
-});
-const gameUpload = multer({ storage: gameStorage, limits: { fileSize: 500 * 1024 * 1024 } });
+async function unlinkLocalUpload(url: string | null | undefined) {
+  await deleteStoredUrl(url);
+}
+
+function channelAvatarMiddleware(req: import("express").Request, res: import("express").Response, next: import("express").NextFunction) {
+  channelAvatarUpload.single("avatar")(req, res, async (err: unknown) => {
+    if (err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE") {
+      res.status(413).json({ error: "Channel avatar must be 5MB or smaller" });
+      return;
+    }
+    if (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : "Invalid avatar upload" });
+      return;
+    }
+    if (req.file) {
+      const validated = validateUpload({
+        kind: "channelAvatar",
+        originalName: req.file.originalname,
+        declaredMime: req.file.mimetype,
+        buffer: req.file.buffer,
+        size: req.file.size,
+      });
+      if (!validated.ok) {
+        res.status(400).json({ error: validated.error });
+        return;
+      }
+      (req.file as Express.Multer.File & { validatedContentType?: string }).validatedContentType = validated.contentType;
+    }
+    next();
+  });
+}
+
+// Game builds can reach 500MB; always stream to a temp file before pushing to storage.
+const gameUpload = createTempDiskUploader({ limits: { fileSize: 500 * 1024 * 1024 }, prefix: "game" });
 
 router.use(requireAuth, requireAdmin);
 
@@ -41,55 +102,50 @@ router.use(requireAuth, requireAdmin);
 const STATS_CACHE_TTL_MS = 5000;
 let statsCache: { at: number; body: unknown } | null = null;
 
-router.get("/stats", (_req, res) => {
+router.get("/stats", async (_req, res) => {
   if (statsCache && Date.now() - statsCache.at < STATS_CACHE_TTL_MS) {
-    res.json(statsCache.body);
+    // Always recompute unique online users — presence changes faster than the general stats cache.
+    const cached = statsCache.body as Record<string, unknown>;
+    res.json({ ...cached, onlineUsers: countOnlineUsers() });
     return;
   }
 
-  const totalUsers = (db.prepare("SELECT COUNT(*) as c FROM users WHERE is_npc = 0 AND is_deleted = 0").get() as { c: number }).c;
-  // Online window matches presence.ts ONLINE_WINDOW_MS (5 minutes) without loading all user rows.
-  const onlineUsers = (db.prepare(`
-    SELECT COUNT(*) as c FROM users
-    WHERE is_npc = 0 AND is_deleted = 0
-      AND is_online = 1
-      AND (status IS NULL OR status != 'Offline')
-      AND last_seen_at IS NOT NULL
-      AND last_seen_at > datetime('now', '-5 minutes')
-  `).get() as { c: number }).c;
-  const roleCounts = db.prepare(`
+  const totalUsers = (await qGet<{ c: number }>("SELECT COUNT(*) as c FROM users WHERE is_npc = 0 AND is_deleted = 0"))!.c;
+  // Unique users online — ISO cutoff matches presence.ts ONLINE_WINDOW_MS (avoids SQLite datetime() vs ISO string bug).
+  const onlineUsers = countOnlineUsers();
+  const roleCounts = (await qGet<{ adminCount: number; teamCount: number }>(`
     SELECT
       SUM(CASE WHEN is_admin = 1 THEN 1 ELSE 0 END) as adminCount,
       SUM(CASE WHEN is_team_member = 1 AND is_admin != 1 THEN 1 ELSE 0 END) as teamCount
     FROM users WHERE is_npc = 0 AND is_deleted = 0
-  `).get() as { adminCount: number; teamCount: number };
+  `))!;
   const adminCount = roleCounts.adminCount || 0;
   const teamCount = roleCounts.teamCount || 0;
   const registeredCount = Math.max(0, totalUsers - adminCount - teamCount);
 
-  const totalChannels = (db.prepare("SELECT COUNT(*) as c FROM conversations WHERE type = 'channel' AND archived = 0").get() as { c: number }).c;
-  const totalDms = (db.prepare("SELECT COUNT(*) as c FROM conversations WHERE type = 'dm'").get() as { c: number }).c;
-  const pendingApplications = (db.prepare("SELECT COUNT(*) as c FROM job_applications WHERE status = 'pending'").get() as { c: number }).c;
-  const approvedApplications = (db.prepare("SELECT COUNT(*) as c FROM job_applications WHERE status = 'approved'").get() as { c: number }).c;
-  const rejectedApplications = (db.prepare("SELECT COUNT(*) as c FROM job_applications WHERE status = 'rejected'").get() as { c: number }).c;
-  const teamMembers = (db.prepare("SELECT COUNT(*) as c FROM users WHERE is_team_member = 1 AND is_deleted = 0").get() as { c: number }).c;
-  const unreadNotifications = (db.prepare(`
+  const totalChannels = (await qGet<{ c: number }>("SELECT COUNT(*) as c FROM conversations WHERE type = 'channel' AND archived = 0"))!.c;
+  const totalDms = (await qGet<{ c: number }>("SELECT COUNT(*) as c FROM conversations WHERE type = 'dm'"))!.c;
+  const pendingApplications = (await qGet<{ c: number }>("SELECT COUNT(*) as c FROM job_applications WHERE status = 'pending'"))!.c;
+  const approvedApplications = (await qGet<{ c: number }>("SELECT COUNT(*) as c FROM job_applications WHERE status = 'approved'"))!.c;
+  const rejectedApplications = (await qGet<{ c: number }>("SELECT COUNT(*) as c FROM job_applications WHERE status = 'rejected'"))!.c;
+  const teamMembers = (await qGet<{ c: number }>("SELECT COUNT(*) as c FROM users WHERE is_team_member = 1 AND is_deleted = 0"))!.c;
+  const unreadNotifications = (await qGet<{ c: number }>(`
     SELECT COUNT(*) as c FROM notifications n
     WHERE n.user_id IS NULL
     AND NOT EXISTS (SELECT 1 FROM notification_reads nr WHERE nr.notification_id = n.id)
-  `).get() as { c: number }).c;
-  const unreadContacts = (db.prepare("SELECT COUNT(*) as c FROM contact_tickets WHERE is_read = 0").get() as { c: number }).c;
-  const totalContacts = (db.prepare("SELECT COUNT(*) as c FROM contact_tickets").get() as { c: number }).c;
-  const repliedContacts = (db.prepare("SELECT COUNT(*) as c FROM contact_tickets WHERE reply_status = 'replied'").get() as { c: number }).c;
-  const pendingContactReplies = (db.prepare("SELECT COUNT(*) as c FROM contact_tickets WHERE reply_status = 'pending'").get() as { c: number }).c;
+  `))!.c;
+  const unreadContacts = (await qGet<{ c: number }>("SELECT COUNT(*) as c FROM contact_tickets WHERE is_read = 0"))!.c;
+  const totalContacts = (await qGet<{ c: number }>("SELECT COUNT(*) as c FROM contact_tickets"))!.c;
+  const repliedContacts = (await qGet<{ c: number }>("SELECT COUNT(*) as c FROM contact_tickets WHERE reply_status = 'replied'"))!.c;
+  const pendingContactReplies = (await qGet<{ c: number }>("SELECT COUNT(*) as c FROM contact_tickets WHERE reply_status = 'pending'"))!.c;
 
-  const totalMessages = (db.prepare("SELECT COUNT(*) as c FROM messages").get() as { c: number }).c;
-  const pendingDmRequests = (db.prepare("SELECT COUNT(*) as c FROM dm_requests WHERE status = 'pending'").get() as { c: number }).c;
-  const totalResources = (db.prepare("SELECT COUNT(*) as c FROM resources").get() as { c: number }).c;
-  const totalDownloads = (db.prepare(`
+  const totalMessages = (await qGet<{ c: number }>("SELECT COUNT(*) as c FROM messages"))!.c;
+  const pendingDmRequests = (await qGet<{ c: number }>("SELECT COUNT(*) as c FROM dm_requests WHERE status = 'pending'"))!.c;
+  const totalResources = (await qGet<{ c: number }>("SELECT COUNT(*) as c FROM resources"))!.c;
+  const totalDownloads = (await qGet<{ c: number }>(`
     SELECT COUNT(*) as c FROM activity_logs
     WHERE event_category = 'downloads' AND result = 'success'
-  `).get() as { c: number }).c;
+  `))!.c;
 
   const dayKeys: string[] = [];
   for (let i = 13; i >= 0; i--) {
@@ -100,39 +156,39 @@ router.get("/stats", (_req, res) => {
   }
 
   const registrationsByDay = Object.fromEntries(
-    (db.prepare(`
+    (await qAll<{ d: string; c: number }>(`
       SELECT substr(created_at, 1, 10) as d, COUNT(*) as c
       FROM users
       WHERE is_npc = 0 AND is_deleted = 0 AND created_at >= date('now', '-13 days')
       GROUP BY substr(created_at, 1, 10)
-    `).all() as { d: string; c: number }[]).map(r => [r.d, r.c])
+    `)).map(r => [r.d, r.c])
   );
 
   const messagesByDay = Object.fromEntries(
-    (db.prepare(`
+    (await qAll<{ d: string; c: number }>(`
       SELECT substr(created_at, 1, 10) as d, COUNT(*) as c
       FROM messages
       WHERE created_at >= date('now', '-13 days')
       GROUP BY substr(created_at, 1, 10)
-    `).all() as { d: string; c: number }[]).map(r => [r.d, r.c])
+    `)).map(r => [r.d, r.c])
   );
 
   const loginsByDay = Object.fromEntries(
-    (db.prepare(`
+    (await qAll<{ d: string; c: number }>(`
       SELECT substr(timestamp, 1, 10) as d, COUNT(*) as c
       FROM activity_logs
       WHERE event_type IN ('login', 'register') AND timestamp >= date('now', '-13 days')
       GROUP BY substr(timestamp, 1, 10)
-    `).all() as { d: string; c: number }[]).map(r => [r.d, r.c])
+    `)).map(r => [r.d, r.c])
   );
 
   const downloadsByDay = Object.fromEntries(
-    (db.prepare(`
+    (await qAll<{ d: string; c: number }>(`
       SELECT substr(timestamp, 1, 10) as d, COUNT(*) as c
       FROM activity_logs
       WHERE event_category = 'downloads' AND result = 'success' AND timestamp >= date('now', '-13 days')
       GROUP BY substr(timestamp, 1, 10)
-    `).all() as { d: string; c: number }[]).map(r => [r.d, r.c])
+    `)).map(r => [r.d, r.c])
   );
 
   const userGrowth = dayKeys.map(date => ({
@@ -149,16 +205,16 @@ router.get("/stats", (_req, res) => {
     logins: loginsByDay[date] || 0,
   }));
 
-  const downloadsByPlatform = (["windows", "android", "ios"] as const).map(platform => {
-    const count = (db.prepare(`
+  const downloadsByPlatform = await Promise.all((["windows", "android", "ios"] as const).map(async platform => {
+    const count = (await qGet<{ c: number }>(`
       SELECT COUNT(*) as c FROM activity_logs
       WHERE event_type = 'game_download' AND result = 'success'
         AND (description LIKE ? OR affected_object LIKE ?)
-    `).get(`%${platform}%`, `%${platform}%`) as { c: number }).c;
+    `, `%${platform}%`, `%${platform}%`))!.c;
     return { platform, label: platform.charAt(0).toUpperCase() + platform.slice(1), count };
-  });
+  }));
 
-  const mostDownloadedResource = db.prepare(`
+  const mostDownloadedResource = await qGet<{ title: string; downloads: number }>(`
     SELECT r.title as title, COUNT(*) as downloads
     FROM activity_logs al
     JOIN resources r ON al.affected_object = 'resource:' || r.id
@@ -166,37 +222,37 @@ router.get("/stats", (_req, res) => {
     GROUP BY r.id
     ORDER BY downloads DESC
     LIMIT 1
-  `).get() as { title: string; downloads: number } | undefined;
+  `);
 
-  const recentUsers = db.prepare(`
+  const recentUsers = await qAll<{ id: number; username: string; avatarUrl: string | null; createdAt: string; isOnline: number; lastSeenAt: string | null }>(`
     SELECT id, username, avatar_url as avatarUrl, created_at as createdAt, is_online as isOnline, last_seen_at as lastSeenAt
     FROM users WHERE is_npc = 0 AND is_deleted = 0
     ORDER BY created_at DESC LIMIT 5
-  `).all() as { id: number; username: string; avatarUrl: string | null; createdAt: string; isOnline: number; lastSeenAt: string | null }[];
+  `);
 
-  const recentApplications = db.prepare(`
+  const recentApplications = await qAll<{ id: number; status: string; createdAt: string; username: string | null; position: string | null }>(`
     SELECT ja.id, ja.status, ja.created_at as createdAt, u.username, jp.title as position
     FROM job_applications ja
     LEFT JOIN users u ON u.id = ja.user_id
     LEFT JOIN job_postings jp ON jp.id = ja.job_id
     ORDER BY ja.created_at DESC LIMIT 5
-  `).all() as { id: number; status: string; createdAt: string; username: string | null; position: string | null }[];
+  `);
 
-  const recentContacts = db.prepare(`
+  const recentContacts = await qAll<{ id: number; name: string; subject: string; isRead: number; replyStatus: string; createdAt: string }>(`
     SELECT id, name, subject, is_read as isRead, reply_status as replyStatus, created_at as createdAt
     FROM contact_tickets
     ORDER BY created_at DESC LIMIT 5
-  `).all() as { id: number; name: string; subject: string; isRead: number; replyStatus: string; createdAt: string }[];
+  `);
 
-  const recentActivity = db.prepare(`
+  const recentActivity = await qAll<{
+    id: number; timestamp: string; username: string | null; eventType: string;
+    eventCategory: string; description: string; userRole: string | null; result: string;
+  }>(`
     SELECT id, timestamp, username, event_type as eventType, event_category as eventCategory,
            description, user_role as userRole, result
     FROM activity_logs
     ORDER BY timestamp DESC LIMIT 8
-  `).all() as {
-    id: number; timestamp: string; username: string | null; eventType: string;
-    eventCategory: string; description: string; userRole: string | null; result: string;
-  }[];
+  `);
 
   const body = {
     totalUsers, onlineUsers, totalChannels, totalDms, pendingApplications, teamMembers, unreadNotifications,
@@ -230,28 +286,33 @@ router.get("/stats", (_req, res) => {
 });
 
 // ── Users ──────────────────────────────────────────────────────────────────────
-function formatAdminUser(row: Record<string, unknown>) {
-  const loc = db.prepare("SELECT * FROM user_locations WHERE user_id = ?").get(row.id as number) as {
+async function formatAdminUser(row: Record<string, unknown>) {
+  const loc = await qGet<{
     ip_address: string | null; country_code: string | null; country_name: string | null;
     is_vpn: number; vpn_ip: string | null; vpn_country_code: string | null; vpn_country_name: string | null;
     origin_ip: string | null; origin_country_code: string | null; origin_country_name: string | null;
-  } | undefined;
+  }>("SELECT * FROM user_locations WHERE user_id = ?", row.id as number);
 
-  const activities = db.prepare("SELECT description, created_at as createdAt FROM activity_log WHERE user_id = ? ORDER BY created_at DESC LIMIT 10").all(row.id);
-  const recentLogins = db.prepare(`
+  const activities = await qAll("SELECT description, created_at as createdAt FROM activity_log WHERE user_id = ? ORDER BY created_at DESC LIMIT 10", row.id);
+  const recentLogins = await qAll<{ timestamp: string; description: string }>(`
     SELECT timestamp, description FROM activity_logs
     WHERE user_id = ? AND event_type IN ('login', 'register')
     ORDER BY timestamp DESC LIMIT 5
-  `).all(row.id) as { timestamp: string; description: string }[];
+  `, row.id);
 
-  const stats = db.prepare("SELECT * FROM game_stats WHERE user_id = ?").get(row.id as number) as Record<string, unknown> | undefined;
-  const achievements = db.prepare("SELECT title, description, icon, earned_at as earnedAt FROM achievements WHERE user_id = ? ORDER BY earned_at DESC").all(row.id);
-  const inventory = db.prepare("SELECT name, rarity, quantity, icon FROM inventory_items WHERE user_id = ?").all(row.id);
+  const stats = await qGet<Record<string, unknown>>("SELECT * FROM game_stats WHERE user_id = ?", row.id as number);
+  const achievements = await qAll("SELECT title, description, icon, earned_at as earnedAt FROM achievements WHERE user_id = ? ORDER BY earned_at DESC", row.id);
+  const inventory = await qAll("SELECT name, rarity, quantity, icon FROM inventory_items WHERE user_id = ?", row.id);
 
   const online = isUserOnline({
     is_online: row.is_online as number | undefined,
     last_seen_at: row.last_seen_at as string | null,
   });
+
+  const registrationNumber = (await qGet<{ c: number }>(`
+    SELECT COUNT(*) as c FROM users
+    WHERE is_npc = 0 AND (created_at < ? OR (created_at = ? AND id <= ?))
+  `, row.created_at, row.created_at, row.id))!.c;
 
   return {
     id: row.id,
@@ -275,10 +336,7 @@ function formatAdminUser(row: Record<string, unknown>) {
     isDeleted: row.is_deleted === 1,
     isTeamMember: row.is_team_member === 1,
     createdAt: row.created_at,
-    registrationNumber: (db.prepare(`
-      SELECT COUNT(*) as c FROM users
-      WHERE is_npc = 0 AND (created_at < ? OR (created_at = ? AND id <= ?))
-    `).get(row.created_at, row.created_at, row.id) as { c: number }).c,
+    registrationNumber,
     lastLoginAt: row.last_login_at || recentLogins[0]?.timestamp || null,
     location: loc ? {
       ip: loc.ip_address,
@@ -311,7 +369,7 @@ function formatAdminUser(row: Record<string, unknown>) {
   };
 }
 
-router.get("/users", (req, res) => {
+router.get("/users", async (req, res) => {
   const { search, filter } = req.query as { search?: string; filter?: string };
   let sql = "SELECT * FROM users WHERE is_npc = 0";
   const params: unknown[] = [];
@@ -329,83 +387,215 @@ router.get("/users", (req, res) => {
   }
   sql += " ORDER BY created_at DESC";
 
-  const users = db.prepare(sql).all(...params) as Record<string, unknown>[];
-  res.json({ users: users.map(formatAdminUser) });
+  const users = await qAll<Record<string, unknown>>(sql, ...params);
+  res.json({ users: await Promise.all(users.map(formatAdminUser)) });
 });
 
-router.get("/users/:id", (req, res) => {
-  const user = db.prepare("SELECT * FROM users WHERE id = ? AND is_npc = 0").get(Number(req.params.id)) as Record<string, unknown> | undefined;
+async function getManageableUser(id: number): Promise<Record<string, unknown> | undefined> {
+  return qGet<Record<string, unknown>>("SELECT id, email, is_admin FROM users WHERE id = ? AND is_npc = 0 AND is_deleted = 0", id);
+}
+
+function denyUserManagement(res: Response, actor: UserRow, target: Record<string, unknown>): boolean {
+  if (!canManageTargetUser(actor, { email: target.email as string, is_admin: target.is_admin as number })) {
+    res.status(403).json({ error: "You do not have permission to manage this account" });
+    return true;
+  }
+  return false;
+}
+
+router.get("/users/:id", async (req, res) => {
+  const user = await qGet<Record<string, unknown>>("SELECT * FROM users WHERE id = ? AND is_npc = 0", Number(req.params.id));
   if (!user) { res.status(404).json({ error: "User not found" }); return; }
-  res.json({ user: formatAdminUser(user) });
+  res.json({ user: await formatAdminUser(user) });
 });
 
-router.patch("/users/:id", (req, res) => {
+router.patch("/users/:id", async (req, res) => {
   const id = Number(req.params.id);
-  const user = db.prepare("SELECT id FROM users WHERE id = ? AND is_npc = 0").get(id);
-  if (!user) { res.status(404).json({ error: "User not found" }); return; }
+  const target = await getManageableUser(id);
+  if (!target) { res.status(404).json({ error: "User not found" }); return; }
+  if (denyUserManagement(res, req.user!, target)) return;
 
   const { username, email, gender, country, city, status, bio, village, clan, level, rank, isAdmin, isTeamMember } = req.body;
   const fields: string[] = [];
   const vals: unknown[] = [];
 
+  if (username !== undefined) {
+    const check = await validateUsernameForWrite(username, id);
+    if (!check.ok) {
+      res.status(check.status).json({ error: check.error });
+      return;
+    }
+    fields.push("username = ?");
+    vals.push(check.username);
+  }
+
+  if (email !== undefined) {
+    if (!isSuperAdmin(req.user!)) {
+      res.status(403).json({ error: "Only the Super Administrator may change account email addresses" });
+      return;
+    }
+    const nextEmail = normalizeEmail(String(email));
+    if (!nextEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(nextEmail)) {
+      res.status(400).json({ error: "Enter a valid email address" });
+      return;
+    }
+    const taken = await qGet("SELECT id FROM users WHERE email = ? AND id != ? AND is_npc = 0", nextEmail, id);
+    if (taken) {
+      res.status(409).json({ error: "Another account already uses this email" });
+      return;
+    }
+    fields.push("email = ?");
+    vals.push(nextEmail);
+    // Force re-verification after admin email rewrite
+    fields.push("email_verified = ?");
+    vals.push(1);
+  }
+
   const map: [string, unknown][] = [
-    ["username", username], ["email", email], ["gender", gender], ["country", country],
+    ["gender", gender], ["country", country],
     ["city", city], ["status", status], ["bio", bio], ["village", village],
     ["clan", clan], ["level", level], ["rank", rank],
   ];
   for (const [col, val] of map) {
     if (val !== undefined) { fields.push(`${col} = ?`); vals.push(val); }
   }
-  if (isAdmin !== undefined) { fields.push("is_admin = ?"); vals.push(isAdmin ? 1 : 0); }
-  if (isTeamMember !== undefined) { fields.push("is_team_member = ?"); vals.push(isTeamMember ? 1 : 0); }
+  if (isAdmin !== undefined) {
+    if (!isSuperAdmin(req.user!)) {
+      res.status(403).json({ error: "Only the Super Administrator may change administrator status" });
+      return;
+    }
+    fields.push("is_admin = ?"); vals.push(isAdmin ? 1 : 0);
+  }
+  if (isTeamMember !== undefined) {
+    if (!isSuperAdmin(req.user!)) {
+      res.status(403).json({ error: "Only the Super Administrator may change team membership" });
+      return;
+    }
+    fields.push("is_team_member = ?"); vals.push(isTeamMember ? 1 : 0);
+  }
   if (isTeamMember === true) {
     syncPrivateChannelsForUser(id);
-    const u = db.prepare("SELECT username, country, city FROM users WHERE id = ?").get(id) as { username: string; country: string; city: string | null };
-    const existing = db.prepare("SELECT id FROM team_members WHERE user_id = ?").get(id) as { id: number } | undefined;
+    const u = (await qGet<{
+      username: string; email: string; country: string; city: string | null;
+    }>("SELECT username, email, country, city FROM users WHERE id = ?", id))!;
+    const existing = await qGet<{ id: number }>("SELECT id FROM team_members WHERE user_id = ?", id);
     if (!existing) {
-      const maxOrder = (db.prepare("SELECT MAX(sort_order) as m FROM team_members").get() as { m: number | null }).m || 0;
-      db.prepare(`
+      const maxOrder = (await qGet<{ m: number | null }>("SELECT MAX(sort_order) as m FROM team_members"))!.m || 0;
+      const department = isSuperAdmin({ email: u.email }) ? "Leader" : "General";
+      await qRun(`
         INSERT INTO team_members (name, role, department, country, city, status_label, status_color, sort_order, user_id)
-        VALUES (?, 'Team Member', 'General', ?, ?, 'Active', '#386A20', ?, ?)
-      `).run(u.username, u.country || "Japan", u.city || "Tokyo", maxOrder + 1, id);
+        VALUES (?, 'Team Member', ?, ?, ?, 'Active', '#386A20', ?, ?)
+      `, u.username, department, u.country || "Japan", u.city || "Tokyo", maxOrder + 1, id);
     }
     broadcast("team:updated", {});
   } else if (isTeamMember === false) {
-    db.prepare("DELETE FROM team_members WHERE user_id = ?").run(id);
+    await qRun("DELETE FROM team_members WHERE user_id = ?", id);
     broadcast("team:updated", {});
   }
 
   if (!fields.length) { res.status(400).json({ error: "No fields to update" }); return; }
   fields.push("updated_at = ?");
   vals.push(now(), id);
-  db.prepare(`UPDATE users SET ${fields.join(", ")} WHERE id = ?`).run(...vals);
+  try {
+    await qRun(`UPDATE users SET ${fields.join(", ")} WHERE id = ?`, ...vals);
+  } catch (err) {
+    if (isUsernameConstraintError(err)) {
+      res.status(409).json({ error: USERNAME_TAKEN_ERROR });
+      return;
+    }
+    throw err;
+  }
 
-  const updated = db.prepare("SELECT * FROM users WHERE id = ?").get(id) as Record<string, unknown>;
-  res.json({ user: formatAdminUser(updated) });
+  const updated = (await qGet<Record<string, unknown>>("SELECT * FROM users WHERE id = ?", id))!;
+  res.json({ user: await formatAdminUser(updated) });
 });
 
-router.post("/users/:id/disable", (req, res) => {
+router.post("/users/:id/disable", async (req, res) => {
   const id = Number(req.params.id);
   if (id === req.user!.id) { res.status(400).json({ error: "Cannot disable your own account" }); return; }
-  db.prepare("UPDATE users SET is_disabled = 1, updated_at = ? WHERE id = ?").run(now(), id);
+  const target = await getManageableUser(id);
+  if (!target) { res.status(404).json({ error: "User not found" }); return; }
+  if (denyUserManagement(res, req.user!, target)) return;
+  await qRun("UPDATE users SET is_disabled = 1, updated_at = ? WHERE id = ?", now(), id);
+  await bumpTokenVersion(id);
   res.json({ ok: true });
 });
 
-router.post("/users/:id/enable", (req, res) => {
-  db.prepare("UPDATE users SET is_disabled = 0, updated_at = ? WHERE id = ?").run(now(), Number(req.params.id));
+router.post("/users/:id/enable", async (req, res) => {
+  const id = Number(req.params.id);
+  const target = await getManageableUser(id);
+  if (!target) { res.status(404).json({ error: "User not found" }); return; }
+  if (denyUserManagement(res, req.user!, target)) return;
+  await qRun("UPDATE users SET is_disabled = 0, updated_at = ? WHERE id = ?", now(), id);
   res.json({ ok: true });
 });
 
-router.delete("/users/:id", (req, res) => {
+router.delete("/users/:id", async (req, res) => {
   const id = Number(req.params.id);
   if (id === req.user!.id) { res.status(400).json({ error: "Cannot delete your own account" }); return; }
-  db.prepare("UPDATE users SET is_deleted = 1, is_disabled = 1, updated_at = ? WHERE id = ?").run(now(), id);
+  const target = await getManageableUser(id);
+  if (!target) { res.status(404).json({ error: "User not found" }); return; }
+  if (denyUserManagement(res, req.user!, target)) return;
+  const user = await qGet<{ username: string }>("SELECT username FROM users WHERE id = ? AND is_deleted = 0", id);
+  if (!user) { res.status(404).json({ error: "User not found" }); return; }
+  await qRun("UPDATE users SET is_deleted = 1, is_disabled = 1, is_team_member = 0, updated_at = ? WHERE id = ?", now(), id);
+  await qRun("DELETE FROM team_members WHERE user_id = ?", id);
+  // Drop pending DM requests involving this user so accept/reject never hits a deleted account
+  await qRun("UPDATE dm_requests SET status = 'rejected', updated_at = ? WHERE status = 'pending' AND (requester_id = ? OR recipient_id = ?)", now(), id, id);
+  await bumpTokenVersion(id);
+  logActivitySync({
+    req, userId: req.user!.id,
+    eventType: "user_delete", eventCategory: "administration",
+    description: `Deleted user @${user.username}`,
+    affectedObject: `user:${id}`,
+    metadata: { userId: id, username: user.username },
+  });
+  emitToAdmins("admin:stats", {});
+  emitToAdmins("team:updated", {});
+  broadcast("team:updated", {});
+  scheduleAdminStatsRefresh();
   res.json({ ok: true });
+});
+
+router.post("/users/bulk-delete", async (req, res) => {
+  const ids = Array.isArray(req.body?.ids) ? (req.body.ids as unknown[]).map(Number).filter((n) => Number.isFinite(n) && n > 0) : [];
+  if (!ids.length) { res.status(400).json({ error: "ids array is required" }); return; }
+  const unique = [...new Set(ids)].filter((id) => id !== req.user!.id);
+  if (!unique.length) { res.status(400).json({ error: "No deletable users selected" }); return; }
+
+  const placeholders = unique.map(() => "?").join(",");
+  const rows = await qAll<{
+    id: number; username: string; email: string; is_admin: number;
+  }>(`SELECT id, username, email, is_admin FROM users WHERE id IN (${placeholders}) AND is_deleted = 0`, ...unique);
+  const deletable = rows.filter((u) => canSelectTargetUser(req.user!, { email: u.email, is_admin: u.is_admin }));
+  if (!deletable.length) { res.status(403).json({ error: "No deletable users in selection" }); return; }
+  const ts = now();
+  await qTransaction(async () => {
+    for (const u of deletable) {
+      await qRun("UPDATE users SET is_deleted = 1, is_disabled = 1, is_team_member = 0, updated_at = ? WHERE id = ?", ts, u.id);
+      await qRun("DELETE FROM team_members WHERE user_id = ?", u.id);
+      await qRun("UPDATE dm_requests SET status = 'rejected', updated_at = ? WHERE status = 'pending' AND (requester_id = ? OR recipient_id = ?)", ts, u.id, u.id);
+      await bumpTokenVersion(u.id);
+    }
+  });
+
+  logActivitySync({
+    req, userId: req.user!.id,
+    eventType: "user_bulk_delete", eventCategory: "administration",
+    description: `Bulk deleted ${deletable.length} user(s)`,
+    affectedObject: `users:${deletable.map((r) => r.id).join(",")}`,
+    metadata: { count: deletable.length, usernames: deletable.map((r) => r.username) },
+  });
+  emitToAdmins("admin:stats", {});
+  emitToAdmins("team:updated", {});
+  broadcast("team:updated", {});
+  scheduleAdminStatsRefresh();
+  res.json({ ok: true, deleted: deletable.length });
 });
 
 // ── Notifications ────────────────────────────────────────────────────────────
-router.get("/notifications", (_req, res) => {
-  const rows = db.prepare("SELECT * FROM notifications ORDER BY pinned DESC, created_at DESC").all() as Record<string, unknown>[];
+router.get("/notifications", async (_req, res) => {
+  const rows = await qAll<Record<string, unknown>>("SELECT * FROM notifications ORDER BY pinned DESC, created_at DESC");
   res.json({
     notifications: rows.map(n => ({
       id: n.id,
@@ -423,14 +613,14 @@ router.get("/notifications", (_req, res) => {
   });
 });
 
-router.post("/notifications", (req, res) => {
+router.post("/notifications", async (req, res) => {
   const { title, body, source, page, recipientType, recipientIds, pinned } = req.body;
   if (!title || !body) { res.status(400).json({ error: "Title and body are required" }); return; }
   const ts = now();
-  const result = db.prepare(`
+  const result = await qRun(`
     INSERT INTO notifications (title, body, source, page, recipient_type, recipient_ids, pinned, notif_type, created_by, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, 'announcement', ?, ?)
-  `).run(title, body, source || "Operations", page || "alarms", recipientType || "everyone", JSON.stringify(recipientIds || []), pinned ? 1 : 0, req.user!.id, ts);
+  `, title, body, source || "Operations", page || "alarms", recipientType || "everyone", JSON.stringify(recipientIds || []), pinned ? 1 : 0, req.user!.id, ts);
   emitToAdmins("admin:notifications", {});
   scheduleAdminStatsRefresh();
   broadcast("notification:new", {});
@@ -438,9 +628,9 @@ router.post("/notifications", (req, res) => {
   res.status(201).json({ id: result.lastInsertRowid });
 });
 
-router.patch("/notifications/:id", (req, res) => {
+router.patch("/notifications/:id", async (req, res) => {
   const id = Number(req.params.id);
-  const existing = db.prepare("SELECT id FROM notifications WHERE id = ?").get(id);
+  const existing = await qGet("SELECT id FROM notifications WHERE id = ?", id);
   if (!existing) { res.status(404).json({ error: "Notification not found" }); return; }
   const { title, body, source, page, recipientType, recipientIds, pinned } = req.body;
   const fields: string[] = [];
@@ -454,31 +644,120 @@ router.patch("/notifications/:id", (req, res) => {
   if (pinned !== undefined) { fields.push("pinned = ?"); vals.push(pinned ? 1 : 0); }
   if (!fields.length) { res.status(400).json({ error: "No fields to update" }); return; }
   vals.push(id);
-  db.prepare(`UPDATE notifications SET ${fields.join(", ")} WHERE id = ?`).run(...vals);
+  await qRun(`UPDATE notifications SET ${fields.join(", ")} WHERE id = ?`, ...vals);
   res.json({ ok: true });
 });
 
-router.delete("/notifications/:id", (req, res) => {
-  db.prepare("DELETE FROM notifications WHERE id = ?").run(Number(req.params.id));
+router.delete("/notifications/:id", async (req, res) => {
+  await qRun("DELETE FROM notifications WHERE id = ?", Number(req.params.id));
   res.json({ ok: true });
 });
 
-router.post("/notifications/:id/pin", (req, res) => {
-  db.prepare("UPDATE notifications SET pinned = 1 WHERE id = ?").run(Number(req.params.id));
+router.post("/notifications/:id/pin", async (req, res) => {
+  await qRun("UPDATE notifications SET pinned = 1 WHERE id = ?", Number(req.params.id));
   res.json({ ok: true });
 });
 
-router.post("/notifications/:id/unpin", (req, res) => {
-  db.prepare("UPDATE notifications SET pinned = 0 WHERE id = ?").run(Number(req.params.id));
+router.post("/notifications/:id/unpin", async (req, res) => {
+  await qRun("UPDATE notifications SET pinned = 0 WHERE id = ?", Number(req.params.id));
   res.json({ ok: true });
+});
+
+// ── Site content (About → Our Story) ──────────────────────────────────────────
+const storyImageUpload = createMemoryUploader({ limits: { fileSize: 5 * 1024 * 1024 } });
+function storyImageMiddleware(req: import("express").Request, res: import("express").Response, next: import("express").NextFunction) {
+  storyImageUpload.single("image")(req, res, (err: unknown) => {
+    if (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : "Invalid image upload" });
+      return;
+    }
+    if (req.file) {
+      const validated = validateUpload({
+        kind: "storyImage",
+        originalName: req.file.originalname,
+        declaredMime: req.file.mimetype,
+        buffer: req.file.buffer,
+        size: req.file.size,
+      });
+      if (!validated.ok) {
+        res.status(400).json({ error: validated.error });
+        return;
+      }
+      (req.file as Express.Multer.File & { validatedContentType?: string }).validatedContentType = validated.contentType;
+    }
+    next();
+  });
+}
+
+router.get("/content/about-our-story", async (req, res) => {
+  const { getSiteContent, formatSiteContent, OUR_STORY_SLUG, upsertSiteContent } = await import("../services/siteContent.js");
+  let row = await getSiteContent(OUR_STORY_SLUG);
+  if (!row) {
+    row = await upsertSiteContent(OUR_STORY_SLUG, {
+      title: "Our Story",
+      subtitle: "Building the next generation anime RPG.",
+      body: "Plantend began as a passionate indie group pursuing a shinobi MMORPG.",
+      quote: "Every legend begins with a single step.",
+      status: "published",
+    }, req.user!.id);
+  }
+  res.json({ content: formatSiteContent(row) });
+});
+
+router.put("/content/about-our-story", storyImageMiddleware, async (req, res) => {
+  const {
+    getSiteContent, upsertSiteContent, formatSiteContent, OUR_STORY_SLUG,
+  } = await import("../services/siteContent.js");
+  const existing = await getSiteContent(OUR_STORY_SLUG);
+  let imageUrl: string | null | undefined = undefined;
+  let removeImage = req.body?.removeImage === true || req.body?.removeImage === "true" || req.body?.removeImage === "1";
+  try {
+    if (req.file) {
+      const stored = await persistMulterFile(req.file, "our-story", {
+        contentType: (req.file as Express.Multer.File & { validatedContentType?: string }).validatedContentType,
+      });
+      imageUrl = stored.url;
+      removeImage = false;
+    }
+    const statusRaw = req.body?.status;
+    const status = statusRaw === "draft" || statusRaw === "published" ? statusRaw : undefined;
+    const row = await upsertSiteContent(OUR_STORY_SLUG, {
+      title: req.body?.title,
+      subtitle: req.body?.subtitle,
+      body: req.body?.body,
+      quote: req.body?.quote,
+      imageUrl,
+      removeImage,
+      status,
+    }, req.user!.id, req);
+
+    if ((imageUrl || removeImage) && existing?.image_url && existing.image_url !== row.image_url) {
+      await deleteStoredUrl(existing.image_url);
+      logActivitySync({
+        req,
+        userId: req.user!.id,
+        eventType: "site_content_image",
+        eventCategory: "administration",
+        description: removeImage && !imageUrl
+          ? "Removed Our Story image"
+          : "Changed Our Story image",
+        affectedObject: `site_content:${OUR_STORY_SLUG}`,
+      });
+    }
+
+    res.json({ content: formatSiteContent(row) });
+  } catch (e) {
+    if (imageUrl) await deleteStoredUrl(imageUrl);
+    res.status(400).json({ error: e instanceof Error ? e.message : "Failed to save content" });
+  }
 });
 
 // ── Channels ─────────────────────────────────────────────────────────────────
-router.get("/channels", (_req, res) => {
-  const channels = db.prepare(`
+router.get("/channels", async (_req, res) => {
+  const channels = await qAll<Record<string, unknown>>(`
     SELECT c.*, (SELECT COUNT(*) FROM conversation_participants cp WHERE cp.conversation_id = c.id) as memberCount
     FROM conversations c WHERE c.type = 'channel' ORDER BY c.archived, c.id
-  `).all() as Record<string, unknown>[];
+  `);
   res.json({
     channels: channels.map(c => ({
       id: c.id,
@@ -488,72 +767,160 @@ router.get("/channels", (_req, res) => {
       visibility: c.visibility || "public",
       moderatorIds: JSON.parse((c.moderator_ids as string) || "[]"),
       memberCount: c.memberCount,
+      avatarUrl: (c.avatar_url as string | null) || null,
       createdAt: c.created_at,
     })),
   });
 });
 
-router.post("/channels", (req, res) => {
-  const { name, bio, visibility } = req.body;
-  if (!name) { res.status(400).json({ error: "Name is required" }); return; }
-  const vis = visibility === "private" ? "private" : "public";
-  const ts = now();
-  const result = db.prepare("INSERT INTO conversations (type, name, bio, visibility, created_at) VALUES ('channel', ?, ?, ?, ?)").run(name, bio || "", vis, ts);
-  const convId = result.lastInsertRowid as number;
-  db.prepare("INSERT INTO conversation_participants (conversation_id, user_id, joined_at, last_read_at) VALUES (?, ?, ?, ?)").run(convId, req.user!.id, ts, ts);
-  if (vis === "public") {
-    const users = db.prepare("SELECT id FROM users WHERE is_npc = 0 AND is_deleted = 0 AND is_disabled = 0").all() as { id: number }[];
-    const insert = db.prepare("INSERT OR IGNORE INTO conversation_participants (conversation_id, user_id, joined_at, last_read_at) VALUES (?, ?, ?, ?)");
-    for (const u of users) insert.run(convId, u.id, ts, ts);
-  } else {
-    syncPrivateChannelParticipants(convId);
+router.post("/channels", channelAvatarMiddleware, async (req, res) => {
+  const name = String(req.body?.name || "").trim();
+  const bio = String(req.body?.bio || "");
+  const visibility = req.body?.visibility === "private" ? "private" : "public";
+  if (!name) {
+    res.status(400).json({ error: "Name is required" });
+    return;
   }
-  scheduleAdminStatsRefresh();
-  res.status(201).json({ id: convId });
+  const ts = now();
+  const avatarUrl = req.file
+    ? (await persistMulterFile(req.file, "channel-avatar", {
+      contentType: (req.file as Express.Multer.File & { validatedContentType?: string }).validatedContentType,
+    })).url
+    : null;
+  try {
+    const result = await qRun(`
+      INSERT INTO conversations (type, name, bio, visibility, avatar_url, created_at)
+      VALUES ('channel', ?, ?, ?, ?, ?)
+    `, name, bio, visibility, avatarUrl, ts);
+    const convId = result.lastInsertRowid as number;
+    await qRun("INSERT INTO conversation_participants (conversation_id, user_id, joined_at, last_read_at) VALUES (?, ?, ?, ?)", convId, req.user!.id, ts, ts);
+    if (visibility === "public") {
+      const users = await qAll<{ id: number }>("SELECT id FROM users WHERE is_npc = 0 AND is_deleted = 0 AND is_disabled = 0");
+      for (const u of users) {
+        await qRun("INSERT OR IGNORE INTO conversation_participants (conversation_id, user_id, joined_at, last_read_at) VALUES (?, ?, ?, ?)", convId, u.id, ts, ts);
+      }
+    } else {
+      syncPrivateChannelParticipants(convId);
+    }
+    // Notify all participants so Messages list picks up the new channel + avatar
+    const participants = await qAll<{ user_id: number }>("SELECT user_id FROM conversation_participants WHERE conversation_id = ?", convId);
+    for (const p of participants) {
+      emitToUser(p.user_id, "conversation:new", { conversationId: convId });
+    }
+    scheduleAdminStatsRefresh();
+    res.status(201).json({ id: convId, avatarUrl });
+  } catch (e) {
+    if (avatarUrl) await unlinkLocalUpload(avatarUrl);
+    throw e;
+  }
 });
 
-router.patch("/channels/:id", (req, res) => {
+router.patch("/channels/:id", channelAvatarMiddleware, async (req, res) => {
   const id = Number(req.params.id);
-  const { name, bio, visibility, moderatorIds, archived } = req.body;
+  const existing = await qGet<
+    { id: number; name: string; bio: string; visibility: string; archived: number; moderator_ids: string; avatar_url: string | null }
+  >("SELECT * FROM conversations WHERE id = ? AND type = 'channel'", id);
+  if (!existing) {
+    res.status(404).json({ error: "Channel not found" });
+    return;
+  }
+
   const fields: string[] = [];
   const vals: unknown[] = [];
-  if (name !== undefined) { fields.push("name = ?"); vals.push(name); }
-  if (bio !== undefined) { fields.push("bio = ?"); vals.push(bio); }
-  if (visibility !== undefined) { fields.push("visibility = ?"); vals.push(visibility === "private" ? "private" : "public"); }
-  if (moderatorIds !== undefined) { fields.push("moderator_ids = ?"); vals.push(JSON.stringify(moderatorIds)); }
-  if (archived !== undefined) { fields.push("archived = ?"); vals.push(archived ? 1 : 0); }
-  if (!fields.length) { res.status(400).json({ error: "No fields to update" }); return; }
-  vals.push(id);
-  db.prepare(`UPDATE conversations SET ${fields.join(", ")} WHERE id = ? AND type = 'channel'`).run(...vals);
-  if (visibility === "private") syncPrivateChannelParticipants(id);
-  if (visibility === "public") {
-    const users = db.prepare("SELECT id FROM users WHERE is_npc = 0 AND is_deleted = 0 AND is_disabled = 0").all() as { id: number }[];
-    const ts = now();
-    const insert = db.prepare("INSERT OR IGNORE INTO conversation_participants (conversation_id, user_id, joined_at, last_read_at) VALUES (?, ?, ?, ?)");
-    for (const u of users) insert.run(id, u.id, ts, ts);
+  if (req.body?.name !== undefined) { fields.push("name = ?"); vals.push(String(req.body.name).trim() || existing.name); }
+  if (req.body?.bio !== undefined) { fields.push("bio = ?"); vals.push(String(req.body.bio)); }
+  const visibilityRaw = req.body?.visibility;
+  if (visibilityRaw !== undefined) {
+    fields.push("visibility = ?");
+    vals.push(visibilityRaw === "private" ? "private" : "public");
   }
-  scheduleAdminStatsRefresh();
-  res.json({ ok: true });
+  if (req.body?.moderatorIds !== undefined) {
+    let mods = req.body.moderatorIds;
+    if (typeof mods === "string") {
+      try { mods = JSON.parse(mods); } catch { mods = []; }
+    }
+    fields.push("moderator_ids = ?");
+    vals.push(JSON.stringify(Array.isArray(mods) ? mods : []));
+  }
+  if (req.body?.archived !== undefined) {
+    const archived = req.body.archived === true || req.body.archived === "true" || req.body.archived === "1" || req.body.archived === 1;
+    fields.push("archived = ?");
+    vals.push(archived ? 1 : 0);
+  }
+
+  const removeAvatar = req.body?.removeAvatar === true || req.body?.removeAvatar === "true" || req.body?.removeAvatar === "1";
+  let nextAvatar = existing.avatar_url;
+  let replacedFile: string | null = null;
+
+  if (req.file) {
+    nextAvatar = (await persistMulterFile(req.file, "channel-avatar", {
+      contentType: (req.file as Express.Multer.File & { validatedContentType?: string }).validatedContentType,
+    })).url;
+    fields.push("avatar_url = ?");
+    vals.push(nextAvatar);
+    replacedFile = existing.avatar_url;
+  } else if (removeAvatar) {
+    nextAvatar = null;
+    fields.push("avatar_url = ?");
+    vals.push(null);
+    replacedFile = existing.avatar_url;
+  }
+
+  if (!fields.length) {
+    res.status(400).json({ error: "No fields to update" });
+    return;
+  }
+
+  try {
+    vals.push(id);
+    await qRun(`UPDATE conversations SET ${fields.join(", ")} WHERE id = ? AND type = 'channel'`, ...vals);
+    if (visibilityRaw === "private") {
+      await syncPrivateChannelParticipants(id);
+      const revoked = await pruneIneligiblePrivateParticipants(id);
+      if (revoked.length) forceLeaveConversationMany(revoked, id);
+    }
+    if (visibilityRaw === "public") {
+      const users = await qAll<{ id: number }>("SELECT id FROM users WHERE is_npc = 0 AND is_deleted = 0 AND is_disabled = 0");
+      const ts = now();
+      for (const u of users) {
+        await qRun("INSERT OR IGNORE INTO conversation_participants (conversation_id, user_id, joined_at, last_read_at) VALUES (?, ?, ?, ?)", id, u.id, ts, ts);
+      }
+    }
+    if (replacedFile && replacedFile !== nextAvatar) await unlinkLocalUpload(replacedFile);
+    emitConversationUpdate(id);
+    scheduleAdminStatsRefresh();
+    res.json({ ok: true, avatarUrl: nextAvatar });
+  } catch (e) {
+    if (nextAvatar && nextAvatar !== existing.avatar_url) await unlinkLocalUpload(nextAvatar);
+    throw e;
+  }
 });
 
-router.delete("/channels/:id", (req, res) => {
+router.delete("/channels/:id", async (req, res) => {
   const id = Number(req.params.id);
-  db.prepare("DELETE FROM messages WHERE conversation_id = ?").run(id);
-  db.prepare("DELETE FROM conversation_participants WHERE conversation_id = ?").run(id);
-  db.prepare("DELETE FROM conversations WHERE id = ? AND type = 'channel'").run(id);
+  const row = await qGet<{ avatar_url: string | null }>("SELECT avatar_url FROM conversations WHERE id = ? AND type = 'channel'", id);
+  const participantIds = (await qAll<{ user_id: number }>("SELECT user_id FROM conversation_participants WHERE conversation_id = ?", id))
+    .map((p) => p.user_id);
+  await qRun("DELETE FROM messages WHERE conversation_id = ?", id);
+  await qRun("DELETE FROM conversation_participants WHERE conversation_id = ?", id);
+  await qRun("DELETE FROM conversations WHERE id = ? AND type = 'channel'", id);
+  if (row?.avatar_url) await unlinkLocalUpload(row.avatar_url);
+  for (const pid of participantIds) {
+    emitToUser(pid, "conversation:update", { conversationId: id });
+  }
   scheduleAdminStatsRefresh();
   res.json({ ok: true });
 });
 
 // ── Contact Management ───────────────────────────────────────────────────────
-function formatContactTicket(row: Record<string, unknown>) {
-  const replies = db.prepare(`
+async function formatContactTicket(row: Record<string, unknown>) {
+  const replies = await qAll<{ id: number; body: string; createdAt: string; adminUsername: string }>(`
     SELECT cr.id, cr.body, cr.created_at as createdAt, u.username as adminUsername
     FROM contact_replies cr
     LEFT JOIN users u ON u.id = cr.admin_id
     WHERE cr.ticket_id = ?
     ORDER BY cr.created_at ASC
-  `).all(row.id) as { id: number; body: string; createdAt: string; adminUsername: string }[];
+  `, row.id);
 
   return {
     id: row.id,
@@ -577,51 +944,51 @@ function formatContactTicket(row: Record<string, unknown>) {
   };
 }
 
-router.get("/contacts", (_req, res) => {
-  const rows = db.prepare("SELECT * FROM contact_tickets ORDER BY created_at DESC").all() as Record<string, unknown>[];
-  res.json({ contacts: rows.map(formatContactTicket) });
+router.get("/contacts", async (_req, res) => {
+  const rows = await qAll<Record<string, unknown>>("SELECT * FROM contact_tickets ORDER BY created_at DESC");
+  res.json({ contacts: await Promise.all(rows.map(formatContactTicket)) });
 });
 
-router.get("/contacts/:id", (req, res) => {
-  const row = db.prepare("SELECT * FROM contact_tickets WHERE id = ?").get(Number(req.params.id)) as Record<string, unknown> | undefined;
+router.get("/contacts/:id", async (req, res) => {
+  const row = await qGet<Record<string, unknown>>("SELECT * FROM contact_tickets WHERE id = ?", Number(req.params.id));
   if (!row) { res.status(404).json({ error: "Contact not found" }); return; }
   if (row.is_read !== 1) {
-    db.prepare("UPDATE contact_tickets SET is_read = 1, updated_at = ? WHERE id = ?").run(now(), row.id);
+    await qRun("UPDATE contact_tickets SET is_read = 1, updated_at = ? WHERE id = ?", now(), row.id);
     row.is_read = 1;
     emitToAdmins("admin:contact", { contactId: row.id });
     scheduleAdminStatsRefresh();
   }
-  res.json({ contact: formatContactTicket(row) });
+  res.json({ contact: await formatContactTicket(row) });
 });
 
-router.patch("/contacts/:id/read", (req, res) => {
+router.patch("/contacts/:id/read", async (req, res) => {
   const id = Number(req.params.id);
   const ts = now();
-  db.prepare("UPDATE contact_tickets SET is_read = 1, updated_at = ? WHERE id = ?").run(ts, id);
+  await qRun("UPDATE contact_tickets SET is_read = 1, updated_at = ? WHERE id = ?", ts, id);
   emitToAdmins("admin:contact", { contactId: id });
   scheduleAdminStatsRefresh();
   res.json({ ok: true });
 });
 
-router.post("/contacts/:id/reply", (req, res) => {
+router.post("/contacts/:id/reply", async (req, res) => {
   const id = Number(req.params.id);
   const { body } = req.body;
   if (!body?.trim()) { res.status(400).json({ error: "Reply body is required" }); return; }
 
-  const ticket = db.prepare("SELECT * FROM contact_tickets WHERE id = ?").get(id) as {
+  const ticket = await qGet<{
     id: number; user_id: number | null; email: string; name: string; subject: string;
-  } | undefined;
+  }>("SELECT * FROM contact_tickets WHERE id = ?", id);
   if (!ticket) { res.status(404).json({ error: "Contact not found" }); return; }
 
   const ts = now();
-  db.prepare("INSERT INTO contact_replies (ticket_id, admin_id, body, created_at) VALUES (?, ?, ?, ?)").run(id, req.user!.id, body.trim(), ts);
-  db.prepare("UPDATE contact_tickets SET reply_status = 'replied', is_read = 1, updated_at = ? WHERE id = ?").run(ts, id);
+  await qRun("INSERT INTO contact_replies (ticket_id, admin_id, body, created_at) VALUES (?, ?, ?, ?)", id, req.user!.id, body.trim(), ts);
+  await qRun("UPDATE contact_tickets SET reply_status = 'replied', is_read = 1, updated_at = ? WHERE id = ?", ts, id);
 
   if (ticket.user_id) {
-    db.prepare(`
+    await qRun(`
       INSERT INTO notifications (title, body, source, page, user_id, notif_type, created_at)
       VALUES (?, ?, 'Support', 'alarms', ?, 'contact_reply', ?)
-    `).run(
+    `,
       `Reply: ${ticket.subject}`,
       body.trim().slice(0, 200),
       ticket.user_id,
@@ -638,21 +1005,40 @@ router.post("/contacts/:id/reply", (req, res) => {
     description: `Replied to contact ticket #${id}`, affectedObject: `contact:${id}`,
   });
 
-  const updated = db.prepare("SELECT * FROM contact_tickets WHERE id = ?").get(id) as Record<string, unknown>;
+  const updated = (await qGet<Record<string, unknown>>("SELECT * FROM contact_tickets WHERE id = ?", id))!;
   emitToAdmins("admin:contact", { contactId: id });
   scheduleAdminStatsRefresh();
-  res.status(201).json({ contact: formatContactTicket(updated) });
+  res.status(201).json({ contact: await formatContactTicket(updated) });
+});
+
+router.delete("/contacts/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  const existing = await qGet<{ id: number; subject: string; name: string }>(
+    "SELECT id, subject, name FROM contact_tickets WHERE id = ?", id,
+  );
+  if (!existing) { res.status(404).json({ error: "Contact not found" }); return; }
+  await qRun("DELETE FROM contact_tickets WHERE id = ?", id);
+  logActivitySync({
+    req, userId: req.user!.id,
+    eventType: "contact_delete", eventCategory: "administration",
+    description: `Deleted contact ticket #${id}: ${existing.subject}`,
+    affectedObject: `contact:${id}`,
+    metadata: { contactId: id, name: existing.name },
+  });
+  emitToAdmins("admin:contact", { contactId: id, deleted: true });
+  scheduleAdminStatsRefresh();
+  res.json({ ok: true });
 });
 
 // ── Teamwork Applications ────────────────────────────────────────────────────
-router.get("/applications", (_req, res) => {
-  const apps = db.prepare(`
+router.get("/applications", async (_req, res) => {
+  const apps = await qAll<Record<string, unknown>>(`
     SELECT ja.*, u.username, u.email, u.avatar_url as avatarUrl, jp.title as jobTitle
     FROM job_applications ja
     JOIN users u ON u.id = ja.user_id
     JOIN job_postings jp ON jp.id = ja.job_id
     ORDER BY ja.created_at DESC
-  `).all() as Record<string, unknown>[];
+  `);
   res.json({
     applications: apps.map(a => ({
       id: a.id,
@@ -674,33 +1060,33 @@ router.get("/applications", (_req, res) => {
   });
 });
 
-router.post("/applications/:id/approve", (req, res) => {
+router.post("/applications/:id/approve", async (req, res) => {
   const id = Number(req.params.id);
-  const app = db.prepare("SELECT * FROM job_applications WHERE id = ?").get(id) as { user_id: number; full_name: string; status: string } | undefined;
+  const app = await qGet<{ user_id: number; full_name: string; status: string }>("SELECT * FROM job_applications WHERE id = ?", id);
   if (!app) { res.status(404).json({ error: "Application not found" }); return; }
   if (app.status !== "pending") { res.status(400).json({ error: "Application already processed" }); return; }
 
   const ts = now();
-  db.prepare("UPDATE job_applications SET status = 'approved' WHERE id = ?").run(id);
-  db.prepare("UPDATE users SET is_team_member = 1, updated_at = ? WHERE id = ?").run(ts, app.user_id);
+  await qRun("UPDATE job_applications SET status = 'approved' WHERE id = ?", id);
+  await qRun("UPDATE users SET is_team_member = 1, updated_at = ? WHERE id = ?", ts, app.user_id);
   syncPrivateChannelsForUser(app.user_id);
 
-  const user = db.prepare("SELECT username, country, city FROM users WHERE id = ?").get(app.user_id) as { username: string; country: string; city: string | null };
-  const existing = db.prepare("SELECT id FROM team_members WHERE user_id = ? OR name = ?").get(app.user_id, app.full_name) as { id: number } | undefined;
+  const user = (await qGet<{ username: string; country: string; city: string | null }>("SELECT username, country, city FROM users WHERE id = ?", app.user_id))!;
+  const existing = await qGet<{ id: number }>("SELECT id FROM team_members WHERE user_id = ? OR name = ?", app.user_id, app.full_name);
   if (!existing) {
-    const maxOrder = (db.prepare("SELECT MAX(sort_order) as m FROM team_members").get() as { m: number | null }).m || 0;
-    db.prepare(`
+    const maxOrder = (await qGet<{ m: number | null }>("SELECT MAX(sort_order) as m FROM team_members"))!.m || 0;
+    await qRun(`
       INSERT INTO team_members (name, role, department, country, city, status_label, status_color, sort_order, user_id)
       VALUES (?, 'Team Member', 'General', ?, ?, 'New', '#006688', ?, ?)
-    `).run(app.full_name || user.username, user.country || "Japan", user.city || "Tokyo", maxOrder + 1, app.user_id);
+    `, app.full_name || user.username, user.country || "Japan", user.city || "Tokyo", maxOrder + 1, app.user_id);
   } else {
-    db.prepare("UPDATE team_members SET user_id = ? WHERE id = ?").run(app.user_id, existing.id);
+    await qRun("UPDATE team_members SET user_id = ? WHERE id = ?", app.user_id, existing.id);
   }
 
-  db.prepare(`
+  await qRun(`
     INSERT INTO notifications (title, body, source, page, user_id, notif_type, created_at)
     VALUES ('Application Approved', ?, 'Teamwork', 'teamwork', ?, 'announcement', ?)
-  `).run(`Your teamwork application has been approved. Welcome to the team!`, app.user_id, ts);
+  `, `Your teamwork application has been approved. Welcome to the team!`, app.user_id, ts);
 
   emitToUser(app.user_id, "notification:new", {});
   emitToAdmins("admin:applications", {});
@@ -711,18 +1097,18 @@ router.post("/applications/:id/approve", (req, res) => {
   res.json({ ok: true });
 });
 
-router.post("/applications/:id/reject", (req, res) => {
+router.post("/applications/:id/reject", async (req, res) => {
   const id = Number(req.params.id);
-  const app = db.prepare("SELECT * FROM job_applications WHERE id = ?").get(id) as { user_id: number; status: string } | undefined;
+  const app = await qGet<{ user_id: number; status: string }>("SELECT * FROM job_applications WHERE id = ?", id);
   if (!app) { res.status(404).json({ error: "Application not found" }); return; }
   if (app.status !== "pending") { res.status(400).json({ error: "Application already processed" }); return; }
 
   const ts = now();
-  db.prepare("UPDATE job_applications SET status = 'rejected' WHERE id = ?").run(id);
-  db.prepare(`
+  await qRun("UPDATE job_applications SET status = 'rejected' WHERE id = ?", id);
+  await qRun(`
     INSERT INTO notifications (title, body, source, page, user_id, notif_type, created_at)
     VALUES ('Application Update', ?, 'Teamwork', 'teamwork', ?, 'announcement', ?)
-  `).run(`Your teamwork application was not approved at this time.`, app.user_id, ts);
+  `, `Your teamwork application was not approved at this time.`, app.user_id, ts);
 
   emitToUser(app.user_id, "notification:new", {});
   emitToAdmins("admin:applications", {});
@@ -731,13 +1117,34 @@ router.post("/applications/:id/reject", (req, res) => {
   res.json({ ok: true });
 });
 
+router.delete("/applications/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  const app = await qGet<{ id: number; full_name: string; status: string; username: string }>(`
+    SELECT ja.id, ja.full_name, ja.status, u.username
+    FROM job_applications ja JOIN users u ON u.id = ja.user_id
+    WHERE ja.id = ?
+  `, id);
+  if (!app) { res.status(404).json({ error: "Application not found" }); return; }
+  await qRun("DELETE FROM job_applications WHERE id = ?", id);
+  logActivitySync({
+    req, userId: req.user!.id,
+    eventType: "application_delete", eventCategory: "teamwork",
+    description: `Deleted teamwork application #${id} from @${app.username}`,
+    affectedObject: `job_application:${id}`,
+    metadata: { applicationId: id, username: app.username, status: app.status },
+  });
+  emitToAdmins("admin:applications", {});
+  scheduleAdminStatsRefresh();
+  res.json({ ok: true });
+});
+
 // ── Resources ────────────────────────────────────────────────────────────────
-router.get("/resources", (_req, res) => {
-  const rows = db.prepare(`
+router.get("/resources", async (_req, res) => {
+  const rows = await qAll<Record<string, unknown>>(`
     SELECT r.*, u.username as uploaderName
     FROM resources r LEFT JOIN users u ON u.id = r.uploader_id
     ORDER BY r.sort_order, r.published_at DESC
-  `).all() as Record<string, unknown>[];
+  `);
   res.json({
     resources: rows.map(r => ({
       id: r.id,
@@ -752,68 +1159,98 @@ router.get("/resources", (_req, res) => {
       fileSize: r.file_size,
       version: r.version,
       sortOrder: r.sort_order,
+      visibility: String(r.visibility || "PUBLIC").toUpperCase() === "PRIVATE" ? "PRIVATE" : "PUBLIC",
     })),
   });
 });
 
-router.post("/resources", upload.single("file"), (req, res) => {
-  const { title, category, description, version, sortOrder, enabled } = req.body;
-  if (!title || !category) { res.status(400).json({ error: "Title and category are required" }); return; }
+router.post("/resources", upload.single("file"), async (req, res) => {
+  const { title, category, description, version, sortOrder, enabled, visibility } = req.body;
+  if (!title || !category) {
+    cleanupTempFile(req.file);
+    res.status(400).json({ error: "Title and category are required" });
+    return;
+  }
+  const normalizedCategory = normalizeResourceCategory(category);
+  if (!normalizedCategory) {
+    cleanupTempFile(req.file);
+    res.status(400).json({ error: RESOURCE_CATEGORY_ERROR });
+    return;
+  }
   const ts = now();
-  const fileUrl = req.file ? `/uploads/${req.file.filename}` : null;
-  const fileSize = req.file?.size || null;
-  const result = db.prepare(`
-    INSERT INTO resources (title, category, description, content_url, published_at, enabled, uploader_id, file_size, version, sort_order)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(title, category, description || "", fileUrl, ts, enabled === "false" ? 0 : 1, req.user!.id, fileSize, version || null, Number(sortOrder) || 0);
+  const stored = req.file ? await persistMulterFile(req.file, "resource") : null;
+  const fileUrl = stored?.url ?? null;
+  const fileSize = stored?.size ?? null;
+  const vis = String(visibility || "PUBLIC").toUpperCase() === "PRIVATE" ? "PRIVATE" : "PUBLIC";
+  const result = await qRun(`
+    INSERT INTO resources (title, category, description, content_url, published_at, enabled, uploader_id, file_size, version, sort_order, visibility)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `, title, normalizedCategory, description || "", fileUrl, ts, enabled === "false" ? 0 : 1, req.user!.id, fileSize, version || null, Number(sortOrder) || 0, vis);
   scheduleAdminStatsRefresh();
   res.status(201).json({ id: result.lastInsertRowid });
 });
 
-router.patch("/resources/:id", upload.single("file"), (req, res) => {
+router.patch("/resources/:id", upload.single("file"), async (req, res) => {
   const id = Number(req.params.id);
-  const existing = db.prepare("SELECT * FROM resources WHERE id = ?").get(id) as { content_url: string | null } | undefined;
-  if (!existing) { res.status(404).json({ error: "Resource not found" }); return; }
+  const existing = await qGet<{ content_url: string | null }>("SELECT * FROM resources WHERE id = ?", id);
+  if (!existing) {
+    cleanupTempFile(req.file);
+    res.status(404).json({ error: "Resource not found" });
+    return;
+  }
 
-  const { title, category, description, version, sortOrder, enabled } = req.body;
+  const { title, category, description, version, sortOrder, enabled, visibility } = req.body;
   const fields: string[] = [];
   const vals: unknown[] = [];
   if (title !== undefined) { fields.push("title = ?"); vals.push(title); }
-  if (category !== undefined) { fields.push("category = ?"); vals.push(category); }
+  if (category !== undefined) {
+    const normalizedCategory = normalizeResourceCategory(category);
+    if (!normalizedCategory) {
+      cleanupTempFile(req.file);
+      res.status(400).json({ error: RESOURCE_CATEGORY_ERROR });
+      return;
+    }
+    fields.push("category = ?"); vals.push(normalizedCategory);
+  }
   if (description !== undefined) { fields.push("description = ?"); vals.push(description); }
   if (version !== undefined) { fields.push("version = ?"); vals.push(version); }
   if (sortOrder !== undefined) { fields.push("sort_order = ?"); vals.push(Number(sortOrder)); }
   if (enabled !== undefined) { fields.push("enabled = ?"); vals.push(enabled === "false" || enabled === false ? 0 : 1); }
+  if (visibility !== undefined) {
+    fields.push("visibility = ?");
+    vals.push(String(visibility).toUpperCase() === "PRIVATE" ? "PRIVATE" : "PUBLIC");
+  }
+  let replacedFile: string | null = null;
   if (req.file) {
-    fields.push("content_url = ?"); vals.push(`/uploads/${req.file.filename}`);
-    fields.push("file_size = ?"); vals.push(req.file.size);
+    const stored = await persistMulterFile(req.file, "resource");
+    fields.push("content_url = ?"); vals.push(stored.url);
+    fields.push("file_size = ?"); vals.push(stored.size);
+    replacedFile = existing.content_url;
   }
   if (!fields.length) { res.status(400).json({ error: "No fields to update" }); return; }
   vals.push(id);
-  db.prepare(`UPDATE resources SET ${fields.join(", ")} WHERE id = ?`).run(...vals);
+  await qRun(`UPDATE resources SET ${fields.join(", ")} WHERE id = ?`, ...vals);
+  if (replacedFile) await deleteStoredUrl(replacedFile);
   scheduleAdminStatsRefresh();
   res.json({ ok: true });
 });
 
-router.delete("/resources/:id", (req, res) => {
+router.delete("/resources/:id", async (req, res) => {
   const id = Number(req.params.id);
-  const row = db.prepare("SELECT content_url FROM resources WHERE id = ?").get(id) as { content_url: string | null } | undefined;
-  if (row?.content_url?.startsWith("/uploads/")) {
-    const filePath = path.join(uploadDir, path.basename(row.content_url));
-    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-  }
-  db.prepare("DELETE FROM resources WHERE id = ?").run(id);
+  const row = await qGet<{ content_url: string | null }>("SELECT content_url FROM resources WHERE id = ?", id);
+  if (row?.content_url) await deleteStoredUrl(row.content_url);
+  await qRun("DELETE FROM resources WHERE id = ?", id);
   scheduleAdminStatsRefresh();
   res.json({ ok: true });
 });
 
 // ── Game Downloads ─────────────────────────────────────────────────────────────
-router.get("/game-downloads", (_req, res) => {
-  const rows = db.prepare(`
+router.get("/game-downloads", async (_req, res) => {
+  const rows = await qAll<Record<string, unknown>>(`
     SELECT g.*, u.username as uploaderName
     FROM game_downloads g LEFT JOIN users u ON u.id = g.uploader_id
     ORDER BY g.platform, g.published_at DESC
-  `).all() as Record<string, unknown>[];
+  `);
   res.json({
     downloads: rows.map(r => ({
       id: r.id,
@@ -829,21 +1266,27 @@ router.get("/game-downloads", (_req, res) => {
   });
 });
 
-router.post("/game-downloads", gameUpload.single("file"), (req, res) => {
+router.post("/game-downloads", gameUpload.single("file"), async (req, res) => {
   const { platform, version, releaseNotes, published } = req.body;
-  if (!platform || !version) { res.status(400).json({ error: "Platform and version are required" }); return; }
+  if (!platform || !version) {
+    cleanupTempFile(req.file);
+    res.status(400).json({ error: "Platform and version are required" });
+    return;
+  }
   const ts = now();
-  const fileUrl = req.file ? `/uploads/${req.file.filename}` : null;
-  const result = db.prepare(`
+  const stored = req.file ? await persistMulterFile(req.file, "game") : null;
+  const fileUrl = stored?.url ?? null;
+  const result = await qRun(`
     INSERT INTO game_downloads (platform, version, release_notes, file_url, file_size, published, published_at, uploader_id, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(platform, version, releaseNotes || "", fileUrl, req.file?.size || null, published === "true" || published === true ? 1 : 0, published === "true" || published === true ? ts : null, req.user!.id, ts, ts);
+  `, platform, version, releaseNotes || "", fileUrl, stored?.size ?? null, published === "true" || published === true ? 1 : 0, published === "true" || published === true ? ts : null, req.user!.id, ts, ts);
   logActivitySync({ req, userId: req.user!.id, eventType: "game_build_upload", eventCategory: "downloads", description: `Uploaded ${platform} build v${version}`, affectedObject: `game_download:${result.lastInsertRowid}` });
   res.status(201).json({ id: result.lastInsertRowid });
 });
 
-router.patch("/game-downloads/:id", gameUpload.single("file"), (req, res) => {
+router.patch("/game-downloads/:id", gameUpload.single("file"), async (req, res) => {
   const id = Number(req.params.id);
+  const existing = await qGet<{ file_url: string | null }>("SELECT file_url FROM game_downloads WHERE id = ?", id);
   const { version, releaseNotes, published } = req.body;
   const fields: string[] = ["updated_at = ?"];
   const vals: unknown[] = [now()];
@@ -854,44 +1297,74 @@ router.patch("/game-downloads/:id", gameUpload.single("file"), (req, res) => {
     fields.push("published = ?"); vals.push(isPub ? 1 : 0);
     fields.push("published_at = ?"); vals.push(isPub ? now() : null);
   }
+  let replacedFile: string | null = null;
   if (req.file) {
-    fields.push("file_url = ?"); vals.push(`/uploads/${req.file.filename}`);
-    fields.push("file_size = ?"); vals.push(req.file.size);
+    const stored = await persistMulterFile(req.file, "game");
+    fields.push("file_url = ?"); vals.push(stored.url);
+    fields.push("file_size = ?"); vals.push(stored.size);
+    replacedFile = existing?.file_url ?? null;
   }
   vals.push(id);
-  db.prepare(`UPDATE game_downloads SET ${fields.join(", ")} WHERE id = ?`).run(...vals);
+  await qRun(`UPDATE game_downloads SET ${fields.join(", ")} WHERE id = ?`, ...vals);
+  if (replacedFile) await deleteStoredUrl(replacedFile);
   logActivitySync({ req, userId: req.user!.id, eventType: "game_build_update", eventCategory: "downloads", description: `Updated game build #${id}`, affectedObject: `game_download:${id}` });
   res.json({ ok: true });
 });
 
-router.delete("/game-downloads/:id", (req, res) => {
+router.delete("/game-downloads/:id", async (req, res) => {
   const id = Number(req.params.id);
-  const row = db.prepare("SELECT file_url FROM game_downloads WHERE id = ?").get(id) as { file_url: string | null } | undefined;
-  if (row?.file_url?.startsWith("/uploads/")) {
-    const filePath = path.join(uploadDir, path.basename(row.file_url));
-    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-  }
-  db.prepare("DELETE FROM game_downloads WHERE id = ?").run(id);
+  const row = await qGet<{ file_url: string | null }>("SELECT file_url FROM game_downloads WHERE id = ?", id);
+  if (row?.file_url) await deleteStoredUrl(row.file_url);
+  await qRun("DELETE FROM game_downloads WHERE id = ?", id);
   logActivitySync({ req, userId: req.user!.id, eventType: "game_build_delete", eventCategory: "downloads", description: `Deleted game build #${id}`, affectedObject: `game_download:${id}` });
   res.json({ ok: true });
 });
 
 // ── Activity Logs ──────────────────────────────────────────────────────────────
-router.get("/activity-logs", (req, res) => {
+router.get("/activity-logs/meta", async (_req, res) => {
+  const eventTypes = (await qAll<{ v: string }>(`
+    SELECT DISTINCT event_type as v FROM activity_logs
+    WHERE event_type IS NOT NULL AND event_type != ''
+    ORDER BY event_type COLLATE NOCASE
+  `)).map((r) => r.v);
+  const eventCategories = (await qAll<{ v: string }>(`
+    SELECT DISTINCT event_category as v FROM activity_logs
+    WHERE event_category IS NOT NULL AND event_category != ''
+    ORDER BY event_category COLLATE NOCASE
+  `)).map((r) => r.v);
+  res.json({ eventTypes, eventCategories });
+});
+
+router.get("/activity-logs", async (req, res) => {
   const {
     search, timeRange, userRole, eventCategory, result, country, isVpn,
     deviceType, browser, os, page = "1", limit = "50",
-    dateFrom, dateTo, userId,
+    dateFrom, dateTo, userId, username,
   } = req.query as Record<string, string>;
 
   let sql = "SELECT * FROM activity_logs WHERE 1=1";
   const params: unknown[] = [];
 
   const nowMs = Date.now();
-  if (timeRange === "today") { sql += " AND timestamp >= ?"; params.push(new Date(nowMs - 86400000).toISOString()); }
-  else if (timeRange === "yesterday") { sql += " AND timestamp >= ? AND timestamp < ?"; params.push(new Date(nowMs - 172800000).toISOString(), new Date(nowMs - 86400000).toISOString()); }
-  else if (timeRange === "7d") { sql += " AND timestamp >= ?"; params.push(new Date(nowMs - 7 * 86400000).toISOString()); }
-  else if (timeRange === "30d") { sql += " AND timestamp >= ?"; params.push(new Date(nowMs - 30 * 86400000).toISOString()); }
+  if (timeRange === "today") {
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    sql += " AND timestamp >= ?";
+    params.push(start.toISOString());
+  } else if (timeRange === "yesterday") {
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    const yStart = new Date(start);
+    yStart.setDate(yStart.getDate() - 1);
+    sql += " AND timestamp >= ? AND timestamp < ?";
+    params.push(yStart.toISOString(), start.toISOString());
+  } else if (timeRange === "7d") {
+    sql += " AND timestamp >= ?";
+    params.push(new Date(nowMs - 7 * 86400000).toISOString());
+  } else if (timeRange === "30d") {
+    sql += " AND timestamp >= ?";
+    params.push(new Date(nowMs - 30 * 86400000).toISOString());
+  }
   if (dateFrom) { sql += " AND timestamp >= ?"; params.push(dateFrom); }
   if (dateTo) { sql += " AND timestamp <= ?"; params.push(dateTo); }
   if (userRole) { sql += " AND user_role = ?"; params.push(userRole); }
@@ -901,25 +1374,44 @@ router.get("/activity-logs", (req, res) => {
   if (country) { sql += " AND country LIKE ?"; params.push(`%${country}%`); }
   if (isVpn === "1") sql += " AND is_vpn = 1";
   if (isVpn === "0") sql += " AND (is_vpn = 0 OR is_vpn IS NULL)";
-  if (deviceType) { sql += " AND device_type = ?"; params.push(deviceType); }
-  if (browser) { sql += " AND browser = ?"; params.push(browser); }
-  if (os) { sql += " AND os = ?"; params.push(os); }
+  if (deviceType) { sql += " AND LOWER(device_type) = ?"; params.push(String(deviceType).toLowerCase()); }
+  if (browser) { sql += " AND browser LIKE ?"; params.push(`%${browser}%`); }
+  if (os) { sql += " AND os LIKE ?"; params.push(`%${os}%`); }
   if (userId) { sql += " AND user_id = ?"; params.push(Number(userId)); }
+  if (username) {
+    sql += " AND (username LIKE ? OR display_name LIKE ?)";
+    params.push(`%${username}%`, `%${username}%`);
+  }
   if (search) {
-    sql += " AND (username LIKE ? OR display_name LIKE ? OR ip_address LIKE ? OR description LIKE ? OR event_category LIKE ? OR affected_object LIKE ?)";
+    sql += ` AND (
+      username LIKE ? OR display_name LIKE ? OR ip_address LIKE ? OR description LIKE ?
+      OR event_category LIKE ? OR event_type LIKE ? OR affected_object LIKE ?
+      OR browser LIKE ? OR os LIKE ? OR device_type LIKE ? OR request_path LIKE ?
+    )`;
     const q = `%${search}%`;
-    params.push(q, q, q, q, q, q);
+    params.push(q, q, q, q, q, q, q, q, q, q, q);
   }
 
-  const countRow = db.prepare(sql.replace("SELECT *", "SELECT COUNT(*) as c")).get(...params) as { c: number };
+  const countRow = (await qGet<{ c: number }>(sql.replace("SELECT *", "SELECT COUNT(*) as c"), ...params))!;
   const pageNum = Math.max(1, Number(page));
   const limitNum = Math.min(200, Math.max(1, Number(limit)));
   const offset = (pageNum - 1) * limitNum;
 
-  sql += " ORDER BY timestamp DESC LIMIT ? OFFSET ?";
+  const sortBy = String(req.query.sortBy || "timestamp");
+  const sortDir = String(req.query.sortDir || "desc").toLowerCase() === "asc" ? "ASC" : "DESC";
+  const sortCol =
+    sortBy === "platform" ? "os"
+    : sortBy === "os" ? "os"
+    : sortBy === "browser" ? "browser"
+    : sortBy === "deviceType" ? "device_type"
+    : sortBy === "user" ? "username"
+    : sortBy === "event" ? "event_type"
+    : "timestamp";
+
+  sql += ` ORDER BY ${sortCol} ${sortDir}, timestamp DESC LIMIT ? OFFSET ?`;
   params.push(limitNum, offset);
 
-  const logs = db.prepare(sql).all(...params) as Record<string, unknown>[];
+  const logs = await qAll<Record<string, unknown>>(sql, ...params);
   res.json({
     logs: logs.map(l => ({
       id: l.id,
@@ -938,6 +1430,7 @@ router.get("/activity-logs", (req, res) => {
       browser: l.browser,
       os: l.os,
       deviceType: l.device_type,
+      platform: formatPlatformLabel(l.os as string | null, l.browser as string | null),
       ipAddress: l.ip_address,
       country: l.country,
       countryCode: l.country_code,
@@ -951,22 +1444,71 @@ router.get("/activity-logs", (req, res) => {
   });
 });
 
-router.get("/activity-logs/export", (req, res) => {
-  const logs = db.prepare("SELECT * FROM activity_logs ORDER BY timestamp DESC LIMIT 10000").all() as Record<string, unknown>[];
-  const header = "id,timestamp,username,user_role,event_type,event_category,description,country,ip_address,result\n";
+router.get("/activity-logs/export", async (req, res) => {
+  const logs = await qAll<Record<string, unknown>>("SELECT * FROM activity_logs ORDER BY timestamp DESC LIMIT 10000");
+  const header = "id,timestamp,username,user_role,event_type,event_category,description,platform,device_type,country,ip_address,result\n";
   const rows = logs.map(l => [
     l.id, l.timestamp, JSON.stringify(l.username), l.user_role, l.event_type, l.event_category,
-    JSON.stringify(l.description), JSON.stringify(l.country), l.ip_address, l.result,
+    JSON.stringify(l.description),
+    JSON.stringify(formatPlatformLabel(l.os as string | null, l.browser as string | null)),
+    l.device_type,
+    JSON.stringify(l.country), l.ip_address, l.result,
   ].join(",")).join("\n");
   res.setHeader("Content-Type", "text/csv");
   res.setHeader("Content-Disposition", "attachment; filename=activity-logs.csv");
   res.send(header + rows);
 });
 
-router.delete("/activity-logs", (req, res) => {
+router.post("/activity-logs/bulk-delete", async (req, res) => {
+  const rawIds = Array.isArray(req.body?.ids) ? req.body.ids : [];
+  const ids = [...new Set(rawIds.map((n: unknown) => Number(n)).filter((n: number) => Number.isInteger(n) && n > 0))];
+  if (!ids.length) {
+    res.status(400).json({ error: "ids array is required" });
+    return;
+  }
+  if (ids.length > 500) {
+    res.status(400).json({ error: "Cannot delete more than 500 logs at once" });
+    return;
+  }
+
+  const placeholders = ids.map(() => "?").join(",");
+  const result = await qRun(`DELETE FROM activity_logs WHERE id IN (${placeholders})`, ...ids);
+  const method = ids.length === 1 ? "single" : "bulk";
+  const ts = now();
+  await qRun(`
+    INSERT INTO admin_action_audits (timestamp, admin_user_id, admin_username, action, method, item_count, details, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `,
+    ts,
+    req.user!.id,
+    req.user!.username,
+    "activity_logs_delete",
+    method,
+    result.changes,
+    JSON.stringify({ ids: ids.slice(0, 100), requested: ids.length }),
+    ts,
+  );
+  logActivitySync({
+    req,
+    userId: req.user!.id,
+    eventType: "activity_logs_delete",
+    eventCategory: "administration",
+    description: `Deleted ${result.changes} activity log(s) (${method})`,
+    affectedObject: `activity_logs:${result.changes}`,
+  });
+  scheduleAdminStatsRefresh();
+  res.json({ ok: true, deleted: result.changes, method });
+});
+
+router.delete("/activity-logs", async (req, res) => {
   const { before } = req.body;
   if (!before) { res.status(400).json({ error: "before date is required" }); return; }
-  const result = db.prepare("DELETE FROM activity_logs WHERE timestamp < ?").run(before);
+  const result = await qRun("DELETE FROM activity_logs WHERE timestamp < ?", before);
+  const ts = now();
+  await qRun(`
+    INSERT INTO admin_action_audits (timestamp, admin_user_id, admin_username, action, method, item_count, details, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `, ts, req.user!.id, req.user!.username, "activity_logs_archive", "archive", result.changes, JSON.stringify({ before }), ts);
   logActivitySync({ req, userId: req.user!.id, eventType: "logs_archive", eventCategory: "administration", description: `Archived ${result.changes} activity logs before ${before}` });
   res.json({ ok: true, deleted: result.changes });
 });
@@ -995,48 +1537,71 @@ function fmtBytes(n: number) {
   return `${(n / 1048576).toFixed(2)} MB`;
 }
 
-router.get("/database/info", (_req, res) => {
-  const meta = readBackupMeta();
-  let sizeBytes = 0;
-  try { sizeBytes = fs.statSync(dbPath).size; } catch { /* */ }
+async function countRows(table: string, where = ""): Promise<number> {
+  const row = await dbAsync.get<{ c: number }>(`SELECT COUNT(*) as c FROM ${table} ${where}`);
+  return Number(row?.c ?? 0);
+}
+
+router.get("/database/info", requireSuperAdmin, async (_req, res) => {
   try {
-    const wal = dbPath + "-wal";
-    if (fs.existsSync(wal)) sizeBytes += fs.statSync(wal).size;
-  } catch { /* */ }
+    const meta = readBackupMeta();
+    const [sizeBytes, version, totalUsers, totalMessages, totalChannels, totalResources, totalNotifications, totalLogs] = await Promise.all([
+      dbAsync.getSizeBytes(),
+      dbAsync.getVersion(),
+      countRows("users", "WHERE is_npc = 0 AND is_deleted = 0"),
+      countRows("messages"),
+      countRows("conversations", "WHERE type = 'channel'"),
+      countRows("resources"),
+      countRows("notifications"),
+      countRows("activity_logs"),
+    ]);
 
-  const version = (db.pragma("user_version", { simple: true }) as number) ?? 0;
-  const sqliteVersion = (db.prepare("SELECT sqlite_version() as v").get() as { v: string }).v;
-
-  res.json({
-    type: "SQLite",
-    version: sqliteVersion,
-    userVersion: version,
-    path: path.basename(dbPath),
-    sizeBytes,
-    sizeLabel: fmtBytes(sizeBytes),
-    totalUsers: (db.prepare("SELECT COUNT(*) as c FROM users WHERE is_npc = 0 AND is_deleted = 0").get() as { c: number }).c,
-    totalMessages: (db.prepare("SELECT COUNT(*) as c FROM messages").get() as { c: number }).c,
-    totalChannels: (db.prepare("SELECT COUNT(*) as c FROM conversations WHERE type = 'channel'").get() as { c: number }).c,
-    totalResources: (db.prepare("SELECT COUNT(*) as c FROM resources").get() as { c: number }).c,
-    totalNotifications: (db.prepare("SELECT COUNT(*) as c FROM notifications").get() as { c: number }).c,
-    totalLogs: (db.prepare("SELECT COUNT(*) as c FROM activity_logs").get() as { c: number }).c,
-    lastBackupAt: meta.lastBackupAt,
-    lastBackupFile: meta.lastBackupFile,
-  });
+    res.json({
+      provider: dbAsync.provider,
+      type: dbAsync.engineLabel,
+      version,
+      schemaVersion: currentSchemaVersion(),
+      path: dbAsync.provider === "sqlite" ? path.basename(dbPath) : "",
+      sizeBytes,
+      sizeLabel: fmtBytes(sizeBytes),
+      totalUsers,
+      totalMessages,
+      totalChannels,
+      totalResources,
+      totalNotifications,
+      totalLogs,
+      lastBackupAt: meta.lastBackupAt,
+      lastBackupFile: meta.lastBackupFile,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : "Failed to load database info" });
+  }
 });
 
-router.post("/database/backup", async (req, res) => {
+router.post("/database/backup", requireSuperAdmin, async (req, res) => {
+  const format = (req.query.format === "native" || req.body?.format === "native") ? "native" : "portable";
   try {
     if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
-    db.pragma("wal_checkpoint(TRUNCATE)");
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const filename = `ninja-era-backup-${stamp}.db`;
-    const dest = path.join(backupDir, filename);
-    await db.backup(dest);
+
+    let filename: string;
+    let dest: string;
+    if (format === "native") {
+      const ext = dbAsync.provider === "sqlite" ? "db" : "sql";
+      filename = `ninja-era-backup-${stamp}.${ext}`;
+      dest = path.join(backupDir, filename);
+      await createNativeBackup(dbAsync, dest);
+    } else {
+      filename = `ninja-era-backup-${stamp}.json.gz`;
+      dest = path.join(backupDir, filename);
+      const buf = await exportPortableBackup(dbAsync);
+      fs.writeFileSync(dest, buf);
+    }
+
     writeBackupMeta({ lastBackupAt: new Date().toISOString(), lastBackupFile: filename });
     logActivitySync({
       req, userId: req.user!.id, eventType: "database_backup", eventCategory: "administration",
-      description: `Created database backup ${filename}`, affectedObject: `backup:${filename}`,
+      description: `Created ${format} database backup ${filename}`, affectedObject: `backup:${filename}`,
     });
     res.download(dest, filename);
   } catch (e) {
@@ -1055,37 +1620,57 @@ const restoreUpload = multer({
       if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
       cb(null, backupDir);
     },
-    filename: (_req, file, cb) => cb(null, `restore-upload-${Date.now()}${path.extname(file.originalname) || ".db"}`),
+    filename: (_req, _file, cb) => cb(null, `restore-upload-${Date.now()}.tmp`),
   }),
   limits: { fileSize: 500 * 1024 * 1024 },
 });
 
-router.post("/database/restore", restoreUpload.single("file"), (req, res) => {
-  const file = req.file;
-  if (!file) { res.status(400).json({ error: "Backup file is required" }); return; }
+type RestoreFormat = "portable" | "native-sqlite";
 
-  const uploaded = file.path;
+function readFileHead(filePath: string, n: number): Buffer {
+  const fd = fs.openSync(filePath, "r");
   try {
-    const probe = new Database(uploaded, { readonly: true, fileMustExist: true });
-    const tables = (probe.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]).map(t => t.name);
-    probe.close();
-    const required = ["users", "messages", "conversations"];
-    const missing = required.filter(t => !tables.includes(t));
-    if (missing.length) {
-      fs.unlinkSync(uploaded);
-      res.status(400).json({ error: `Invalid backup: missing tables ${missing.join(", ")}` });
-      return;
-    }
+    const buf = Buffer.alloc(n);
+    const bytesRead = fs.readSync(fd, buf, 0, n, 0);
+    return buf.subarray(0, bytesRead);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
 
-    if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
-    const safety = path.join(backupDir, `pre-restore-${Date.now()}.db`);
-    db.pragma("wal_checkpoint(TRUNCATE)");
-    void db.backup(safety).then(() => {
+function detectRestoreFormat(filePath: string): RestoreFormat | null {
+  const head = readFileHead(filePath, 32);
+  if (head.length >= 15 && head.toString("latin1", 0, 15) === "SQLite format 3") return "native-sqlite";
+  if (head.length >= 2 && head[0] === 0x1f && head[1] === 0x8b) return "portable"; // gzip-compressed JSON
+  if (head.toString("utf8").trimStart().startsWith("{")) {
+    try {
+      validatePortableBackup(fs.readFileSync(filePath));
+      return "portable"; // uncompressed JSON
+    } catch { /* fall through */ }
+  }
+  // Reject arbitrary SQL dumps — never pipe untrusted files into psql.
+  return null;
+}
+
+/** Legacy SQLite-only ATTACH-based restore (used only when both source and target are SQLite). */
+async function restoreSqliteNativeFile(uploadedPath: string): Promise<void> {
+  const probe = new Database(uploadedPath, { readonly: true, fileMustExist: true });
+  try {
+    const tables = (probe.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]).map((t) => t.name);
+    const required = ["users", "messages", "conversations"];
+    const missing = required.filter((t) => !tables.includes(t));
+    if (missing.length) throw new Error(`Invalid backup: missing tables ${missing.join(", ")}`);
+  } finally {
+    probe.close();
+  }
+
+  const escaped = uploadedPath.replace(/'/g, "''");
+  db.exec("PRAGMA foreign_keys = OFF");
+  try {
+    db.exec(`ATTACH DATABASE '${escaped}' AS bak`);
+    try {
+      db.exec("BEGIN IMMEDIATE");
       try {
-        const escaped = uploaded.replace(/'/g, "''");
-        db.exec("PRAGMA foreign_keys = OFF");
-        db.exec(`ATTACH DATABASE '${escaped}' AS bak`);
-        db.exec("BEGIN IMMEDIATE");
         const bakTables = db.prepare("SELECT name FROM bak.sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all() as { name: string }[];
         for (const { name } of bakTables) {
           const exists = db.prepare("SELECT 1 FROM main.sqlite_master WHERE type='table' AND name = ?").get(name);
@@ -1094,44 +1679,478 @@ router.post("/database/restore", restoreUpload.single("file"), (req, res) => {
           db.exec(`INSERT INTO main."${name.replace(/"/g, '""')}" SELECT * FROM bak."${name.replace(/"/g, '""')}"`);
         }
         db.exec("COMMIT");
-        db.exec("DETACH DATABASE bak");
-        db.exec("PRAGMA foreign_keys = ON");
-        try { fs.unlinkSync(uploaded); } catch { /* */ }
-        logActivitySync({
-          req, userId: req.user!.id, eventType: "database_restore", eventCategory: "administration",
-          description: `Restored database from uploaded backup (safety copy: ${path.basename(safety)})`,
-          affectedObject: `backup:${path.basename(safety)}`,
-        });
-        scheduleAdminStatsRefresh();
-        res.json({ ok: true, safetyBackup: path.basename(safety) });
-      } catch (inner) {
+      } catch (e) {
         try { db.exec("ROLLBACK"); } catch { /* */ }
-        try { db.exec("DETACH DATABASE bak"); } catch { /* */ }
-        try { db.exec("PRAGMA foreign_keys = ON"); } catch { /* */ }
-        logActivitySync({
-          req, userId: req.user!.id, eventType: "database_restore", eventCategory: "administration",
-          description: `Database restore failed: ${inner instanceof Error ? inner.message : "unknown error"}`,
-          result: "failure",
-        });
-        res.status(500).json({ error: inner instanceof Error ? inner.message : "Restore failed. Existing database was preserved." });
+        throw e;
       }
-    }).catch(err => {
-      logActivitySync({
-        req, userId: req.user!.id, eventType: "database_restore", eventCategory: "administration",
-        description: `Database restore failed during safety backup: ${err instanceof Error ? err.message : "unknown"}`,
-        result: "failure",
-      });
-      res.status(500).json({ error: "Could not create safety backup before restore" });
+    } finally {
+      try { db.exec("DETACH DATABASE bak"); } catch { /* */ }
+    }
+  } finally {
+    try { db.exec("PRAGMA foreign_keys = ON"); } catch { /* */ }
+  }
+}
+
+router.post("/database/restore", requireSuperAdmin, restoreUpload.single("file"), async (req, res) => {
+  const file = req.file;
+  if (!file) { res.status(400).json({ error: "Backup file is required" }); return; }
+  const uploaded = file.path;
+
+  try {
+    const format = detectRestoreFormat(uploaded);
+    if (!format) {
+      throw new Error(
+        "Unrecognized backup format. Upload a portable Ninja Era backup (.json / .json.gz) or a native SQLite database file. Arbitrary SQL dumps are not accepted.",
+      );
+    }
+
+    if (format === "native-sqlite" && dbAsync.provider !== "sqlite") {
+      throw new Error("This is a native SQLite backup, but the server is running PostgreSQL. Use a portable (.json.gz) backup instead.");
+    }
+
+    if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
+    let safetyFile: string;
+    try {
+      const ext = dbAsync.provider === "sqlite" ? "db" : "sql";
+      safetyFile = `pre-restore-${Date.now()}.${ext}`;
+      await createNativeBackup(dbAsync, path.join(backupDir, safetyFile));
+    } catch {
+      // Native tooling unavailable (e.g. pg_dump missing) — fall back to a portable safety snapshot.
+      safetyFile = `pre-restore-${Date.now()}.json.gz`;
+      const buf = await exportPortableBackup(dbAsync);
+      fs.writeFileSync(path.join(backupDir, safetyFile), buf);
+    }
+
+    if (format === "portable") {
+      const backup = validatePortableBackup(fs.readFileSync(uploaded));
+      await restorePortableBackup(dbAsync, backup, { clearExisting: true });
+    } else if (format === "native-sqlite") {
+      await restoreSqliteNativeFile(uploaded);
+    } else {
+      throw new Error("Unsupported restore format");
+    }
+
+    try { fs.unlinkSync(uploaded); } catch { /* */ }
+    logActivitySync({
+      req, userId: req.user!.id, eventType: "database_restore", eventCategory: "administration",
+      description: `Restored database from uploaded ${format} backup (safety copy: ${safetyFile})`,
+      affectedObject: `backup:${safetyFile}`,
     });
+    scheduleAdminStatsRefresh();
+    res.json({ ok: true, safetyBackup: safetyFile });
   } catch (e) {
     try { fs.unlinkSync(uploaded); } catch { /* */ }
-    res.status(400).json({ error: e instanceof Error ? e.message : "Invalid SQLite backup file" });
+    logActivitySync({
+      req, userId: req.user!.id, eventType: "database_restore", eventCategory: "administration",
+      description: `Database restore failed: ${e instanceof Error ? e.message : "unknown error"}`,
+      result: "failure",
+    });
+    res.status(500).json({ error: e instanceof Error ? e.message : "Restore failed. Existing database was preserved." });
   }
 });
 
+// ── Database Console (table explorer + CRUD) ──────────────────────────────────
+router.get("/database/tables", requireSuperAdmin, async (_req, res) => {
+  try {
+    res.json({ tables: await listManageableTables() });
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : "Failed to list tables" });
+  }
+});
+
+router.get("/database/tables/:table/schema", requireSuperAdmin, async (req, res) => {
+  try {
+    const table = String(req.params.table);
+    const columns = await getTableColumns(table);
+    res.json({
+      table,
+      columns,
+      columnCount: columns.length,
+      primaryKey: columns.filter((c) => c.pk).map((c) => c.name),
+    });
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : "Invalid table" });
+  }
+});
+
+router.get("/database/tables/:table/rows", requireSuperAdmin, async (req, res) => {
+  try {
+    const table = String(req.params.table);
+    let columnFilters: Record<string, string> | undefined;
+    if (typeof req.query.filters === "string" && req.query.filters) {
+      try {
+        columnFilters = JSON.parse(req.query.filters) as Record<string, string>;
+      } catch {
+        res.status(400).json({ error: "Invalid filters JSON" });
+        return;
+      }
+    }
+    const result = await listTableRows({
+      table,
+      page: Number(req.query.page) || 1,
+      limit: Number(req.query.limit) || 50,
+      sortBy: typeof req.query.sortBy === "string" ? req.query.sortBy : undefined,
+      sortDir: req.query.sortDir === "asc" ? "asc" : "desc",
+      search: typeof req.query.search === "string" ? req.query.search : undefined,
+      columnFilters,
+    });
+    res.json(result);
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : "Query failed" });
+  }
+});
+
+router.post("/database/tables/:table/rows", requireSuperAdmin, async (req, res) => {
+  try {
+    const table = String(req.params.table);
+    const data = (req.body?.data ?? req.body) as Record<string, unknown>;
+    const result = await insertTableRow(table, data || {});
+    logActivitySync({
+      req,
+      userId: req.user!.id,
+      eventType: "database_row_create",
+      eventCategory: "administration",
+      description: `Created row in ${table} (id ${result.id})`,
+      affectedObject: `db:${table}:${result.id}`,
+    });
+    scheduleAdminStatsRefresh();
+    res.status(201).json(result);
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : "Insert failed" });
+  }
+});
+
+router.patch("/database/tables/:table/rows", requireSuperAdmin, async (req, res) => {
+  try {
+    const table = String(req.params.table);
+    const pk = (req.body?.pk ?? {}) as Record<string, unknown>;
+    const data = (req.body?.data ?? {}) as Record<string, unknown>;
+    const result = await updateTableRow(table, pk, data);
+    const pkLabel = Object.entries(pk).map(([k, v]) => `${k}=${v}`).join(",");
+    logActivitySync({
+      req,
+      userId: req.user!.id,
+      eventType: "database_row_update",
+      eventCategory: "administration",
+      description: `Updated row in ${table} (${pkLabel})`,
+      affectedObject: `db:${table}:${pkLabel}`,
+    });
+    scheduleAdminStatsRefresh();
+    res.json(result);
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : "Update failed" });
+  }
+});
+
+router.delete("/database/tables/:table/rows", requireSuperAdmin, async (req, res) => {
+  try {
+    const table = String(req.params.table);
+    const keys = (req.body?.keys ?? []) as Record<string, unknown>[];
+    const result = await deleteTableRows(table, keys);
+    logActivitySync({
+      req,
+      userId: req.user!.id,
+      eventType: "database_row_delete",
+      eventCategory: "administration",
+      description: `Deleted ${result.changes} row(s) from ${table}`,
+      affectedObject: `db:${table}`,
+    });
+    scheduleAdminStatsRefresh();
+    res.json(result);
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : "Delete failed" });
+  }
+});
+
+// ── Messaging History (moderation) ────────────────────────────────────────────
+
+async function adminFormatMessages(rows: Record<string, unknown>[], viewerId: number) {
+  if (!rows.length) return [];
+  const ids = rows.map((r) => r.id as number);
+  const placeholders = ids.map(() => "?").join(",");
+
+  const reactionRows = await qAll<{ message_id: number; emoji: string; user_id: number }>(`
+    SELECT message_id, emoji, user_id FROM message_reactions
+    WHERE message_id IN (${placeholders})
+  `, ...ids);
+
+  const reactionsByMsg = new Map<number, Record<string, string[]>>();
+  for (const r of reactionRows) {
+    let map = reactionsByMsg.get(r.message_id);
+    if (!map) {
+      map = {};
+      reactionsByMsg.set(r.message_id, map);
+    }
+    if (!map[r.emoji]) map[r.emoji] = [];
+    map[r.emoji].push(String(r.user_id));
+  }
+
+  const replyIds = [...new Set(
+    rows.map((r) => r.reply_to_id as number | null | undefined).filter((id): id is number => id != null),
+  )];
+  const parentsById = new Map<number, { id: number; username: string; content: string }>();
+  if (replyIds.length) {
+    const rp = replyIds.map(() => "?").join(",");
+    const parents = await qAll<{ id: number; username: string | null; is_deleted: number | null; content: string }>(`
+      SELECT m.id, u.username, u.is_deleted, m.content FROM messages m
+      LEFT JOIN users u ON u.id = m.user_id WHERE m.id IN (${rp})
+    `, ...replyIds);
+    for (const p of parents) {
+      const sender = tombstoneSenderFields(p);
+      parentsById.set(p.id, { id: p.id, username: sender.username, content: p.content || "" });
+    }
+  }
+
+  return rows.map((msg) => {
+    const reactionMap = reactionsByMsg.get(msg.id as number);
+    let replyTo: { id: number; user: string; preview: string } | undefined;
+    const replyId = msg.reply_to_id as number | null | undefined;
+    if (replyId != null) {
+      const parent = parentsById.get(replyId);
+      if (parent) replyTo = { id: parent.id, user: parent.username, preview: (parent.content || "").slice(0, 80) };
+    }
+    const durationMs = typeof msg.duration_ms === "number" && msg.duration_ms > 0
+      ? (msg.duration_ms as number)
+      : undefined;
+    const meta = parseMediaMeta(msg.media_meta);
+    const sender = tombstoneSenderFields({
+      username: msg.username as string | null,
+      avatar_url: msg.avatar_url as string | null,
+      is_deleted: msg.is_deleted as number | null,
+    });
+    return {
+      id: msg.id as number,
+      userId: msg.user_id as number,
+      user: sender.username,
+      msg: msg.content as string,
+      time: formatTime(msg.created_at as string),
+      createdAt: msg.created_at as string,
+      self: msg.user_id === viewerId,
+      avatarUrl: sender.avatar_url,
+      isDeleted: sender.isDeleted,
+      mediaUrl: (msg.media_url as string | null) || undefined,
+      mediaType: (msg.media_type as string | null) || undefined,
+      fileName: (msg.file_name as string | null) || undefined,
+      fileSize: (msg.file_size as number | null) || undefined,
+      replyTo,
+      edited: !!msg.edited_at,
+      reactions: reactionMap && Object.keys(reactionMap).length ? reactionMap : undefined,
+      durationMs,
+      duration: durationMs != null ? formatDurationLabel(durationMs) : undefined,
+      mimeType: meta?.mimeType,
+      codec: meta?.codec,
+      sampleRate: meta?.sampleRate,
+      channels: meta?.channels,
+      waveform: meta?.waveform,
+    };
+  });
+}
+
+router.get("/conversations", requireSuperAdmin, async (req, res) => {
+  const adminId = req.user!.id;
+  const search = String(req.query.search || "").trim().toLowerCase();
+  const userA = String(req.query.userA || "").trim().toLowerCase();
+  const userB = String(req.query.userB || "").trim().toLowerCase();
+  const dateFrom = String(req.query.dateFrom || "").trim();
+  const dateTo = String(req.query.dateTo || "").trim();
+  const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 80));
+
+  // DMs only — exclude conversations the viewing administrator participates in.
+  let sql = `
+    SELECT c.id, c.type, c.name, c.bio, c.last_message_at, c.last_message_preview, c.visibility, c.created_at,
+      (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) as message_count
+    FROM conversations c
+    WHERE c.type = 'dm'
+      AND NOT EXISTS (
+        SELECT 1 FROM conversation_participants cp
+        WHERE cp.conversation_id = c.id AND cp.user_id = ?
+      )
+  `;
+  const params: unknown[] = [adminId];
+  if (dateFrom) { sql += " AND COALESCE(c.last_message_at, c.created_at) >= ?"; params.push(dateFrom); }
+  if (dateTo) { sql += " AND COALESCE(c.last_message_at, c.created_at) <= ?"; params.push(dateTo); }
+  sql += " ORDER BY COALESCE(c.last_message_at, c.created_at) DESC LIMIT ?";
+  params.push(Math.min(500, limit * 3));
+
+  const rows = await qAll<{
+    id: number; type: string; name: string; bio: string | null;
+    last_message_at: string | null; last_message_preview: string | null; visibility: string | null;
+    created_at: string; message_count: number;
+  }>(sql, ...params);
+
+  const conversations = (await Promise.all(rows.map(async (c) => {
+    const participants = await qAll<{
+      id: number | null; username: string | null; avatar_url: string | null;
+      is_team_member: number; is_admin: number; is_deleted: number | null;
+    }>(`
+      SELECT u.id, u.username, u.avatar_url, u.is_team_member, u.is_admin, u.is_deleted
+      FROM conversation_participants cp
+      LEFT JOIN users u ON u.id = cp.user_id
+      WHERE cp.conversation_id = ?
+      ORDER BY u.id ASC
+    `, c.id);
+    const displayParts = participants.map((p) => {
+      const d = tombstoneSenderFields({
+        username: p.username,
+        avatar_url: p.avatar_url,
+        is_deleted: p.is_deleted,
+      });
+      return {
+        id: p.id || 0,
+        username: d.username,
+        avatarUrl: d.avatar_url,
+        isTeamMember: !d.isDeleted && p.is_team_member === 1,
+        isAdmin: !d.isDeleted && p.is_admin === 1,
+        isDeleted: d.isDeleted,
+      };
+    });
+    const name = displayParts.length >= 2
+      ? `${displayParts[0]!.username} ↔ ${displayParts[1]!.username}`
+      : (displayParts[0]?.username || c.name || DELETED_USER_DISPLAY_NAME);
+    return {
+      id: c.id,
+      type: "dm" as const,
+      name,
+      bio: c.bio || "",
+      avatarUrl: displayParts.find((p) => !p.isDeleted)?.avatarUrl
+        ?? displayParts[0]?.avatarUrl
+        ?? null,
+      otherUserId: displayParts[0]?.id ?? null,
+      participants: displayParts,
+      preview: c.last_message_preview || "No messages yet",
+      time: c.last_message_at ? timeAgo(c.last_message_at) : "—",
+      lastMessageAt: c.last_message_at,
+      messageCount: c.message_count,
+      visibility: c.visibility,
+    };
+  }))).filter((c) => {
+    if (search) {
+      const hay = `${c.name} ${c.preview} ${c.id}`.toLowerCase();
+      if (!hay.includes(search)) return false;
+    }
+    const names = (c.participants || []).map((p) => p.username.toLowerCase());
+    if (userA && !names.some((n) => n.includes(userA))) return false;
+    if (userB && !names.some((n) => n.includes(userB))) return false;
+    return true;
+  }).slice(0, limit);
+
+  res.json({ conversations });
+});
+
+router.get("/conversations/:id/messages", requireSuperAdmin, async (req, res) => {
+  const adminId = req.user!.id;
+  const convId = Number(req.params.id);
+  const conv = await qGet<{ id: number; type: string; name: string }>(
+    "SELECT id, type, name FROM conversations WHERE id = ?", convId,
+  );
+  if (!conv) { res.status(404).json({ error: "Conversation not found" }); return; }
+  if (conv.type !== "dm") {
+    res.status(403).json({ error: "Only DM conversations are available in Messaging History" });
+    return;
+  }
+  const adminInConv = await qGet(
+    "SELECT 1 FROM conversation_participants WHERE conversation_id = ? AND user_id = ?", convId, adminId,
+  );
+  if (adminInConv) {
+    res.status(403).json({ error: "Your own conversations are not shown in Messaging History" });
+    return;
+  }
+
+  const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 50));
+  const before = req.query.before ? Number(req.query.before) : null;
+  const q = String(req.query.q || "").trim();
+  const mediaType = String(req.query.mediaType || "").trim();
+  const senderId = req.query.senderId ? Number(req.query.senderId) : null;
+  const editedOnly = req.query.edited === "1";
+  const systemOnly = req.query.system === "1";
+  const callsOnly = req.query.calls === "1";
+  const dateFrom = String(req.query.dateFrom || "").trim();
+  const dateTo = String(req.query.dateTo || "").trim();
+
+  let where = "m.conversation_id = ?";
+  const params: unknown[] = [convId];
+  if (before != null && Number.isFinite(before)) {
+    const anchor = await qGet<{ created_at: string; id: number }>("SELECT created_at, id FROM messages WHERE id = ?", before);
+    if (anchor) {
+      where += " AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?))";
+      params.push(anchor.created_at, anchor.created_at, anchor.id);
+    }
+  }
+  if (q) {
+    where += " AND (m.content LIKE ? OR m.file_name LIKE ? OR u.username LIKE ?)";
+    const like = `%${q}%`;
+    params.push(like, like, like);
+  }
+  if (mediaType === "none") where += " AND (m.media_type IS NULL OR m.media_type = '')";
+  else if (mediaType && mediaType !== "all") { where += " AND m.media_type = ?"; params.push(mediaType); }
+  if (senderId != null && Number.isFinite(senderId)) { where += " AND m.user_id = ?"; params.push(senderId); }
+  if (editedOnly) where += " AND m.edited_at IS NOT NULL";
+  if (systemOnly || callsOnly) where += " AND m.media_type = 'call_event'";
+  if (dateFrom) { where += " AND m.created_at >= ?"; params.push(dateFrom); }
+  if (dateTo) { where += " AND m.created_at <= ?"; params.push(dateTo); }
+
+  const rows = await qAll<Record<string, unknown>>(`
+    SELECT m.*, u.username, u.avatar_url, u.is_deleted
+    FROM messages m LEFT JOIN users u ON u.id = m.user_id
+    WHERE ${where}
+    ORDER BY m.created_at DESC, m.id DESC LIMIT ?
+  `, ...params, limit + 1);
+  const hasMore = rows.length > limit;
+  const page = (hasMore ? rows.slice(0, limit) : rows).reverse();
+  res.json({
+    conversation: { id: conv.id, type: conv.type, name: conv.name },
+    messages: await adminFormatMessages(page, req.user!.id),
+    hasMore,
+  });
+});
+
+router.delete("/messages/:id", requireSuperAdmin, async (req, res) => {
+  const msgId = Number(req.params.id);
+  const existing = await qGet<{
+    id: number; conversation_id: number; user_id: number; conversation_type: string;
+  }>(`
+    SELECT m.id, m.conversation_id, m.user_id, c.type as conversation_type
+    FROM messages m JOIN conversations c ON c.id = m.conversation_id
+    WHERE m.id = ?
+  `, msgId);
+
+  if (!existing) {
+    res.status(404).json({ error: "Message not found" });
+    return;
+  }
+
+  const deleted = await hardDeleteMessage(msgId);
+  if (!deleted) {
+    res.status(404).json({ error: "Message not found" });
+    return;
+  }
+
+  logActivitySync({
+    req,
+    userId: req.user!.id,
+    eventType: "message_delete",
+    eventCategory: "administration",
+    description: `Moderated message #${msgId} in ${existing.conversation_type} #${existing.conversation_id}`,
+    affectedObject: `message:${msgId}`,
+    metadata: {
+      conversationId: existing.conversation_id,
+      messageId: msgId,
+      authorId: existing.user_id,
+      conversationType: existing.conversation_type,
+      reason: "messaging_history",
+    },
+  });
+
+  res.json({ ok: true });
+});
+
 // Admin check endpoint
-router.get("/check", (req, res) => {
-  res.json({ isAdmin: true, user: publicUser(req.user!, req.user!.id) });
+router.get("/check", async (req, res) => {
+  res.json({
+    isAdmin: true,
+    isSuperAdmin: isSuperAdmin(req.user!),
+    user: await publicUser(req.user!, req.user!.id),
+  });
 });
 
 export default router;

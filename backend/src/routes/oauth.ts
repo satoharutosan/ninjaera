@@ -1,8 +1,5 @@
 import { Router } from "express";
-import bcrypt from "bcryptjs";
-import crypto from "crypto";
-import { db } from "../db/index.js";
-import { signToken } from "../middleware/auth.js";
+import { qGet, qRun } from "../db/query.js";
 import { lookupGeo, saveUserLocation } from "../services/geoip.js";
 import { logActivitySync } from "../services/activityLog.js";
 import { setUserOnline } from "../services/presence.js";
@@ -18,6 +15,7 @@ import {
   exchangeCodeForProfile,
   generateUniqueUsername,
   frontendUrl,
+  createOAuthLoginCode,
 } from "../services/oauth.js";
 
 const router = Router();
@@ -35,41 +33,44 @@ function redirectWithError(res: import("express").Response, message: string) {
   res.redirect(url);
 }
 
-function redirectWithToken(res: import("express").Response, token: string) {
-  const url = `${frontendUrl()}/#/oauth-callback?token=${encodeURIComponent(token)}`;
+function redirectWithCode(res: import("express").Response, code: string) {
+  const url = `${frontendUrl()}/#/oauth-callback?code=${encodeURIComponent(code)}`;
   res.redirect(url);
 }
 
-function findUserByProvider(provider: OAuthProvider, providerUserId: string) {
-  return db.prepare(`
+async function findUserByProvider(provider: OAuthProvider, providerUserId: string) {
+  return qGet<{
+    id: number;
+    email: string;
+    username: string;
+    avatar_url: string | null;
+    password_hash?: string;
+    is_disabled?: number;
+    is_deleted?: number;
+  }>(`
     SELECT u.* FROM users u
     INNER JOIN user_oauth_providers p ON p.user_id = u.id
     WHERE p.provider = ? AND p.provider_user_id = ? AND u.is_npc = 0
-  `).get(provider, providerUserId) as {
+  `, provider, providerUserId);
+}
+
+async function findUserByEmail(email: string) {
+  return qGet<{
     id: number;
     email: string;
     username: string;
     avatar_url: string | null;
+    password_hash?: string;
     is_disabled?: number;
     is_deleted?: number;
-  } | undefined;
+  }>("SELECT * FROM users WHERE email = ? AND is_npc = 0", email);
 }
 
-function findUserByEmail(email: string) {
-  return db.prepare("SELECT * FROM users WHERE email = ? AND is_npc = 0").get(email) as {
-    id: number;
-    email: string;
-    username: string;
-    avatar_url: string | null;
-    is_disabled?: number;
-    is_deleted?: number;
-  } | undefined;
-}
-
-function linkProvider(userId: number, provider: OAuthProvider, providerUserId: string) {
-  const existing = db.prepare(
+async function linkProvider(userId: number, provider: OAuthProvider, providerUserId: string) {
+  const existing = await qGet<{ id: number; user_id: number }>(
     "SELECT id, user_id FROM user_oauth_providers WHERE provider = ? AND provider_user_id = ?",
-  ).get(provider, providerUserId) as { id: number; user_id: number } | undefined;
+    provider, providerUserId,
+  );
 
   if (existing) {
     if (existing.user_id !== userId) {
@@ -78,54 +79,61 @@ function linkProvider(userId: number, provider: OAuthProvider, providerUserId: s
     return;
   }
 
-  const sameProvider = db.prepare(
+  const sameProvider = await qGet(
     "SELECT id FROM user_oauth_providers WHERE user_id = ? AND provider = ?",
-  ).get(userId, provider);
+    userId, provider,
+  );
   if (sameProvider) {
-    db.prepare("UPDATE user_oauth_providers SET provider_user_id = ?, linked_at = ? WHERE user_id = ? AND provider = ?")
-      .run(providerUserId, now(), userId, provider);
+    await qRun(
+      "UPDATE user_oauth_providers SET provider_user_id = ?, linked_at = ? WHERE user_id = ? AND provider = ?",
+      providerUserId, now(), userId, provider,
+    );
     return;
   }
 
-  db.prepare(
+  await qRun(
     "INSERT INTO user_oauth_providers (user_id, provider, provider_user_id, linked_at) VALUES (?, ?, ?, ?)",
-  ).run(userId, provider, providerUserId, now());
+    userId, provider, providerUserId, now(),
+  );
 }
 
-function createOAuthUser(profile: OAuthProfile): number {
+async function createOAuthUser(profile: OAuthProfile): Promise<number> {
   const ts = now();
-  const username = generateUniqueUsername(profile.usernameHint);
-  const passwordHash = bcrypt.hashSync(crypto.randomBytes(32).toString("hex"), 10);
-
-  const result = db.prepare(`
-    INSERT INTO users (email, username, password_hash, avatar_url, member_since, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(
+  const username = await generateUniqueUsername(profile.usernameHint);
+  // No local password yet — empty hash means "hasPassword: false" until the user
+  // optionally creates one from the Profile page. Never a random unusable hash.
+  const result = await qRun(`
+    INSERT INTO users (
+      email, username, password_hash, avatar_url, member_since, created_at, updated_at,
+      email_verified, email_verified_at
+    )
+    VALUES (?, ?, '', ?, ?, ?, ?, 1, ?)
+  `,
     profile.email,
     username,
-    passwordHash,
     profile.avatarUrl || null,
     ts.slice(0, 10),
+    ts,
     ts,
     ts,
   );
 
   const userId = result.lastInsertRowid as number;
-  db.prepare("INSERT INTO user_settings (user_id) VALUES (?)").run(userId);
+  await qRun("INSERT INTO user_settings (user_id) VALUES (?)", userId);
 
-  const registrationOrder = (db.prepare(`
+  const registrationOrder = (await qGet<{ c: number }>(`
     SELECT COUNT(*) as c FROM users WHERE is_npc = 0 AND id <= ?
-  `).get(userId) as { c: number }).c;
+  `, userId))!.c;
   const globalRank = 1200 + registrationOrder;
 
-  db.prepare(`
+  await qRun(`
     INSERT INTO game_stats (
       user_id, missions_complete, pvp_wins, playtime_hours, legendary_items,
       ninjutsu, taijutsu, genjutsu, senjutsu, kenjutsu, global_rank
     ) VALUES (?, 0, 0, 0, 0, 0, 0, 0, 0, 0, ?)
-  `).run(userId, globalRank);
+  `, userId, globalRank);
 
-  linkProvider(userId, profile.provider, profile.providerUserId);
+  await linkProvider(userId, profile.provider, profile.providerUserId);
   return userId;
 }
 
@@ -134,11 +142,11 @@ async function completeOAuthLogin(
   res: import("express").Response,
   profile: OAuthProfile,
 ) {
-  let user = findUserByProvider(profile.provider, profile.providerUserId);
+  let user = await findUserByProvider(profile.provider, profile.providerUserId);
   let isNewUser = false;
 
   if (!user) {
-    const byEmail = findUserByEmail(profile.email);
+    const byEmail = await findUserByEmail(profile.email);
     if (byEmail) {
       if (byEmail.is_disabled === 1 || byEmail.is_deleted === 1) {
         logActivitySync({
@@ -154,8 +162,26 @@ async function completeOAuthLogin(
         redirectWithError(res, "Account is disabled");
         return;
       }
+      // Do not silently link OAuth to password accounts — prevents account takeover via email.
+      if (byEmail.password_hash) {
+        logActivitySync({
+          req,
+          userId: byEmail.id,
+          username: byEmail.username,
+          eventType: "login_denied",
+          eventCategory: "security",
+          description: `OAuth ${profile.provider} auto-link blocked: password account exists`,
+          result: "failure",
+          metadata: { provider: profile.provider },
+        });
+        redirectWithError(
+          res,
+          "An account with this email already exists. Sign in with your password, then link this provider from Profile settings.",
+        );
+        return;
+      }
       try {
-        linkProvider(byEmail.id, profile.provider, profile.providerUserId);
+        await linkProvider(byEmail.id, profile.provider, profile.providerUserId);
       } catch (e) {
         const msg = e instanceof Error ? e.message : "Account linking failed";
         logActivitySync({
@@ -173,9 +199,9 @@ async function completeOAuthLogin(
       }
       user = byEmail;
     } else {
-      const userId = createOAuthUser(profile);
+      await createOAuthUser(profile);
       isNewUser = true;
-      user = findUserByEmail(profile.email)!;
+      user = await findUserByEmail(profile.email);
       if (!user) {
         redirectWithError(res, "Failed to create account");
         return;
@@ -200,11 +226,12 @@ async function completeOAuthLogin(
 
   await trackLogin(req, user.id);
   const ts = now();
-  db.prepare("UPDATE users SET last_login_at = ?, updated_at = ? WHERE id = ?").run(ts, ts, user.id);
+  await qRun("UPDATE users SET last_login_at = ?, updated_at = ? WHERE id = ?", ts, ts, user.id);
   setUserOnline(user.id);
   syncPublicChannels(user.id);
 
-  const providerLabel = profile.provider.charAt(0).toUpperCase() + profile.provider.slice(1);
+  const providerLabels: Record<string, string> = { google: "Google", github: "GitHub", discord: "Discord" };
+  const providerLabel = providerLabels[profile.provider] || profile.provider;
   if (isNewUser) {
     logActivitySync({
       req,
@@ -228,11 +255,11 @@ async function completeOAuthLogin(
     metadata: { provider: profile.provider },
   });
 
-  const token = signToken({ userId: user.id, email: user.email });
-  redirectWithToken(res, token);
+  const code = createOAuthLoginCode(user.id);
+  redirectWithCode(res, code);
 }
 
-router.get("/oauth/:provider", (req, res) => {
+router.get("/oauth/:provider", async (req, res) => {
   const provider = String(req.params.provider || "").toLowerCase();
   if (!isOAuthProvider(provider)) {
     res.status(400).json({ error: "Unsupported OAuth provider" });
@@ -243,7 +270,7 @@ router.get("/oauth/:provider", (req, res) => {
     return;
   }
 
-  const state = createOAuthState(provider);
+  const state = await createOAuthState(provider);
   res.redirect(getAuthorizeUrl(provider, state));
 });
 
@@ -278,7 +305,7 @@ router.get("/oauth/:provider/callback", async (req, res) => {
     redirectWithError(res, "Missing authorization code");
     return;
   }
-  if (!consumeOAuthState(state, provider)) {
+  if (!(await consumeOAuthState(state, provider))) {
     redirectWithError(res, "Invalid or expired OAuth session. Please try again.");
     return;
   }

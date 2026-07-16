@@ -3,6 +3,8 @@ const API_BASE = "/api";
 export type ApiUser = {
   id: number;
   email?: string;
+  /** True when the account has a local password (self view only). OAuth-only accounts start false. */
+  hasPassword?: boolean;
   username: string;
   avatarUrl?: string | null;
   gender?: string;
@@ -18,6 +20,8 @@ export type ApiUser = {
   rank?: string;
   isAdmin?: boolean;
   isTeamMember?: boolean;
+  /** Soft-deleted account — show "Deleted User" tombstone in UI. */
+  isDeleted?: boolean;
 };
 
 export type ApiSettings = {
@@ -40,12 +44,14 @@ export type ApiConversation = {
   type: "channel" | "dm";
   avatarUrl?: string | null;
   otherUserId?: number;
+  isDeleted?: boolean;
   village?: string;
   clan?: string;
   level?: number;
   rank?: string;
   memberSince?: string;
   isTeamMember?: boolean;
+  isAdmin?: boolean;
   country?: string;
   city?: string | null;
 };
@@ -58,6 +64,7 @@ export type ApiMessage = {
   time: string;
   self: boolean;
   avatarUrl?: string | null;
+  isDeleted?: boolean;
   mediaUrl?: string;
   mediaType?: string;
   fileName?: string;
@@ -65,6 +72,13 @@ export type ApiMessage = {
   replyTo?: { id: number; user: string; preview: string };
   edited?: boolean;
   reactions?: Record<string, string[]>;
+  durationMs?: number;
+  duration?: string;
+  mimeType?: string;
+  codec?: string;
+  sampleRate?: number;
+  channels?: number;
+  waveform?: number[];
 };
 
 export type ApiNotification = {
@@ -89,13 +103,24 @@ export class ApiError extends Error {
   }
 }
 
+import {
+  getStoredToken,
+  setStoredToken,
+  clearAuthCredentials,
+  isAuthPersistent,
+} from "@/shared/authStorage";
+
 export function getToken(): string | null {
-  return localStorage.getItem("ninja-era-token");
+  return getStoredToken();
 }
 
-export function setToken(token: string | null) {
-  if (token) localStorage.setItem("ninja-era-token", token);
-  else localStorage.removeItem("ninja-era-token");
+/** Clear or set the JWT. Optional `persist` controls localStorage vs sessionStorage. */
+export function setToken(token: string | null, persist?: boolean) {
+  if (!token) {
+    clearAuthCredentials();
+    return;
+  }
+  setStoredToken(token, persist ?? isAuthPersistent());
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -118,7 +143,12 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 export const api = {
   auth: {
     register: (email: string, username: string, password: string) =>
-      request<{ token: string; user: ApiUser }>("/auth/register", {
+      request<{
+        pending: boolean;
+        email: string;
+        message: string;
+        cooldownSeconds: number;
+      }>("/auth/register", {
         method: "POST",
         body: JSON.stringify({ email, username, password }),
       }),
@@ -127,14 +157,42 @@ export const api = {
         method: "POST",
         body: JSON.stringify({ email, password }),
       }),
-    me: () => request<{ user: ApiUser }>("/auth/me"),
-    logout: () => request<{ ok: boolean }>("/auth/logout", { method: "POST" }),
-    forgotPassword: (email: string) =>
-      request<{ ok: boolean }>("/auth/forgot-password", {
+    verifyEmail: (payload: { email?: string; code?: string; token?: string }) =>
+      request<{ token: string; user: ApiUser; verified: boolean }>("/auth/verify-email", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }),
+    resendVerification: (email: string) =>
+      request<{ ok: boolean; message: string; cooldownSeconds: number }>("/auth/resend-verification", {
         method: "POST",
         body: JSON.stringify({ email }),
       }),
+    me: () => request<{ user: ApiUser }>("/auth/me"),
+    logout: () => request<{ ok: boolean }>("/auth/logout", { method: "POST" }),
+    forgotPassword: (email: string) =>
+      request<{ ok: boolean; message?: string }>("/auth/forgot-password", {
+        method: "POST",
+        body: JSON.stringify({ email }),
+      }),
+    resetPassword: (token: string, password: string) =>
+      request<{ ok: boolean }>("/auth/reset-password", {
+        method: "POST",
+        body: JSON.stringify({ token, password }),
+      }),
+    usernameAvailable: (username: string, excludeUserId?: number) => {
+      const params = new URLSearchParams({ username });
+      if (excludeUserId != null) params.set("excludeUserId", String(excludeUserId));
+      return request<{ available: boolean; reason: string; error: string | null }>(
+        `/auth/username-available?${params}`,
+      );
+    },
+    oauthExchange: (code: string) =>
+      request<{ token: string; user: ApiUser }>("/auth/oauth/exchange", {
+        method: "POST",
+        body: JSON.stringify({ code }),
+      }),
   },
+
 
   users: {
     me: () => request<{ user: ApiUser; settings: ApiSettings; stats: Record<string, number> }>("/users/me"),
@@ -145,10 +203,12 @@ export const api = {
       form.append("avatar", file);
       return request<{ avatarUrl: string }>("/users/me/avatar", { method: "POST", body: form });
     },
-    changePassword: (currentPassword: string, newPassword: string) =>
-      request<{ ok: boolean }>("/users/me/password", {
+    changePassword: (currentPassword: string | null, newPassword: string) =>
+      request<{ ok: boolean; token?: string; hasPassword?: boolean; created?: boolean }>("/users/me/password", {
         method: "PATCH",
-        body: JSON.stringify({ currentPassword, newPassword }),
+        body: JSON.stringify(
+          currentPassword ? { currentPassword, newPassword } : { newPassword },
+        ),
       }),
     updateSettings: (settings: Partial<ApiSettings>) =>
       request<{ ok: boolean }>("/users/me/settings", {
@@ -189,13 +249,36 @@ export const api = {
         method: "POST",
         body: JSON.stringify({ conversationId, msg, replyTo }),
       }),
-    sendMedia: (conversationId: number, file: File, replyTo?: number) => {
+    sendMedia: (
+      conversationId: number,
+      file: File,
+      replyTo?: number,
+      meta?: {
+        durationMs?: number;
+        mimeType?: string;
+        codec?: string;
+        sampleRate?: number;
+        channels?: number;
+        waveform?: number[];
+      },
+    ) => {
       const form = new FormData();
       form.append("file", file);
       form.append("conversationId", String(conversationId));
       if (replyTo) form.append("replyTo", String(replyTo));
+      if (meta?.durationMs != null) form.append("durationMs", String(meta.durationMs));
+      if (meta?.mimeType) form.append("mimeType", meta.mimeType);
+      if (meta?.codec) form.append("codec", meta.codec);
+      if (meta?.sampleRate != null) form.append("sampleRate", String(meta.sampleRate));
+      if (meta?.channels != null) form.append("channels", String(meta.channels));
+      if (meta?.waveform?.length) form.append("waveform", JSON.stringify(meta.waveform));
       return request<{ message: ApiMessage }>("/messages/media", { method: "POST", body: form });
     },
+    sendGif: (conversationId: number, url: string, label?: string, replyTo?: number) =>
+      request<{ message: ApiMessage }>("/messages/gif", {
+        method: "POST",
+        body: JSON.stringify({ conversationId, url, label, replyTo }),
+      }),
     edit: (id: number, msg: string) =>
       request<{ message: ApiMessage }>(`/messages/${id}`, { method: "PATCH", body: JSON.stringify({ msg }) }),
     delete: (id: number) => request<{ ok: boolean }>(`/messages/${id}`, { method: "DELETE" }),
@@ -246,7 +329,7 @@ export const api = {
   content: {
     team: () => request<{ team: { name: string; role: string; department: string; country: string; city: string; statusLabel?: string; statusColor?: string; userId?: number; username?: string; avatarUrl?: string | null }[] }>("/team"),
     resources: (category?: string) =>
-      request<{ resources: { id: number; title: string; category: string; description: string; contentUrl?: string | null; publishedAt?: string; fileSize?: number; version?: string }[] }>(
+      request<{ resources: { id: number; title: string; category: string; description: string; contentUrl?: string | null; publishedAt?: string; fileSize?: number; version?: string; visibility?: "PUBLIC" | "PRIVATE" }[] }>(
         category ? `/resources?category=${encodeURIComponent(category)}` : "/resources"
       ),
     downloadResource: async (id: number) => {
@@ -290,6 +373,7 @@ export const api = {
       a.click();
       URL.revokeObjectURL(url);
     },
+    ourStory: () => request<{ content: OurStoryPublic }>("/content/about-our-story"),
   },
 
   dm: {
@@ -302,7 +386,7 @@ export const api = {
   },
 
   admin: {
-    check: () => request<{ isAdmin: boolean }>("/admin/check"),
+    check: () => request<{ isAdmin: boolean; isSuperAdmin: boolean; user: ApiUser }>("/admin/check"),
     stats: () => request<{
       totalUsers: number; onlineUsers: number; totalChannels: number; totalDms: number;
       pendingApplications: number; teamMembers: number; unreadNotifications: number;
@@ -325,19 +409,65 @@ export const api = {
     disableUser: (id: number) => request<{ ok: boolean }>(`/admin/users/${id}/disable`, { method: "POST" }),
     enableUser: (id: number) => request<{ ok: boolean }>(`/admin/users/${id}/enable`, { method: "POST" }),
     deleteUser: (id: number) => request<{ ok: boolean }>(`/admin/users/${id}`, { method: "DELETE" }),
+    bulkDeleteUsers: (ids: number[]) =>
+      request<{ ok: boolean; deleted: number }>("/admin/users/bulk-delete", {
+        method: "POST",
+        body: JSON.stringify({ ids }),
+      }),
     notifications: () => request<{ notifications: AdminNotification[] }>("/admin/notifications"),
     createNotification: (data: Partial<AdminNotification>) => request<{ id: number }>("/admin/notifications", { method: "POST", body: JSON.stringify(data) }),
     updateNotification: (id: number, data: Partial<AdminNotification>) => request<{ ok: boolean }>(`/admin/notifications/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
     deleteNotification: (id: number) => request<{ ok: boolean }>(`/admin/notifications/${id}`, { method: "DELETE" }),
     pinNotification: (id: number) => request<{ ok: boolean }>(`/admin/notifications/${id}/pin`, { method: "POST" }),
     unpinNotification: (id: number) => request<{ ok: boolean }>(`/admin/notifications/${id}/unpin`, { method: "POST" }),
+    getOurStory: () => request<{ content: OurStoryContent }>("/admin/content/about-our-story"),
+    saveOurStory: (data: {
+      title: string;
+      subtitle?: string;
+      body: string;
+      quote?: string;
+      status: "draft" | "published";
+      removeImage?: boolean;
+      image?: File | null;
+    }) => {
+      const form = new FormData();
+      form.append("title", data.title);
+      form.append("subtitle", data.subtitle ?? "");
+      form.append("body", data.body);
+      form.append("quote", data.quote ?? "");
+      form.append("status", data.status);
+      if (data.removeImage) form.append("removeImage", "true");
+      if (data.image) form.append("image", data.image);
+      return request<{ content: OurStoryContent }>("/admin/content/about-our-story", { method: "PUT", body: form });
+    },
     channels: () => request<{ channels: AdminChannel[] }>("/admin/channels"),
-    createChannel: (data: { name: string; bio?: string; visibility?: string }) => request<{ id: number }>("/admin/channels", { method: "POST", body: JSON.stringify(data) }),
-    updateChannel: (id: number, data: Partial<AdminChannel>) => request<{ ok: boolean }>(`/admin/channels/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+    createChannel: (data: { name: string; bio?: string; visibility?: string }, avatarFile?: File | null) => {
+      const form = new FormData();
+      form.append("name", data.name);
+      if (data.bio != null) form.append("bio", data.bio);
+      if (data.visibility) form.append("visibility", data.visibility);
+      if (avatarFile) form.append("avatar", avatarFile);
+      return request<{ id: number; avatarUrl?: string | null }>("/admin/channels", { method: "POST", body: form });
+    },
+    updateChannel: (
+      id: number,
+      data: Partial<AdminChannel> & { removeAvatar?: boolean },
+      avatarFile?: File | null,
+    ) => {
+      const form = new FormData();
+      if (data.name != null) form.append("name", data.name);
+      if (data.bio != null) form.append("bio", data.bio);
+      if (data.visibility != null) form.append("visibility", data.visibility);
+      if (data.archived != null) form.append("archived", data.archived ? "true" : "false");
+      if (data.removeAvatar) form.append("removeAvatar", "true");
+      if (avatarFile) form.append("avatar", avatarFile);
+      return request<{ ok: boolean; avatarUrl?: string | null }>(`/admin/channels/${id}`, { method: "PATCH", body: form });
+    },
     deleteChannel: (id: number) => request<{ ok: boolean }>(`/admin/channels/${id}`, { method: "DELETE" }),
     applications: () => request<{ applications: TeamApplication[] }>("/admin/applications"),
     approveApplication: (id: number) => request<{ ok: boolean }>(`/admin/applications/${id}/approve`, { method: "POST" }),
     rejectApplication: (id: number) => request<{ ok: boolean }>(`/admin/applications/${id}/reject`, { method: "POST" }),
+    deleteApplication: (id: number) => request<{ ok: boolean }>(`/admin/applications/${id}`, { method: "DELETE" }),
     resources: () => request<{ resources: AdminResource[] }>("/admin/resources"),
     createResource: (form: FormData) => request<{ id: number }>("/admin/resources", { method: "POST", body: form }),
     updateResource: (id: number, form: FormData) => request<{ ok: boolean }>(`/admin/resources/${id}`, { method: "PATCH", body: form }),
@@ -347,6 +477,7 @@ export const api = {
     updateGameDownload: (id: number, form: FormData) => request<{ ok: boolean }>(`/admin/game-downloads/${id}`, { method: "PATCH", body: form }),
     deleteGameDownload: (id: number) => request<{ ok: boolean }>(`/admin/game-downloads/${id}`, { method: "DELETE" }),
     activityLogs: (params: Record<string, string>) => request<{ logs: ActivityLogEntry[]; total: number; page: number; limit: number }>(`/admin/activity-logs?${new URLSearchParams(params)}`),
+    activityLogsMeta: () => request<{ eventTypes: string[]; eventCategories: string[] }>("/admin/activity-logs/meta"),
     exportActivityLogs: async () => {
       const token = getToken();
       const res = await fetch(`${API_BASE}/admin/activity-logs/export`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
@@ -360,18 +491,36 @@ export const api = {
       URL.revokeObjectURL(url);
     },
     archiveActivityLogs: (before: string) => request<{ ok: boolean; deleted: number }>("/admin/activity-logs", { method: "DELETE", body: JSON.stringify({ before }) }),
+    deleteActivityLogs: (ids: number[]) =>
+      request<{ ok: boolean; deleted: number; method: string }>("/admin/activity-logs/bulk-delete", {
+        method: "POST",
+        body: JSON.stringify({ ids }),
+      }),
+    conversations: (params?: Record<string, string>) =>
+      request<{ conversations: AdminConversation[] }>(`/admin/conversations?${new URLSearchParams(params || {})}`),
+    conversationMessages: (id: number, params?: Record<string, string>) =>
+      request<{
+        conversation: { id: number; type: string; name: string };
+        messages: ApiMessage[];
+        hasMore: boolean;
+      }>(`/admin/conversations/${id}/messages?${new URLSearchParams(params || {})}`),
+    deleteMessage: (id: number) =>
+      request<{ ok: boolean }>(`/admin/messages/${id}`, { method: "DELETE" }),
     contacts: () => request<{ contacts: ContactTicket[] }>("/admin/contacts"),
     getContact: (id: number) => request<{ contact: ContactTicket }>(`/admin/contacts/${id}`),
     markContactRead: (id: number) => request<{ ok: boolean }>(`/admin/contacts/${id}/read`, { method: "PATCH" }),
     replyContact: (id: number, body: string) => request<{ contact: ContactTicket }>(`/admin/contacts/${id}/reply`, { method: "POST", body: JSON.stringify({ body }) }),
+    deleteContact: (id: number) => request<{ ok: boolean }>(`/admin/contacts/${id}`, { method: "DELETE" }),
     databaseInfo: () => request<{
-      type: string; version: string; userVersion: number; path: string; sizeBytes: number; sizeLabel: string;
+      provider: "sqlite" | "postgres"; type: string; version: string; schemaVersion: string; path: string;
+      sizeBytes: number; sizeLabel: string;
       totalUsers: number; totalMessages: number; totalChannels: number; totalResources: number;
       totalNotifications: number; totalLogs: number; lastBackupAt: string | null; lastBackupFile: string | null;
     }>("/admin/database/info"),
-    databaseBackup: async () => {
+    databaseBackup: async (opts?: { format?: "native" | "portable" }) => {
       const token = getToken();
-      const res = await fetch(`${API_BASE}/admin/database/backup`, {
+      const qs = opts?.format ? `?${new URLSearchParams({ format: opts.format })}` : "";
+      const res = await fetch(`${API_BASE}/admin/database/backup${qs}`, {
         method: "POST",
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
@@ -382,7 +531,7 @@ export const api = {
       const blob = await res.blob();
       const cd = res.headers.get("Content-Disposition") || "";
       const match = /filename="?([^"]+)"?/.exec(cd);
-      const filename = match?.[1] || `ninja-era-backup-${Date.now()}.db`;
+      const filename = match?.[1] || `ninja-era-backup-${Date.now()}.json.gz`;
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
@@ -405,11 +554,58 @@ export const api = {
       }
       return res.json() as Promise<{ ok: boolean; safetyBackup: string }>;
     },
+    databaseTables: () => request<{ tables: { name: string; rowCount: number }[] }>("/admin/database/tables"),
+    databaseTableSchema: (table: string) =>
+      request<{ table: string; columns: DbConsoleColumn[]; columnCount: number; primaryKey: string[] }>(
+        `/admin/database/tables/${encodeURIComponent(table)}/schema`,
+      ),
+    databaseTableRows: (table: string, params: Record<string, string>) =>
+      request<{
+        table: string;
+        columns: DbConsoleColumn[];
+        rows: Record<string, unknown>[];
+        total: number;
+        page: number;
+        limit: number;
+        primaryKey: string[];
+      }>(`/admin/database/tables/${encodeURIComponent(table)}/rows?${new URLSearchParams(params)}`),
+    databaseInsertRow: (table: string, data: Record<string, unknown>) =>
+      request<{ ok: boolean; id: number; changes: number }>(`/admin/database/tables/${encodeURIComponent(table)}/rows`, {
+        method: "POST",
+        body: JSON.stringify({ data }),
+      }),
+    databaseUpdateRow: (table: string, pk: Record<string, unknown>, data: Record<string, unknown>) =>
+      request<{ ok: boolean; changes: number }>(`/admin/database/tables/${encodeURIComponent(table)}/rows`, {
+        method: "PATCH",
+        body: JSON.stringify({ pk, data }),
+      }),
+    databaseDeleteRows: (table: string, keys: Record<string, unknown>[]) =>
+      request<{ ok: boolean; changes: number }>(`/admin/database/tables/${encodeURIComponent(table)}/rows`, {
+        method: "DELETE",
+        body: JSON.stringify({ keys }),
+      }),
   },
 
   legal: {
     viewTerms: () => request<{ ok: boolean }>("/legal/terms-viewed", { method: "POST" }),
   },
+};
+
+export type OurStoryPublic = {
+  slug: string;
+  title: string;
+  subtitle: string;
+  body: string;
+  quote: string;
+  imageUrl: string | null;
+  updatedAt: string;
+  publishedAt: string | null;
+};
+
+export type OurStoryContent = OurStoryPublic & {
+  id: number;
+  status: "draft" | "published";
+  updatedBy: number | null;
 };
 
 export type AdminUser = ApiUser & {
@@ -443,6 +639,20 @@ export type AdminUser = ApiUser & {
   activities?: { description: string; createdAt: string }[];
 };
 
+export type AdminConversation = {
+  id: number;
+  type: "channel" | "dm";
+  name: string;
+  bio?: string;
+  avatarUrl?: string | null;
+  otherUserId?: number | null;
+  preview: string;
+  time: string;
+  lastMessageAt?: string | null;
+  messageCount: number;
+  visibility?: string | null;
+};
+
 export type AdminNotification = {
   id?: number;
   title: string;
@@ -463,6 +673,8 @@ export type AdminChannel = {
   visibility: string;
   moderatorIds: number[];
   memberCount: number;
+  avatarUrl?: string | null;
+  createdAt?: string;
 };
 
 export type TeamApplication = {
@@ -490,6 +702,16 @@ export type AdminResource = {
   version?: string;
   sortOrder?: number;
   uploaderName?: string;
+  visibility?: "PUBLIC" | "PRIVATE";
+};
+
+export type DbConsoleColumn = {
+  name: string;
+  type: string;
+  notnull: boolean;
+  dfltValue: string | null;
+  pk: boolean;
+  sensitive: boolean;
 };
 
 export type GameDownloadInfo = {
@@ -552,6 +774,8 @@ export type ActivityLogEntry = {
   browser?: string;
   os?: string;
   deviceType?: string;
+  /** Formatted "Windows 10 (Chrome 149)" style label */
+  platform?: string;
   ipAddress?: string;
   country?: string;
   countryCode?: string;

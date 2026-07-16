@@ -1,0 +1,30 @@
+---
+description: Feature-based frontend architecture for Ninja Era Teams
+globs: frontend/src/**/*.{ts,tsx}
+alwaysApply: false
+---
+
+# Frontend architecture
+
+Organize by **feature**, not by component type.
+
+```
+frontend/src/
+  app/          # shell: App.tsx, api, realtime, theme shared.tsx, ui kit
+  shared/       # cross-feature utilities (routing, countryIso, perf, …)
+  features/     # domain features (messages, admin, auth, landing, …)
+```
+
+## Rules
+
+- Put new domain UI under `features/<name>/`. Keep `app/` for shell and cross-cutting I/O.
+- Prefer extracting **hooks / services / helpers / types** from large pages over many tiny presentational wrappers.
+- Ideal file size ~200–600 lines; major pages may be 600–900. Revisit carefully above ~1000.
+- Reuse `@/app/api` and `@/app/realtime` — no scattered raw `fetch` / extra Socket.IO clients.
+- One Socket.IO connection per session (`realtime.ts`); features subscribe via helpers/hooks.
+- Do not invent a global store for state used by a single feature.
+- Each major feature should keep a short `README.md` with purpose and entry points.
+
+## Naming
+
+- Components: PascalCase · Hooks: `useSomething` · Utils: camelCase · Constants: UPPER_SNAKE when appropriate · Types: PascalCase

@@ -1,8 +1,23 @@
 import type { Request, Response, NextFunction } from "express";
 import type { UserRow } from "../db/index.js";
+import { isSuperAdmin as checkSuperAdmin } from "../services/adminPermissions.js";
+
+export { isSuperAdmin, SUPER_ADMIN_EMAIL, isProtectedAccount, isAdministrator, canManageTargetUser, canSelectTargetUser } from "../services/adminPermissions.js";
 
 export function isAdmin(user: UserRow): boolean {
   return (user as UserRow & { is_admin?: number }).is_admin === 1;
+}
+
+export function requireSuperAdmin(req: Request, res: Response, next: NextFunction) {
+  if (!req.user) {
+    res.status(401).json({ error: "Authentication required" });
+    return;
+  }
+  if (!checkSuperAdmin(req.user)) {
+    res.status(403).json({ error: "Super Administrator access required" });
+    return;
+  }
+  next();
 }
 
 export function isTeamMember(user: UserRow): boolean {

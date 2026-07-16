@@ -1,36 +1,77 @@
 import bcrypt from "bcryptjs";
-import { db } from "./index.js";
+import { qGet, qRun } from "./query.js";
 
 const now = () => new Date().toISOString();
 
-export function seedDatabase() {
-  const userCount = db.prepare("SELECT COUNT(*) as c FROM users").get() as { c: number };
-  if (userCount.c > 0) return;
+const isProd = () => (process.env.NODE_ENV || "").toLowerCase() === "production";
 
-  const passwordHash = bcrypt.hashSync("password123", 10);
+/**
+ * Seed empty databases.
+ * Production: only create an admin when SEED_ADMIN_EMAIL + SEED_ADMIN_PASSWORD are set
+ * (never a hardcoded password). Development: keep the demo dataset for local UX.
+ */
+export async function seedDatabase() {
+  const userCount = await qGet<{ c: number }>("SELECT COUNT(*) as c FROM users");
+  if (userCount!.c > 0) return;
+
+  if (isProd()) {
+    const email = (process.env.SEED_ADMIN_EMAIL || "").trim().toLowerCase();
+    const password = process.env.SEED_ADMIN_PASSWORD || "";
+    const username = (process.env.SEED_ADMIN_USERNAME || "admin").trim() || "admin";
+    if (!email || !password) {
+      console.warn(
+        "[seed] Empty database in production — skipping seed. Set SEED_ADMIN_EMAIL and SEED_ADMIN_PASSWORD to bootstrap an admin, or create one manually.",
+      );
+      return;
+    }
+    if (password.length < 12) {
+      throw new Error("SEED_ADMIN_PASSWORD must be at least 12 characters in production");
+    }
+    const passwordHash = bcrypt.hashSync(password, 12);
+    const ts = now();
+    const demoId = (await qRun(`
+      INSERT INTO users (
+        email, username, password_hash, gender, status, bio, member_since,
+        level, rank, is_npc, is_admin, email_verified, email_verified_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, 1, ?, ?, ?)
+    `,
+      email, username, passwordHash, "Prefer not to say", "Online", "",
+      ts.slice(0, 10), 1, "Admin", ts, ts, ts,
+    )).lastInsertRowid as number;
+    await qRun(`INSERT INTO user_settings (user_id, email_notif, push_notif, two_fa, public_profile) VALUES (?, 1, 0, 0, 1)`, demoId);
+    await qRun(`
+      INSERT INTO game_stats (user_id, missions_complete, pvp_wins, playtime_hours, legendary_items, ninjutsu, taijutsu, genjutsu, senjutsu, kenjutsu)
+      VALUES (?, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    `, demoId);
+    console.log(`[seed] Production admin bootstrapped: ${email}`);
+    return;
+  }
+
+  const passwordHash = bcrypt.hashSync("123231323123q", 10);
   const ts = now();
 
-  const insertUser = db.prepare(`
+  const insertUserSql = `
     INSERT INTO users (email, username, password_hash, gender, country, city, status, bio, member_since, village, clan, level, rank, is_npc, is_admin, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
+  `;
 
-  const demoId = insertUser.run(
-    "ninja@example.com", "ShadowNinja_X", passwordHash,
-    "Prefer not to say", "Japan", "Tokyo", "Online",
-    "A dedicated shinobi on the path to becoming Hokage.",
+  const demoId = (await qRun(
+    insertUserSql,
+    "admin@ninjaera.com", "ninjaera", passwordHash,
+    "Prefer not to say", "Japan", "Osaka", "Online",
+    "",
     "2024-03-15", "Leaf Village", "Dragon Clan", 47, "Jonin", 0, 1, ts, ts
-  ).lastInsertRowid as number;
+  )).lastInsertRowid as number;
 
-  db.prepare(`
+  await qRun(`
   INSERT INTO user_settings (user_id, email_notif, push_notif, two_fa, public_profile)
   VALUES (?, 1, 0, 0, 1)
-  `).run(demoId);
+  `, demoId);
 
-  db.prepare(`
+  await qRun(`
   INSERT INTO game_stats (user_id, missions_complete, pvp_wins, playtime_hours, legendary_items, ninjutsu, taijutsu, genjutsu, senjutsu, kenjutsu)
   VALUES (?, 142, 89, 312, 7, 85, 72, 68, 45, 90)
-  `).run(demoId);
+  `, demoId);
 
   const achievements = [
     ["First Blood", "Won your first PvP match", "military"],
@@ -38,9 +79,9 @@ export function seedDatabase() {
     ["Legendary Hunter", "Collected 5 legendary items", "diamond"],
     ["Shadow Walker", "Completed the Shadow Realm questline", "shield"],
   ];
-  const insertAch = db.prepare("INSERT INTO achievements (user_id, title, description, icon, earned_at) VALUES (?, ?, ?, ?, ?)");
+  const insertAchSql = "INSERT INTO achievements (user_id, title, description, icon, earned_at) VALUES (?, ?, ?, ?, ?)";
   for (const [title, desc, icon] of achievements) {
-    insertAch.run(demoId, title, desc, icon, ts);
+    await qRun(insertAchSql, demoId, title, desc, icon, ts);
   }
 
   const inventory = [
@@ -49,9 +90,9 @@ export function seedDatabase() {
     ["Health Potion", "common", 24, "star"],
     ["Kunai Pack", "uncommon", 50, "shield"],
   ];
-  const insertInv = db.prepare("INSERT INTO inventory_items (user_id, name, rarity, quantity, icon) VALUES (?, ?, ?, ?, ?)");
+  const insertInvSql = "INSERT INTO inventory_items (user_id, name, rarity, quantity, icon) VALUES (?, ?, ?, ?, ?)";
   for (const [name, rarity, qty, icon] of inventory) {
-    insertInv.run(demoId, name, rarity, qty, icon);
+    await qRun(insertInvSql, demoId, name, rarity, qty, icon);
   }
 
   const activities = [
@@ -60,9 +101,9 @@ export function seedDatabase() {
     "Crafted Ember Cloak at the forge",
     "Joined guild raid: Dragon Sanctum",
   ];
-  const insertAct = db.prepare("INSERT INTO activity_log (user_id, description, created_at) VALUES (?, ?, ?)");
+  const insertActSql = "INSERT INTO activity_log (user_id, description, created_at) VALUES (?, ?, ?)";
   for (const desc of activities) {
-    insertAct.run(demoId, desc, ts);
+    await qRun(insertActSql, demoId, desc, ts);
   }
 
   const npcs = [
@@ -74,10 +115,11 @@ export function seedDatabase() {
   ];
   const npcIds: number[] = [];
   for (const [email, username, status, bio, village, clan, level] of npcs) {
-    const id = insertUser.run(
+    const id = (await qRun(
+      insertUserSql,
       email, username, passwordHash, "Prefer not to say", "Japan", null, status, bio,
       ts.slice(0, 10), village, clan, level, "Chunin", 1, 0, ts, ts
-    ).lastInsertRowid as number;
+    )).lastInsertRowid as number;
     npcIds.push(id);
   }
 
@@ -86,16 +128,16 @@ export function seedDatabase() {
     ["New Season Launch", "Season 4 — Shadow Realm begins July 15. New raids, weapons, and clan rankings."],
     ["Guild War Results", "Dragon Sanctum Raiders claimed first place in last week's territory war."],
   ];
-  const insertNotif = db.prepare("INSERT INTO notifications (title, body, source, page, created_at) VALUES (?, ?, 'Operations', 'alarms', ?)");
+  const insertNotifSql = "INSERT INTO notifications (title, body, source, page, created_at) VALUES (?, ?, 'Operations', 'alarms', ?)";
   const notifIds: number[] = [];
   for (const [title, body] of notifs) {
-    const id = insertNotif.run(title, body, ts).lastInsertRowid as number;
+    const id = (await qRun(insertNotifSql, title, body, ts)).lastInsertRowid as number;
     notifIds.push(id);
   }
-  db.prepare("INSERT INTO notification_reads (user_id, notification_id, read_at) VALUES (?, ?, ?)").run(demoId, notifIds[2], ts);
+  await qRun("INSERT INTO notification_reads (user_id, notification_id, read_at) VALUES (?, ?, ?)", demoId, notifIds[2], ts);
 
-  const insertConv = db.prepare("INSERT INTO conversations (type, name, bio, created_at) VALUES (?, ?, ?, ?)");
-  const insertPart = db.prepare("INSERT INTO conversation_participants (conversation_id, user_id, joined_at) VALUES (?, ?, ?)");
+  const insertConvSql = "INSERT INTO conversations (type, name, bio, created_at) VALUES (?, ?, ?, ?)";
+  const insertPartSql = "INSERT INTO conversation_participants (conversation_id, user_id, joined_at) VALUES (?, ?, ?)";
 
   const channels = [
     ["channel", "# general", "Main guild text channel for general discussion and announcements."],
@@ -104,9 +146,9 @@ export function seedDatabase() {
   ];
   const channelIds: number[] = [];
   for (const [type, name, bio] of channels) {
-    const id = insertConv.run(type, name, bio, ts).lastInsertRowid as number;
+    const id = (await qRun(insertConvSql, type, name, bio, ts)).lastInsertRowid as number;
     channelIds.push(id);
-    insertPart.run(id, demoId, ts);
+    await qRun(insertPartSql, id, demoId, ts);
   }
 
   const dmConvs = [
@@ -118,16 +160,16 @@ export function seedDatabase() {
   ];
   const dmIds: number[] = [];
   for (const [npcId, name] of dmConvs) {
-    const convId = insertConv.run("dm", name, "", ts).lastInsertRowid as number;
+    const convId = (await qRun(insertConvSql, "dm", name, "", ts)).lastInsertRowid as number;
     dmIds.push(convId);
-    insertPart.run(convId, demoId, ts);
-    insertPart.run(convId, npcId, ts);
+    await qRun(insertPartSql, convId, demoId, ts);
+    await qRun(insertPartSql, convId, npcId, ts);
   }
 
-  const insertMsg = db.prepare(`
+  const insertMsgSql = `
     INSERT INTO messages (conversation_id, user_id, content, created_at)
     VALUES (?, ?, ?, ?)
-  `);
+  `;
 
   const ryuuMsgs = [
     [npcIds[0], "Hey! Are you free tonight for the Dragon Sanctum raid?"],
@@ -138,16 +180,16 @@ export function seedDatabase() {
     [demoId, "Got it, I have the Ember Cloak set ready!"],
   ];
   for (const [userId, content] of ryuuMsgs) {
-    insertMsg.run(dmIds[0], userId, content, ts);
+    await qRun(insertMsgSql, dmIds[0], userId, content, ts);
   }
 
-  insertMsg.run(channelIds[0], npcIds[0], "Welcome to the guild channel!", ts);
-  insertMsg.run(channelIds[1], npcIds[1], "Boss strategy posted above", ts);
-  insertMsg.run(channelIds[2], npcIds[2], "WTB Void Blade — paying well", ts);
-  insertMsg.run(dmIds[1], npcIds[1], "I got the Legendary drop!", ts);
-  insertMsg.run(dmIds[2], npcIds[2], "Guild war starts in 2 hours", ts);
-  insertMsg.run(dmIds[3], npcIds[3], "Can you help me craft this?", ts);
-  insertMsg.run(dmIds[4], npcIds[4], "Check the new patch notes", ts);
+  await qRun(insertMsgSql, channelIds[0], npcIds[0], "Welcome to the guild channel!", ts);
+  await qRun(insertMsgSql, channelIds[1], npcIds[1], "Boss strategy posted above", ts);
+  await qRun(insertMsgSql, channelIds[2], npcIds[2], "WTB Void Blade — paying well", ts);
+  await qRun(insertMsgSql, dmIds[1], npcIds[1], "I got the Legendary drop!", ts);
+  await qRun(insertMsgSql, dmIds[2], npcIds[2], "Guild war starts in 2 hours", ts);
+  await qRun(insertMsgSql, dmIds[3], npcIds[3], "Can you help me craft this?", ts);
+  await qRun(insertMsgSql, dmIds[4], npcIds[4], "Check the new patch notes", ts);
 
   const jobs = [
     ["Senior 3D Artist", "Art", "Remote · Full-time", "Create stunning 3D assets for the Ninja Era world."],
@@ -157,33 +199,31 @@ export function seedDatabase() {
     ["AI/ML Engineer", "AI", "Remote · Full-time", "Create intelligent NPC behavior and procedural content."],
     ["UI/UX Designer", "Design", "Remote · Full-time", "Design intuitive interfaces for web and in-game HUD."],
   ];
-  const insertJob = db.prepare("INSERT INTO job_postings (title, department, employment_type, description) VALUES (?, ?, ?, ?)");
+  const insertJobSql = "INSERT INTO job_postings (title, department, employment_type, description) VALUES (?, ?, ?, ?)";
   for (const [title, dept, type, desc] of jobs) {
-    insertJob.run(title, dept, type, desc);
+    await qRun(insertJobSql, title, dept, type, desc);
   }
 
   // Team members are created only when applications are approved — no placeholder roster.
 
   const resources = [
-    ["Beginner's Guide to Jutsu", "Guides", "Master the basics of ninjutsu, taijutsu, and combat.", null],
-    ["Character Creation Walkthrough", "Guides", "Step-by-step guide to creating your shinobi.", null],
-    ["Shadow Realm Wiki", "Wiki", "Complete encyclopedia of the Shadow Realm zone.", null],
-    ["Clan System Overview", "Wiki", "How clans work, ranks, and territory wars.", null],
-    ["Windows Client v2.4.1", "Downloads", "Latest PC game client installer.", null],
-    ["Patch Notes v2.4.1", "Patch Notes", "Balance changes, bug fixes, and new content.", null],
-    ["Season 4 Trailer", "Media", "Official cinematic trailer for Shadow Realm.", null],
+    ["Game Client Installer", "App", "PC and companion application installs for Ninja Era.", null],
+    ["Getting Started Walkthrough", "Guide", "Step-by-step instructions for new shinobi.", null],
+    ["UI Design Kit", "Design", "Layout references and creative design assets.", null],
+    ["Character Concept Sheet", "Character Art", "Official character illustrations and concept art.", null],
+    ["Sample Source Pack", "Source", "Development source files and project templates.", null],
   ];
-  const insertRes = db.prepare("INSERT INTO resources (title, category, description, content_url, published_at) VALUES (?, ?, ?, ?, ?)");
+  const insertResSql = "INSERT INTO resources (title, category, description, content_url, published_at) VALUES (?, ?, ?, ?, ?)";
   for (const [title, cat, desc, url] of resources) {
-    insertRes.run(title, cat, desc, url, ts);
+    await qRun(insertResSql, title, cat, desc, url, ts);
   }
 
   console.log("Database seeded successfully.");
-  console.log("Demo account: ninja@example.com / password123");
+  console.log("Admin account: admin@ninjaera.com");
 }
 
 if (import.meta.url === `file://${process.argv[1]?.replace(/\\/g, "/")}`) {
   const { initSchema } = await import("./index.js");
-  initSchema();
-  seedDatabase();
+  await initSchema();
+  await seedDatabase();
 }

@@ -1,17 +1,20 @@
+import "./loadEnv.js";
 import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import compression from "compression";
+import helmet from "helmet";
 import path from "path";
 import fs from "fs";
 import http from "http";
 import { fileURLToPath } from "url";
-import dotenv from "dotenv";
 
-import { initSchema } from "./db/index.js";
-import { runMigrations } from "./db/migrations.js";
+import { dbAsync, dataDirectory } from "./db/index.js";
+import { qGet } from "./db/query.js";
+import { runAllMigrations } from "./db/migrate.js";
 import { seedDatabase } from "./db/seed.js";
 import { errorHandler, notFound } from "./middleware/error.js";
+import { initStorage, getStorage } from "./storage/index.js";
 
 import authRoutes from "./routes/auth.js";
 import oauthRoutes from "./routes/oauth.js";
@@ -26,83 +29,232 @@ import dmRoutes from "./routes/dm.js";
 import gameDownloadRoutes from "./routes/gameDownloads.js";
 import contentRoutes from "./routes/content.js";
 import { initRealtime } from "./services/realtime.js";
-
-dotenv.config();
+import { verifyMailOnStartup } from "./services/mail.js";
+import { optionalAuth } from "./middleware/auth.js";
+import { canDownloadResource, normalizeResourceVisibility } from "./routes/content.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const uploadDir = process.env.UPLOAD_DIR || path.resolve(__dirname, "../uploads");
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
-initSchema();
-runMigrations();
-seedDatabase();
+async function main() {
+  await initStorage();
+  await runAllMigrations();
+  await seedDatabase();
 
-const app = express();
-const PORT = Number(process.env.PORT) || 3001;
-const CORS_ORIGIN = process.env.CORS_ORIGIN || "http://localhost:5173";
+  const storage = getStorage();
+  const uploadDir = storage.localRoot
+    || process.env.UPLOAD_DIR
+    || path.resolve(dataDirectory, "uploads");
+  if (storage.provider === "local" && !fs.existsSync(uploadDir)) {
+    fs.mkdirSync(uploadDir, { recursive: true });
+  }
 
-// gzip/deflate shrinks JSON + HTML for free-tier bandwidth budgets
-app.use(compression());
-app.use(cors({ origin: CORS_ORIGIN, credentials: true }));
-app.use(cookieParser());
-app.use(express.json({ limit: "1mb" }));
+  const app = express();
+  const PORT = Number(process.env.PORT) || 3001;
+  const CORS_ORIGIN = process.env.CORS_ORIGIN || "http://localhost:5173";
+  const isProd = (process.env.NODE_ENV || "").toLowerCase() === "production";
+  const trustProxyEnv = (process.env.TRUST_PROXY || "").trim().toLowerCase();
+  if (trustProxyEnv === "1" || trustProxyEnv === "true" || (isProd && trustProxyEnv !== "0" && trustProxyEnv !== "false")) {
+    app.set("trust proxy", 1);
+  }
 
-// Cache uploaded media aggressively (filenames are unique/immutable once written).
-app.use("/uploads", express.static(uploadDir, {
-  maxAge: "7d",
-  etag: true,
-  lastModified: true,
-  immutable: true,
-}));
-
-app.use("/api/auth", authRoutes);
-app.use("/api/auth", oauthRoutes);
-app.use("/api/users", userRoutes);
-app.use("/api", messageRoutes);
-app.use("/api/notifications", notificationRoutes);
-app.use("/api/contact", contactRoutes);
-app.use("/api/newsletter", newsletterRoutes);
-app.use("/api/jobs", jobRoutes);
-app.use("/api/admin", adminRoutes);
-app.use("/api", dmRoutes);
-app.use("/api", gameDownloadRoutes);
-app.use("/api", contentRoutes);
-
-app.get("/api/health", (_req, res) => {
-  res.json({ ok: true, ts: Date.now() });
-});
-
-// Optional: serve Vite build from the same Node process (Railway/Render single-service deploys).
-const spaDir = process.env.SPA_DIR ? path.resolve(process.env.SPA_DIR) : null;
-if (spaDir && fs.existsSync(spaDir)) {
-  app.use(express.static(spaDir, {
-    maxAge: "1h",
-    etag: true,
-    setHeaders(res, filePath) {
-      if (filePath.includes(`${path.sep}assets${path.sep}`)) {
-        res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-      }
-    },
+  app.use(helmet({
+    contentSecurityPolicy: isProd ? {
+      useDefaults: true,
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+        fontSrc: ["'self'", "https://fonts.gstatic.com", "data:"],
+        imgSrc: ["'self'", "data:", "blob:", "https:"],
+        mediaSrc: ["'self'", "blob:", "https:"],
+        connectSrc: ["'self'", "wss:", "ws:", "https:"],
+        frameSrc: ["'none'"],
+        objectSrc: ["'none'"],
+        baseUri: ["'self'"],
+        formAction: ["'self'"],
+      },
+    } : false,
+    crossOriginEmbedderPolicy: false,
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+    referrerPolicy: { policy: "strict-origin-when-cross-origin" },
+    hsts: isProd ? { maxAge: 15552000, includeSubDomains: true } : false,
   }));
-  app.get(/.*/, (req, res, next) => {
-    if (
-      req.path.startsWith("/api")
-      || req.path.startsWith("/uploads")
-      || req.path.startsWith("/socket.io")
-    ) {
+  app.use((_req, res, next) => {
+    res.setHeader("Permissions-Policy", "camera=(self), microphone=(self), geolocation=(), payment=()");
+    next();
+  });
+
+  app.use(compression());
+
+  // Explicit CORS allowlist (comma-separated CORS_ORIGIN supported)
+  const corsOrigins = CORS_ORIGIN.split(",").map((s) => s.trim()).filter(Boolean);
+  app.use(cors({
+    origin: (origin, cb) => {
+      if (!origin) return cb(null, true); // same-origin / curl
+      if (corsOrigins.includes(origin) || corsOrigins.includes("*")) return cb(null, true);
+      return cb(null, false);
+    },
+    credentials: true,
+  }));
+  app.use(cookieParser());
+  app.use(express.json({ limit: "1mb" }));
+  app.use((_req, res, next) => {
+    res.setHeader(
+      "Accept-CH",
+      "Sec-CH-UA, Sec-CH-UA-Mobile, Sec-CH-UA-Platform, Sec-CH-UA-Platform-Version, Sec-CH-UA-Model",
+    );
+    next();
+  });
+
+  /**
+   * Gate direct /uploads access for PRIVATE resource files and apply safe headers.
+   * Local storage serves from disk; cloud storage uses signed URLs for gated assets.
+   */
+  app.use("/uploads", optionalAuth, async (req, res, next) => {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "DENY");
+
+    const relKey = req.path.replace(/^[/\\]+/, "").replace(/\.\./g, "");
+    const filename = path.basename(relKey);
+    if (!filename || filename === "." || filename === "..") {
       next();
       return;
     }
-    res.sendFile(path.join(spaDir, "index.html"));
+    try {
+      const resource = await qGet<{ visibility?: string; content_url?: string }>(`
+        SELECT visibility, content_url FROM resources
+        WHERE content_url = ? OR content_url LIKE ?
+        LIMIT 1
+      `, `/uploads/${relKey}`, `%/${filename}`);
+
+      if (resource) {
+        const visibility = normalizeResourceVisibility(resource.visibility);
+        if (!canDownloadResource(visibility, req.user)) {
+          res.status(403).json({
+            error: "This resource is available only to Team Members and Administrators.",
+          });
+          return;
+        }
+        // Private resources: force attachment disposition even when served statically
+        if (visibility === "PRIVATE") {
+          res.setHeader("Content-Disposition", `attachment; filename="${filename.replace(/"/g, "")}"`);
+        }
+      }
+
+      // Job application files are never world-readable via /uploads
+      const jobFile = await qGet(`
+        SELECT 1 FROM job_applications
+        WHERE photo_url = ? OR photo_url LIKE ? OR cv_url = ? OR cv_url LIKE ?
+        LIMIT 1
+      `, `/uploads/${relKey}`, `%/${filename}`, `/uploads/${relKey}`, `%/${filename}`);
+      if (jobFile) {
+        const u = req.user as { is_admin?: number; id?: number } | undefined;
+        if (!u || u.is_admin !== 1) {
+          res.status(403).json({ error: "Not authorized to access this file" });
+          return;
+        }
+        res.setHeader("Content-Disposition", `attachment; filename="${filename.replace(/"/g, "")}"`);
+      }
+    } catch {
+      /* fall through to static/cloud */
+    }
+    next();
+  });
+
+  if (storage.provider === "local") {
+    app.use("/uploads", express.static(uploadDir, {
+      maxAge: "7d",
+      etag: true,
+      lastModified: true,
+      immutable: true,
+      setHeaders(res, filePath) {
+        res.setHeader("X-Content-Type-Options", "nosniff");
+        const ext = path.extname(filePath).toLowerCase();
+        if ([".html", ".htm", ".svg", ".xml", ".js"].includes(ext)) {
+          res.setHeader("Content-Disposition", "attachment");
+          res.setHeader("Content-Type", "application/octet-stream");
+        }
+      },
+    }));
+  } else {
+    // Cloud: prefer short-lived signed URLs; never redirect private objects to permanent CDN.
+    app.use("/uploads", async (req, res, next) => {
+      try {
+        const key = req.path.replace(/^\//, "").replace(/\.\./g, "");
+        if (!key) { next(); return; }
+        if (storage.getSignedDownloadUrl) {
+          const url = await storage.getSignedDownloadUrl(key, 120);
+          res.redirect(302, url);
+          return;
+        }
+        next();
+      } catch {
+        next();
+      }
+    });
+  }
+
+  app.use("/api/auth", authRoutes);
+  app.use("/api/auth", oauthRoutes);
+  app.use("/api/users", userRoutes);
+  app.use("/api", messageRoutes);
+  app.use("/api/notifications", notificationRoutes);
+  app.use("/api/contact", contactRoutes);
+  app.use("/api/newsletter", newsletterRoutes);
+  app.use("/api/jobs", jobRoutes);
+  app.use("/api/admin", adminRoutes);
+  app.use("/api", dmRoutes);
+  app.use("/api", gameDownloadRoutes);
+  app.use("/api", contentRoutes);
+
+  app.get("/api/health", async (_req, res) => {
+    res.json({
+      ok: true,
+      ts: Date.now(),
+      database: dbAsync.provider,
+      storage: storage.provider,
+    });
+  });
+
+  const spaDir = process.env.SPA_DIR ? path.resolve(process.env.SPA_DIR) : null;
+  if (spaDir && fs.existsSync(spaDir)) {
+    app.use(express.static(spaDir, {
+      maxAge: "1h",
+      etag: true,
+      setHeaders(res, filePath) {
+        if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+          res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+        }
+      },
+    }));
+    app.get(/.*/, (req, res, next) => {
+      if (
+        req.path.startsWith("/api")
+        || req.path.startsWith("/uploads")
+        || req.path.startsWith("/socket.io")
+      ) {
+        next();
+        return;
+      }
+      res.sendFile(path.join(spaDir, "index.html"));
+    });
+  }
+
+  app.use(notFound);
+  app.use(errorHandler);
+
+  const httpServer = http.createServer(app);
+  initRealtime(httpServer, CORS_ORIGIN);
+
+  httpServer.listen(PORT, () => {
+    console.log(`Ninja Era API running on http://localhost:${PORT}`);
+    console.log(`  database: ${dbAsync.provider}`);
+    console.log(`  storage:  ${storage.provider}`);
+    void verifyMailOnStartup();
   });
 }
 
-app.use(notFound);
-app.use(errorHandler);
-
-const httpServer = http.createServer(app);
-initRealtime(httpServer, CORS_ORIGIN);
-
-httpServer.listen(PORT, () => {
-  console.log(`Ninja Era API running on http://localhost:${PORT}`);
+main().catch((err) => {
+  console.error("Fatal startup error:", err);
+  process.exit(1);
 });

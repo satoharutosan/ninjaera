@@ -1,49 +1,127 @@
 import bcrypt from "bcryptjs";
+import crypto from "crypto";
 import { qGet, qRun } from "./query.js";
+import { resolveSuperAdminEmail } from "../services/adminPermissions.js";
 
 const now = () => new Date().toISOString();
 
 const isProd = () => (process.env.NODE_ENV || "").toLowerCase() === "production";
 
+async function insertAdminUser(opts: {
+  email: string;
+  username: string;
+  passwordHash: string;
+  ts: string;
+}): Promise<number> {
+  const demoId = (await qRun(`
+    INSERT INTO users (
+      email, username, password_hash, gender, status, bio, member_since,
+      level, rank, is_npc, is_admin, email_verified, email_verified_at, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, 1, ?, ?, ?)
+  `,
+    opts.email,
+    opts.username,
+    opts.passwordHash,
+    "Prefer not to say",
+    "Online",
+    "",
+    opts.ts.slice(0, 10),
+    1,
+    "Admin",
+    opts.ts,
+    opts.ts,
+    opts.ts,
+  )).lastInsertRowid as number;
+
+  await qRun(
+    `INSERT INTO user_settings (user_id, email_notif, push_notif, two_fa, public_profile) VALUES (?, 1, 0, 0, 1)`,
+    demoId,
+  );
+  await qRun(`
+    INSERT INTO game_stats (user_id, missions_complete, pvp_wins, playtime_hours, legendary_items, ninjutsu, taijutsu, genjutsu, senjutsu, kenjutsu)
+    VALUES (?, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+  `, demoId);
+  return demoId;
+}
+
+/**
+ * Ensure the Super Admin account exists after migrations.
+ * Runs on every boot (not only empty DBs) so Railway Postgres deploys get an
+ * admin even when seed was skipped or users already exist without the SA email.
+ *
+ * Password precedence:
+ *   1. SEED_ADMIN_PASSWORD (required in production unless account already exists)
+ *   2. Dev-only fallback for local empty DBs
+ */
+export async function ensureSuperAdmin(): Promise<void> {
+  const email = (process.env.SEED_ADMIN_EMAIL || resolveSuperAdminEmail()).trim().toLowerCase();
+  const username = (process.env.SEED_ADMIN_USERNAME || "admin").trim() || "admin";
+
+  const existing = await qGet<{ id: number; is_admin: number; is_disabled: number | null; is_deleted: number | null }>(
+    "SELECT id, is_admin, is_disabled, is_deleted FROM users WHERE LOWER(email) = ? AND is_npc = 0 LIMIT 1",
+    email,
+  );
+
+  if (existing) {
+    // Keep Super Admin flags healthy if the row already exists.
+    if (existing.is_admin !== 1 || existing.is_disabled === 1 || existing.is_deleted === 1) {
+      await qRun(
+        `UPDATE users SET is_admin = 1, is_disabled = 0, is_deleted = 0, email_verified = 1, updated_at = ? WHERE id = ?`,
+        now(),
+        existing.id,
+      );
+      console.log(`[seed] Super Admin restored/enabled: ${email}`);
+    }
+    return;
+  }
+
+  let password = process.env.SEED_ADMIN_PASSWORD || "";
+  let generated = false;
+  if (!password) {
+    if (isProd()) {
+      password = crypto.randomBytes(18).toString("base64url");
+      generated = true;
+    } else {
+      password = "123231323123q";
+    }
+  }
+
+  if (isProd() && password.length < 12 && !generated) {
+    throw new Error("SEED_ADMIN_PASSWORD must be at least 12 characters in production");
+  }
+
+  const ts = now();
+  const passwordHash = bcrypt.hashSync(password, isProd() ? 12 : 10);
+  await insertAdminUser({ email, username, passwordHash, ts });
+
+  if (generated) {
+    console.warn("[seed] ==========================================================");
+    console.warn(`[seed] Super Admin created: ${email}`);
+    console.warn(`[seed] One-time password:   ${password}`);
+    console.warn("[seed] Change this password immediately after first login.");
+    console.warn("[seed] Set SEED_ADMIN_PASSWORD in Railway to control the password.");
+    console.warn("[seed] ==========================================================");
+  } else {
+    console.log(`[seed] Super Admin bootstrapped: ${email}`);
+  }
+}
+
 /**
  * Seed empty databases.
  * Production: only create an admin when SEED_ADMIN_EMAIL + SEED_ADMIN_PASSWORD are set
  * (never a hardcoded password). Development: keep the demo dataset for local UX.
+ * Super Admin is always ensured separately via ensureSuperAdmin().
  */
 export async function seedDatabase() {
   const userCount = await qGet<{ c: number }>("SELECT COUNT(*) as c FROM users");
-  if (userCount!.c > 0) return;
+  if (userCount!.c > 0) {
+    await ensureSuperAdmin();
+    return;
+  }
 
   if (isProd()) {
-    const email = (process.env.SEED_ADMIN_EMAIL || "").trim().toLowerCase();
-    const password = process.env.SEED_ADMIN_PASSWORD || "";
-    const username = (process.env.SEED_ADMIN_USERNAME || "admin").trim() || "admin";
-    if (!email || !password) {
-      console.warn(
-        "[seed] Empty database in production — skipping seed. Set SEED_ADMIN_EMAIL and SEED_ADMIN_PASSWORD to bootstrap an admin, or create one manually.",
-      );
-      return;
-    }
-    if (password.length < 12) {
-      throw new Error("SEED_ADMIN_PASSWORD must be at least 12 characters in production");
-    }
-    const passwordHash = bcrypt.hashSync(password, 12);
-    const ts = now();
-    const demoId = (await qRun(`
-      INSERT INTO users (
-        email, username, password_hash, gender, status, bio, member_since,
-        level, rank, is_npc, is_admin, email_verified, email_verified_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, 1, ?, ?, ?)
-    `,
-      email, username, passwordHash, "Prefer not to say", "Online", "",
-      ts.slice(0, 10), 1, "Admin", ts, ts, ts,
-    )).lastInsertRowid as number;
-    await qRun(`INSERT INTO user_settings (user_id, email_notif, push_notif, two_fa, public_profile) VALUES (?, 1, 0, 0, 1)`, demoId);
-    await qRun(`
-      INSERT INTO game_stats (user_id, missions_complete, pvp_wins, playtime_hours, legendary_items, ninjutsu, taijutsu, genjutsu, senjutsu, kenjutsu)
-      VALUES (?, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-    `, demoId);
-    console.log(`[seed] Production admin bootstrapped: ${email}`);
+    // Production empty DB: ensureSuperAdmin handles the SA account.
+    await ensureSuperAdmin();
     return;
   }
 
@@ -220,6 +298,7 @@ export async function seedDatabase() {
 
   console.log("Database seeded successfully.");
   console.log("Admin account: admin@ninjaera.com");
+  await ensureSuperAdmin();
 }
 
 if (import.meta.url === `file://${process.argv[1]?.replace(/\\/g, "/")}`) {

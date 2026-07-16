@@ -1,15 +1,25 @@
 import type { Response } from "express";
 import type { UserRow } from "../db/index.js";
 
-/** Single authoritative Super Admin identity — no DB role column. */
-export const SUPER_ADMIN_EMAIL = "admin@ninjaera.com";
+/**
+ * Super Admin is identified by email (not a DB role column).
+ * Override with SUPER_ADMIN_EMAIL in production so Railway bootstrap matches.
+ */
+export function resolveSuperAdminEmail(): string {
+  const fromEnv = (process.env.SUPER_ADMIN_EMAIL || "").trim().toLowerCase();
+  if (fromEnv) return fromEnv;
+  return "admin@ninjaera.com";
+}
+
+/** @deprecated Prefer resolveSuperAdminEmail() — kept for callers that need a constant-ish value. */
+export const SUPER_ADMIN_EMAIL = resolveSuperAdminEmail();
 
 type EmailLike = { email?: string | null };
 type AdminLike = { is_admin?: number; isAdmin?: boolean };
 
 export function isSuperAdmin(user: EmailLike | UserRow): boolean {
   const email = (user.email || "").trim().toLowerCase();
-  return email === SUPER_ADMIN_EMAIL.toLowerCase();
+  return email === resolveSuperAdminEmail();
 }
 
 /** The Super Admin account itself — immutable by anyone. */

@@ -2,7 +2,7 @@ import type { Request, Response, NextFunction } from "express";
 import type { UserRow } from "../db/index.js";
 import { isSuperAdmin as checkSuperAdmin } from "../services/adminPermissions.js";
 
-export { isSuperAdmin, SUPER_ADMIN_EMAIL, isProtectedAccount, isAdministrator, canManageTargetUser, canSelectTargetUser } from "../services/adminPermissions.js";
+export { isSuperAdmin, SUPER_ADMIN_EMAIL, resolveSuperAdminEmail, isProtectedAccount, isAdministrator, canManageTargetUser, canSelectTargetUser } from "../services/adminPermissions.js";
 
 export function isAdmin(user: UserRow): boolean {
   return (user as UserRow & { is_admin?: number }).is_admin === 1;

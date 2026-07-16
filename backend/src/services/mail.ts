@@ -1,6 +1,7 @@
 import crypto from "crypto";
+import dns from "dns";
 import nodemailer from "nodemailer";
-import type { Transporter, SentMessageInfo } from "nodemailer";
+import type { Transporter, SentMessageInfo, TransportOptions } from "nodemailer";
 
 const DEFAULT_FROM_NAME = "Ninja Era";
 const DEFAULT_FROM_ADDRESS = "softfuture28@gmail.com";
@@ -25,6 +26,7 @@ const USER_FACING_RESET_SEND_ERROR =
 
 let transporter: Transporter | null = null;
 let lastVerifyOk: boolean | null = null;
+let lastVerifyError: string | null = null;
 
 function env(name: string): string {
   return (process.env[name] || "").trim();
@@ -50,33 +52,123 @@ export const MAIL_FROM = `${DEFAULT_FROM_NAME} <${DEFAULT_FROM_ADDRESS}>`;
 
 export function mailConfigured(): boolean {
   // Host defaults to smtp.gmail.com; App Password + account are required.
+  // Resend / SendGrid / Mailgun / SES also use SMTP_USER + SMTP_PASS (API key as pass).
   return Boolean(env("SMTP_USER") && env("SMTP_PASS"));
 }
 
+type SmtpPreset = {
+  host: string;
+  port: number;
+  secure: boolean;
+  /** Default SMTP_USER when unset (e.g. Resend uses literal "resend"). */
+  defaultUser?: string;
+  hint: string;
+};
+
 /**
- * Gmail-compatible SMTP transport.
- * Use port 587 + STARTTLS (default) or 465 + implicit TLS.
- * Authenticate with a Google App Password — never the account password.
+ * Presets for Railway-friendly SMTP providers.
+ * Set SMTP_PROVIDER=resend|sendgrid|mailgun|ses|brevo|gmail (or leave unset + SMTP_HOST).
+ */
+function resolveSmtpPreset(): SmtpPreset {
+  const provider = env("SMTP_PROVIDER").toLowerCase();
+  switch (provider) {
+    case "resend":
+      return {
+        host: "smtp.resend.com",
+        port: 465,
+        secure: true,
+        defaultUser: "resend",
+        hint: "Resend: SMTP_USER=resend, SMTP_PASS=<API key>, MAIL_FROM_ADDRESS must be a verified domain sender",
+      };
+    case "sendgrid":
+      return {
+        host: "smtp.sendgrid.net",
+        port: 587,
+        secure: false,
+        defaultUser: "apikey",
+        hint: "SendGrid: SMTP_USER=apikey, SMTP_PASS=<API key>",
+      };
+    case "mailgun":
+      return {
+        host: env("SMTP_HOST") || "smtp.mailgun.org",
+        port: 587,
+        secure: false,
+        hint: "Mailgun: SMTP_USER=<smtp login>, SMTP_PASS=<smtp password> from Mailgun Sending → Domain → SMTP",
+      };
+    case "ses":
+    case "aws":
+    case "amazon":
+      return {
+        host: env("SMTP_HOST") || "email-smtp.us-east-1.amazonaws.com",
+        port: 587,
+        secure: false,
+        hint: "Amazon SES: set SMTP_HOST to your region endpoint, SMTP_USER/SMTP_PASS = SMTP credentials",
+      };
+    case "brevo":
+    case "sendinblue":
+      return {
+        host: "smtp-relay.brevo.com",
+        port: 587,
+        secure: false,
+        hint: "Brevo: SMTP_USER=<login email>, SMTP_PASS=<SMTP key>",
+      };
+    case "gmail":
+    case "":
+    default:
+      return {
+        host: env("SMTP_HOST") || "smtp.gmail.com",
+        port: Number(env("SMTP_PORT") || "587") || 587,
+        secure: env("SMTP_SECURE") === "true" || Number(env("SMTP_PORT") || "587") === 465,
+        hint:
+          "Gmail on Railway often times out / has IPv6 issues. Prefer SMTP_PROVIDER=resend (or sendgrid). " +
+          "If keeping Gmail: App Password + SMTP_IP_FAMILY=4.",
+      };
+  }
+}
+
+/** Force IPv4 DNS lookups — Railway containers frequently cannot reach Gmail AAAA (ENETUNREACH). */
+function ipv4Lookup(
+  hostname: string,
+  _options: unknown,
+  callback: (err: NodeJS.ErrnoException | null, address: string, family: number) => void,
+) {
+  dns.lookup(hostname, { family: 4 }, callback);
+}
+
+/**
+ * SMTP transport options.
+ * - Defaults force IPv4 (SMTP_IP_FAMILY=4) to avoid Gmail IPv6 ENETUNREACH on Railway.
+ * - SMTP_PROVIDER selects host/port defaults for Resend / SendGrid / Mailgun / SES / Brevo / Gmail.
  */
 function createTransportOptions() {
-  const host = env("SMTP_HOST") || "smtp.gmail.com";
-  const port = Number(env("SMTP_PORT") || "587");
-  const secure = env("SMTP_SECURE") === "true" || port === 465;
+  const preset = resolveSmtpPreset();
+  const host = env("SMTP_HOST") || preset.host;
+  const port = Number(env("SMTP_PORT") || String(preset.port)) || preset.port;
+  const secure = env("SMTP_SECURE") === "true" || port === 465 || (env("SMTP_SECURE") === "" && preset.secure);
+  const user = env("SMTP_USER") || preset.defaultUser || "";
+  const pass = env("SMTP_PASS");
+
+  // Default IPv4; set SMTP_IP_FAMILY=0 or auto to use dual-stack.
+  const familyRaw = (env("SMTP_IP_FAMILY") || "4").trim().toLowerCase();
+  const forceIpv4 = familyRaw !== "0" && familyRaw !== "auto" && familyRaw !== "6";
+
   return {
     host,
     port,
     secure,
     requireTLS: !secure && port === 587,
-    auth: {
-      user: env("SMTP_USER"),
-      pass: env("SMTP_PASS"),
-    },
-    // Reuse connections for successive verification emails
+    auth: { user, pass },
+    ...(forceIpv4
+      ? {
+          family: 4 as const,
+          lookup: ipv4Lookup,
+        }
+      : {}),
     pool: true,
-    maxConnections: 3,
-    maxMessages: 100,
-    connectionTimeout: 15_000,
-    greetingTimeout: 15_000,
+    maxConnections: 2,
+    maxMessages: 50,
+    connectionTimeout: 20_000,
+    greetingTimeout: 20_000,
     socketTimeout: 30_000,
     tls: {
       minVersion: "TLSv1.2" as const,
@@ -93,13 +185,49 @@ function getTransporter(): Transporter {
     });
   }
   if (transporter) return transporter;
-  transporter = nodemailer.createTransport(createTransportOptions());
+  transporter = nodemailer.createTransport(createTransportOptions() as TransportOptions);
   return transporter;
 }
 
 export function resetMailTransport() {
   transporter = null;
   lastVerifyOk = null;
+  lastVerifyError = null;
+}
+
+function smtpRuntimeSummary(): {
+  provider: string;
+  host: string;
+  port: number;
+  ipv4: boolean;
+  from: string;
+} {
+  const opts = createTransportOptions();
+  return {
+    provider: env("SMTP_PROVIDER") || "gmail",
+    host: opts.host,
+    port: opts.port,
+    ipv4: Boolean(opts.family === 4),
+    from: mailFromHeader(),
+  };
+}
+
+function logMailFailureBanner(reason: string, detail?: unknown) {
+  const summary = smtpRuntimeSummary();
+  const preset = resolveSmtpPreset();
+  console.error("[mail] ==========================================================");
+  console.error(`[mail] SMTP UNAVAILABLE — ${reason}`);
+  console.error(`[mail] provider=${summary.provider} host=${summary.host}:${summary.port} ipv4=${summary.ipv4}`);
+  console.error(`[mail] from=${summary.from}`);
+  if (detail) console.error("[mail] detail:", sanitizeMailError(detail));
+  console.error("[mail] Email/password signup & password reset will return 503 until fixed.");
+  console.error(`[mail] Hint: ${preset.hint}`);
+  console.error("[mail] Railway-friendly quick fix (Resend):");
+  console.error("[mail]   SMTP_PROVIDER=resend");
+  console.error("[mail]   SMTP_USER=resend");
+  console.error("[mail]   SMTP_PASS=<Resend API key>");
+  console.error("[mail]   MAIL_FROM_ADDRESS=<verified@yourdomain>");
+  console.error("[mail] ==========================================================");
 }
 
 /** Single source of truth for brand logos in email templates. */
@@ -278,11 +406,16 @@ function isAuthFailure(err: unknown): boolean {
 
 function isTransientFailure(err: unknown): boolean {
   const info = sanitizeMailError(err);
+  const msg = String(info.message || "").toLowerCase();
   return (
     info.code === "ECONNECTION" ||
     info.code === "ETIMEDOUT" ||
     info.code === "ESOCKET" ||
     info.code === "ECONNRESET" ||
+    info.code === "ENETUNREACH" ||
+    info.code === "EHOSTUNREACH" ||
+    msg.includes("enetunreach") ||
+    msg.includes("connection timeout") ||
     info.responseCode === 421 ||
     info.responseCode === 450 ||
     info.responseCode === 451
@@ -321,38 +454,34 @@ async function sendWithRetry(
 export async function verifyMailOnStartup(): Promise<void> {
   if (!mailConfigured()) {
     lastVerifyOk = false;
-    console.warn(
-      "[mail] SMTP is not configured (SMTP_USER / SMTP_PASS). " +
-        "Email/password registration will fail until a Google App Password is set. " +
-        `Intended From: ${mailFromHeader()}`,
-    );
-    console.warn(
-      "[mail] Gmail: set SMTP_HOST=smtp.gmail.com, SMTP_PORT=587, SMTP_USER=<gmail>, " +
-        "SMTP_PASS=<Google App Password> (not the normal account password).",
-    );
+    lastVerifyError = "SMTP_USER / SMTP_PASS not set";
+    logMailFailureBanner("not configured");
     return;
   }
 
+  const summary = smtpRuntimeSummary();
   try {
     const tx = getTransporter();
     await tx.verify();
     lastVerifyOk = true;
+    lastVerifyError = null;
     console.info(
-      `[mail] SMTP ready host=${env("SMTP_HOST") || "smtp.gmail.com"} ` +
-        `port=${env("SMTP_PORT") || "587"} from=${mailFromHeader()}`,
+      `[mail] SMTP ready provider=${summary.provider} host=${summary.host}:${summary.port} ` +
+        `ipv4=${summary.ipv4} from=${summary.from}`,
     );
+    if (summary.provider === "gmail" || summary.host.includes("gmail")) {
+      console.warn(
+        "[mail] Using Gmail SMTP. If Railway logs show ETIMEDOUT/ENETUNREACH, switch to SMTP_PROVIDER=resend.",
+      );
+    }
   } catch (err) {
     lastVerifyOk = false;
+    const info = sanitizeMailError(err);
+    lastVerifyError = String(info.message || info.code || "verify failed");
     if (isAuthFailure(err)) {
-      console.error(
-        "[mail] SMTP authentication failure on startup — use a Google App Password with 2-Step Verification enabled",
-        sanitizeMailError(err),
-      );
+      logMailFailureBanner("authentication failed (check App Password / API key)", err);
     } else {
-      console.error(
-        "[mail] SMTP verify failed — registration emails will not send until fixed",
-        sanitizeMailError(err),
-      );
+      logMailFailureBanner("connection/verify failed (timeout or network blocked)", err);
     }
   }
 }
@@ -363,13 +492,24 @@ export function mailStatus(): {
   from: string;
   fromName: string;
   fromAddress: string;
+  provider: string;
+  host: string;
+  port: number;
+  ipv4: boolean;
+  error: string | null;
 } {
+  const summary = smtpRuntimeSummary();
   return {
     configured: mailConfigured(),
     verified: lastVerifyOk,
     from: mailFromHeader(),
     fromName: mailFromName(),
     fromAddress: mailFromAddress(),
+    provider: summary.provider,
+    host: summary.host,
+    port: summary.port,
+    ipv4: summary.ipv4,
+    error: lastVerifyError,
   };
 }
 

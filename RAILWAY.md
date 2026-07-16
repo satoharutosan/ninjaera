@@ -45,14 +45,32 @@ Docker `ENV` requires `name=value`. Unquoted spaces split the line, so `Era` was
 
 ## Mail (email verification / password reset)
 
+Railway frequently **cannot** reach Gmail SMTP (`ETIMEDOUT` / `ENETUNREACH` on IPv6). Prefer a transactional provider.
+
+### Recommended: Resend (SMTP)
+
+| Variable | Value |
+|----------|-------|
+| `SMTP_PROVIDER` | `resend` |
+| `SMTP_USER` | `resend` |
+| `SMTP_PASS` | Resend API key (dashboard only) |
+| `MAIL_FROM_NAME` | `Ninja Era` |
+| `MAIL_FROM_ADDRESS` | A sender on your **verified** Resend domain |
+
+Other presets: `sendgrid`, `mailgun`, `ses`, `brevo`, `gmail`.
+
+### Gmail (not reliable on Railway)
+
 | Variable | Notes |
 |----------|-------|
-| `MAIL_FROM_NAME` | Defaults to `Ninja Era` in the image |
-| `MAIL_FROM_ADDRESS` | Your verified from-address |
-| `SMTP_HOST` | e.g. `smtp.gmail.com` |
+| `SMTP_PROVIDER` | `gmail` or omit |
+| `SMTP_HOST` | `smtp.gmail.com` |
 | `SMTP_PORT` | `587` |
-| `SMTP_USER` | SMTP username |
-| `SMTP_PASS` | **App Password only — set in Railway, never in Git** |
+| `SMTP_USER` | Gmail address |
+| `SMTP_PASS` | **Google App Password** only |
+| `SMTP_IP_FAMILY` | `4` (default) — forces IPv4 DNS/connect |
+
+Startup logs print a clear `SMTP UNAVAILABLE` banner if verify fails. `/api/health` includes `mail.verified` (no secrets). Signup still **requires** working SMTP (returns 503 if unset/broken) — auth is not weakened.
 
 ## OAuth redirect URIs
 
@@ -75,13 +93,27 @@ Also set `GOOGLE_*`, `GITHUB_*`, `DISCORD_*` client id/secret in Railway Variabl
 
 Local `STORAGE_PROVIDER=local` + volume mount `/data` works, but **re-deploys without a volume wipe uploads**. Prefer object storage.
 
-## Optional bootstrap (empty Postgres)
+## Super Admin bootstrap
+
+On every boot the API ensures a Super Admin exists (`ensureSuperAdmin`):
 
 | Variable | Notes |
 |----------|-------|
-| `SEED_ADMIN_EMAIL` | Creates first admin if DB has zero users |
-| `SEED_ADMIN_PASSWORD` | ≥12 characters |
+| `SUPER_ADMIN_EMAIL` | Defaults to `admin@ninjaera.com` — must match the account email |
+| `SEED_ADMIN_EMAIL` | Optional override used when creating the account (defaults to `SUPER_ADMIN_EMAIL`) |
 | `SEED_ADMIN_USERNAME` | Defaults to `admin` |
+| `SEED_ADMIN_PASSWORD` | **Set this in Railway** (≥12 chars). If omitted in production, a one-time random password is logged at startup — change it immediately. |
+
+Login at `/#/login` with that email/password after deploy.
+
+## Optional bootstrap (legacy empty-DB notes)
+
+| Variable | Notes |
+|----------|-------|
+| `SEED_ADMIN_EMAIL` | Creates first admin if missing |
+| `SEED_ADMIN_PASSWORD` | ≥12 characters (recommended) |
+| `SEED_ADMIN_USERNAME` | Defaults to `admin` |
+| `SUPER_ADMIN_EMAIL` | Identity used for Super Admin privileges |
 
 ## Health check
 

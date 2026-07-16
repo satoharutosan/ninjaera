@@ -29,7 +29,7 @@ import dmRoutes from "./routes/dm.js";
 import gameDownloadRoutes from "./routes/gameDownloads.js";
 import contentRoutes from "./routes/content.js";
 import { initRealtime } from "./services/realtime.js";
-import { verifyMailOnStartup } from "./services/mail.js";
+import { verifyMailOnStartup, mailStatus } from "./services/mail.js";
 import { optionalAuth } from "./middleware/auth.js";
 import { canDownloadResource, normalizeResourceVisibility } from "./routes/content.js";
 
@@ -216,11 +216,20 @@ async function main() {
   app.use("/api", contentRoutes);
 
   app.get("/api/health", async (_req, res) => {
+    const mail = mailStatus();
     res.json({
       ok: true,
       ts: Date.now(),
       database: dbAsync.provider,
       storage: storage.provider,
+      mail: {
+        configured: mail.configured,
+        verified: mail.verified,
+        provider: mail.provider,
+        host: mail.host,
+        // Never expose credentials; surface only whether outbound mail works.
+        error: mail.verified === false ? mail.error : null,
+      },
     });
   });
 

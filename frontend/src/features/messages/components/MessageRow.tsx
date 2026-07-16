@@ -126,11 +126,16 @@ export const MessageRow = memo(function MessageRow({
             )
             : <div className="w-8 shrink-0" />
         ) : <div className="w-8 shrink-0" />}
-        <div className={`flex flex-col gap-1 min-w-0 max-w-[min(100%,20rem)] lg:max-w-md ${m.self ? "items-end" : "items-start"}`}>
+        <div
+          className={`flex flex-col gap-1 min-w-0 max-w-[min(100%,20rem)] lg:max-w-md ${m.self ? "items-end" : "items-start"}`}
+          style={{ opacity: m.pending ? 0.72 : m.failed ? 0.55 : 1 }}
+        >
           {showHeader && (
             <span className="text-[11px] mb-0.5 mx-1 flex items-center gap-2" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
               <span style={{ fontFamily: "Roboto Mono,monospace" }}>{m.time}</span>
               {!m.self && <span>{m.user || "Deleted User"}</span>}
+              {m.pending && <span className="italic">Sending…</span>}
+              {m.failed && <span style={{ color: C.error }}>Failed</span>}
             </span>
           )}
           <div
@@ -139,7 +144,7 @@ export const MessageRow = memo(function MessageRow({
             onMouseEnter={() => setHovered(true)}
             onMouseLeave={() => { setHovered(false); setReactionOpen(false); }}
           >
-            {hovered && (
+            {hovered && !m.pending && (
               <div className="absolute -top-8 right-0 flex items-center gap-0.5 px-1.5 py-1 rounded-full shadow-lg z-20" style={{ background: C.surface, border: `1px solid ${C.outlineVar}` }}>
                 <div className="relative">
                   <button title="React" onClick={e => { e.stopPropagation(); setReactionOpen(o => !o); }} className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-black/8 transition-colors text-sm" style={{ color: C.onSurfaceVar }}>😊</button>
@@ -156,7 +161,7 @@ export const MessageRow = memo(function MessageRow({
                   )}
                 </div>
                 <button title="Reply" onClick={e => { e.stopPropagation(); onReply(m); }} className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-black/8 transition-colors" style={{ color: C.onSurfaceVar }}><ReplyIcon style={{ fontSize: 14 }} /></button>
-                {m.self && editingId !== m.id && (
+                {m.self && !m.failed && editingId !== m.id && (
                   <button title="Edit" onClick={e => { e.stopPropagation(); setEditingId(m.id); setEditText(m.msg); }} className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-black/8 transition-colors" style={{ color: C.onSurfaceVar }}><EditIcon style={{ fontSize: 14 }} /></button>
                 )}
                 {m.self && (

@@ -4,12 +4,13 @@ import {
   getConversationReadState,
   markConversationOpened,
   ensureFirstOpenReadBaseline,
+  saveConversationReadState,
 } from "@/features/messages/conversationState";
 import { joinConversation } from "@/app/realtime";
 import { messageCache } from "./messageCache";
 import { MESSAGE_PAGE_SIZE, VIRTUOSO_START_INDEX } from "./messageConfig";
 import { msgPerf } from "./msgPerf";
-import { toChatMsg, type ChatMsg } from "./types";
+import { sortChatMessages, toChatMsg, type ChatMsg } from "./types";
 
 export type ThreadOpenMode = "newest" | "around";
 
@@ -126,11 +127,22 @@ export function useMessageThread({
       if (!shouldRestore && messageCache.hasNewestWindow(conversationId)) {
         msgPerf.cacheHit(conversationId);
         if (gen !== loadGenRef.current) return;
-        const newestId = cached.messages[cached.messages.length - 1]?.id ?? null;
+        const newestId = cached.messages.filter(m => m.id > 0).at(-1)?.id
+          ?? cached.messages[cached.messages.length - 1]?.id
+          ?? null;
         ensureFirstOpenReadBaseline(currentUserId, conversationId, newestId);
+        // Opening pinned to newest = messages are read; clear stale "New" divider.
+        if (newestId != null) {
+          saveConversationReadState(currentUserId, conversationId, {
+            anchorMessageId: newestId,
+            atBottom: true,
+            lastReadMessageId: newestId,
+            lastOpenedAt: Date.now(),
+          });
+        }
         bootThread(cached.messages, cached, {
           pinBottom: true,
-          lastReadId: saved?.lastReadMessageId ?? newestId,
+          lastReadId: newestId,
         });
         msgPerf.markOpenReady(conversationId, "cache");
         // Still mark read on server without waiting
@@ -161,19 +173,29 @@ export function useMessageThread({
       };
       messageCache.setWindow(conversationId, mapped, flags, "merge");
 
-      const newestId = mapped[mapped.length - 1]?.id ?? null;
+      const newestId = mapped.filter(m => m.id > 0).at(-1)?.id ?? mapped[mapped.length - 1]?.id ?? null;
       if (!shouldRestore) {
         ensureFirstOpenReadBaseline(currentUserId, conversationId, newestId);
       }
 
       const anchorId = shouldRestore ? saved!.anchorMessageId : null;
       const found = anchorId != null && mapped.some(m => m.id === anchorId);
+      const pinBottom = !found;
+      // When landing on the live edge, treat the window as read so "New" clears immediately.
       const effectiveLastRead = shouldRestore
         ? (saved?.lastReadMessageId ?? null)
-        : (saved?.lastReadMessageId ?? newestId);
+        : newestId;
+      if (pinBottom && newestId != null) {
+        saveConversationReadState(currentUserId, conversationId, {
+          anchorMessageId: newestId,
+          atBottom: true,
+          lastReadMessageId: newestId,
+          lastOpenedAt: Date.now(),
+        });
+      }
       bootThread(mapped, flags, {
         scrollToId: found ? anchorId : null,
-        pinBottom: !found,
+        pinBottom,
         lastReadId: effectiveLastRead,
         showJump: found,
       });
@@ -312,7 +334,33 @@ export function useMessageThread({
       return;
     }
     setMsgs(prev => {
-      if (prev.some(m => m.id === chatMsg.id)) return prev;
+      if (prev.some(m => m.id === chatMsg.id)) {
+        // Real id already present — drop any matching optimistic twin
+        const cleaned = prev.filter(m => !(m.pending && m.self && chatMsg.self && m.msg === chatMsg.msg));
+        if (cleaned.length !== prev.length) {
+          msgsRef.current = cleaned;
+          return cleaned;
+        }
+        return prev;
+      }
+      // Replace optimistic temp row instead of duplicating (WS may beat POST response)
+      const optIdx = prev.findIndex(m =>
+        m.pending
+        && m.self
+        && chatMsg.self
+        && m.msg === chatMsg.msg
+        && (m.mediaType || undefined) === (chatMsg.mediaType || undefined),
+      );
+      if (optIdx >= 0) {
+        const tempId = prev[optIdx].id;
+        const next = [...prev];
+        next[optIdx] = chatMsg;
+        msgsRef.current = next;
+        messageCache.removeMessage(conversationId, tempId);
+        messageCache.upsertMessage(conversationId, chatMsg);
+        applyFlags(hasMoreOlderRef.current, false);
+        return next;
+      }
       const next = [...prev, chatMsg];
       msgsRef.current = next;
       messageCache.upsertMessage(conversationId, chatMsg);
@@ -377,8 +425,18 @@ export function useMessageThread({
 
   const replaceOptimistic = useCallback((tempId: number, real: ChatMsg) => {
     setMsgs(prev => {
-      const next = prev.map(m => (m.id === tempId ? real : m));
+      if (prev.some(m => m.id === real.id)) {
+        // WS already confirmed — just drop the temp row
+        const next = prev.filter(m => m.id !== tempId);
+        msgsRef.current = next;
+        messageCache.removeMessage(conversationId, tempId);
+        return next;
+      }
+      const next = sortChatMessages(
+        prev.map(m => (m.id === tempId ? { ...real, pending: false, failed: false } : m)),
+      );
       msgsRef.current = next;
+      messageCache.removeMessage(conversationId, tempId);
       messageCache.upsertMessage(conversationId, real);
       return next;
     });
@@ -390,6 +448,15 @@ export function useMessageThread({
       const next = [...prev, msg];
       msgsRef.current = next;
       messageCache.upsertMessage(conversationId, msg);
+      return next;
+    });
+  }, [conversationId]);
+
+  const markLocalFailed = useCallback((tempId: number) => {
+    setMsgs(prev => {
+      const next = prev.map(m => (m.id === tempId ? { ...m, pending: false, failed: true } : m));
+      msgsRef.current = next;
+      messageCache.patchMessage(conversationId, tempId, { pending: false, failed: true });
       return next;
     });
   }, [conversationId]);
@@ -430,6 +497,7 @@ export function useMessageThread({
     jumpToLatest,
     replaceOptimistic,
     appendLocal,
+    markLocalFailed,
     updateLocal,
     openConversation,
   };

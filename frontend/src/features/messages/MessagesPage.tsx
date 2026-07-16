@@ -35,7 +35,7 @@ import type { GifItem } from "@/features/messages/emojiData";
 import {
   Page, AppSettings, Contact, useC, useWide, SH1, FilledBtn, OutlinedBtn, Field, ChatAvatar, BADGE_BG,
 } from "@/app/shared";
-import { api, ApiError } from "@/app/api";
+import { api, ApiError, type ApiMessage } from "@/app/api";
 import { isMessageFileWithinLimit, MESSAGE_MAX_FILE_ERROR } from "@/shared/messageUpload";
 import { imageFileFromClipboard } from "@/features/messages/utils/clipboardImage";
 import { formatBytes } from "@/features/messages/utils/formatBytes";
@@ -47,7 +47,7 @@ import {
 import { messageCache } from "@/features/messages/messageCache";
 import { msgPerf } from "@/features/messages/msgPerf";
 import { useMessageThread } from "@/features/messages/useMessageThread";
-import { toChatMsg, type ChatMsg } from "@/features/messages/types";
+import { nextTempMessageId, toChatMsg, type ChatMsg } from "@/features/messages/types";
 import { STATUS_COLORS, COMPOSER_MAX_HEIGHT, type ListFilter } from "@/features/messages/constants";
 import { useScrollReveal } from "@/features/messages/hooks/useScrollReveal";
 import { ConversationDetailsBody } from "@/features/messages/components/ConversationDetailsBody";
@@ -123,6 +123,8 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
   const refreshContactsTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const markReadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastMarkedReadRef = useRef<number | null>(null);
+  /** Prevents Virtuoso content-growth from clearing pin before followOutput settles. */
+  const unpinGraceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const refreshContacts = useCallback(() => {
     // Prefer shared App coalescer when available so Messages + shell share one fetch.
@@ -171,7 +173,7 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
     isNearBottomRef, pinToBottomRef, visibleStartDataIndexRef,
     loadOlderMessages, loadNewerMessages,
     applyNewMessage, applyUpdatedMessage, applyDeletedMessage, applyReaction,
-    jumpToLatest, appendLocal, updateLocal,
+    jumpToLatest, appendLocal, replaceOptimistic, markLocalFailed, updateLocal,
   } = thread;
 
   useEffect(() => { selIdRef.current = sel.id; }, [sel.id]);
@@ -227,7 +229,16 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
     isNearBottomRef.current = true;
     setShowJumpBtn(false);
     setUnreadBelow(0);
-    virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior });
+    const run = () => {
+      virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior });
+    };
+    // Wait for React commit + Virtuoso measure (variable-height rows / media).
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        run();
+        requestAnimationFrame(run);
+      });
+    });
   }, [pinToBottomRef, isNearBottomRef, setShowJumpBtn, setUnreadBelow]);
 
   const persistConversation = useCallback((conversationId: number) => {
@@ -307,12 +318,22 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
         if (conversationId === selIdRef.current) {
           applyNewMessage(message);
           const isSelf = message.userId === currentUserId;
-          if (isNearBottomRef.current || isSelf) {
+          // Self: always stay at bottom. Others: only if already pinned to live edge.
+          if (isSelf || pinToBottomRef.current || isNearBottomRef.current) {
             pinToBottomRef.current = true;
-            requestAnimationFrame(() => forceScrollToBottom("auto"));
+            isNearBottomRef.current = true;
+            forceScrollToBottom("auto");
             if (!isSelf) {
               scheduleMarkRead(conversationId);
               setLastReadMessageId(message.id);
+              if (currentUserId) {
+                saveConversationReadState(currentUserId, conversationId, {
+                  anchorMessageId: message.id,
+                  atBottom: true,
+                  lastReadMessageId: message.id,
+                  lastOpenedAt: Date.now(),
+                });
+              }
             }
           } else if (!isSelf) {
             setUnreadBelow(n => n + 1);
@@ -575,23 +596,42 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
     }
     const replySnap = replyingTo;
     const file = staged.file;
+    const tempId = nextTempMessageId();
+    const localPreview = staged.previewUrl;
+    // Detach staging UI without revoking — optimistic bubble owns the blob URL.
+    setPendingPaste(null);
+    pendingPasteRef.current = null;
     setUploadingPaste(true);
     setReplyingTo(null);
     setEmojiOpen(false);
     if (isTypingRef.current) { isTypingRef.current = false; emitTyping(sel.id, false); }
     pinToBottomRef.current = true;
     isNearBottomRef.current = true;
+    appendLocal({
+      id: tempId,
+      user: "You",
+      msg: "",
+      time: nowTime(),
+      self: true,
+      pending: true,
+      mediaUrl: localPreview,
+      mediaType: "image",
+      ...(replySnap ? { replyTo: { id: replySnap.id, user: replySnap.user, preview: replySnap.msg.slice(0, 60) || replySnap.mediaType || "" } } : {}),
+    });
+    forceScrollToBottom("auto");
     try {
       const { message } = await api.messages.sendMedia(sel.id, file, replySnap?.id);
-      clearPendingPaste();
-      appendLocal(toChatMsg(message, currentUserId));
+      if (localPreview.startsWith("blob:")) URL.revokeObjectURL(localPreview);
+      replaceOptimistic(tempId, toChatMsg(message, currentUserId));
       refreshContacts();
     } catch (err) {
+      if (localPreview.startsWith("blob:")) URL.revokeObjectURL(localPreview);
+      markLocalFailed(tempId);
       toast.error(err instanceof ApiError ? err.message : "Failed to upload screenshot");
     } finally {
       setUploadingPaste(false);
     }
-    requestAnimationFrame(() => forceScrollToBottom("auto"));
+    forceScrollToBottom("auto");
   };
 
   const send = async (extra?: Partial<ChatMsg>) => {
@@ -602,27 +642,37 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
     const trimmed = input.trim();
     if (!trimmed && !extra?.mediaUrl) return;
     const replySnap = replyingTo;
+    const convId = sel.id;
     setInput(""); setReplyingTo(null); setEmojiOpen(false);
     requestAnimationFrame(() => {
       if (inputRef.current) {
         inputRef.current.style.height = "auto";
       }
     });
-    if (isTypingRef.current) { isTypingRef.current = false; emitTyping(sel.id, false); }
+    if (isTypingRef.current) { isTypingRef.current = false; emitTyping(convId, false); }
     pinToBottomRef.current = true;
     isNearBottomRef.current = true;
+    const tempId = nextTempMessageId();
+    appendLocal({
+      id: tempId,
+      user: "You",
+      msg: trimmed,
+      time: nowTime(),
+      self: true,
+      pending: true,
+      ...(replySnap ? { replyTo: { id: replySnap.id, user: replySnap.user, preview: replySnap.msg.slice(0, 60) || replySnap.mediaType || "" } } : {}),
+      ...extra,
+    });
+    forceScrollToBottom("auto");
     try {
-      const { message } = await api.messages.send(sel.id, trimmed, replySnap?.id);
-      appendLocal(toChatMsg(message, currentUserId));
+      const { message } = await api.messages.send(convId, trimmed, replySnap?.id);
+      replaceOptimistic(tempId, toChatMsg(message, currentUserId));
       refreshContacts();
     } catch {
-      appendLocal({
-        id: Date.now(), user: "You", msg: trimmed, time: nowTime(), self: true,
-        ...(replySnap ? { replyTo: { id: replySnap.id, user: replySnap.user, preview: replySnap.msg.slice(0,60) || replySnap.mediaType || "" } } : {}),
-        ...extra,
-      });
+      markLocalFailed(tempId);
+      toast.error("Failed to send message");
     }
-    requestAnimationFrame(() => forceScrollToBottom("auto"));
+    forceScrollToBottom("auto");
   };
 
   const handleComposerPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -645,14 +695,36 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
     setReplyingTo(null);
     pinToBottomRef.current = true;
     isNearBottomRef.current = true;
+    const tempId = nextTempMessageId();
+    const isImage = file.type.startsWith("image/");
+    const isVideo = file.type.startsWith("video/");
+    const isAudio = file.type.startsWith("audio/");
+    const localUrl = (isImage || isVideo) ? URL.createObjectURL(file) : undefined;
+    appendLocal({
+      id: tempId,
+      user: "You",
+      msg: "",
+      time: nowTime(),
+      self: true,
+      pending: true,
+      mediaUrl: localUrl,
+      mediaType: isImage ? "image" : isVideo ? "video" : isAudio ? "audio" : "file",
+      fileName: file.name,
+      fileSize: file.size,
+      ...(replySnap ? { replyTo: { id: replySnap.id, user: replySnap.user, preview: replySnap.msg.slice(0, 60) || replySnap.mediaType || "" } } : {}),
+    });
+    forceScrollToBottom("auto");
     try {
       const { message } = await api.messages.sendMedia(sel.id, file, replySnap?.id);
-      appendLocal(toChatMsg(message, currentUserId));
+      if (localUrl) URL.revokeObjectURL(localUrl);
+      replaceOptimistic(tempId, toChatMsg(message, currentUserId));
       refreshContacts();
     } catch (err) {
+      if (localUrl) URL.revokeObjectURL(localUrl);
+      markLocalFailed(tempId);
       toast.error(err instanceof ApiError ? err.message : "Failed to upload file");
     }
-    requestAnimationFrame(() => forceScrollToBottom("auto"));
+    forceScrollToBottom("auto");
   };
 
   const sendVoiceFile = async (file: File, meta: import("@/features/messages/voiceAudio").VoiceUploadMeta) => {
@@ -664,6 +736,26 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
     setReplyingTo(null);
     pinToBottomRef.current = true;
     isNearBottomRef.current = true;
+    const tempId = nextTempMessageId();
+    const localUrl = URL.createObjectURL(file);
+    appendLocal({
+      id: tempId,
+      user: "You",
+      msg: "",
+      time: nowTime(),
+      self: true,
+      pending: true,
+      mediaUrl: localUrl,
+      mediaType: "audio",
+      durationMs: meta.durationMs,
+      mimeType: meta.mimeType,
+      codec: meta.codec,
+      sampleRate: meta.sampleRate,
+      channels: meta.channels,
+      waveform: meta.waveform,
+      ...(replySnap ? { replyTo: { id: replySnap.id, user: replySnap.user, preview: replySnap.msg.slice(0, 60) || "Voice" } } : {}),
+    });
+    forceScrollToBottom("auto");
     try {
       const { message } = await api.messages.sendMedia(sel.id, file, replySnap?.id, {
         durationMs: meta.durationMs,
@@ -673,12 +765,15 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
         channels: meta.channels,
         waveform: meta.waveform,
       });
-      appendLocal(toChatMsg(message, currentUserId));
+      URL.revokeObjectURL(localUrl);
+      replaceOptimistic(tempId, toChatMsg(message, currentUserId));
       refreshContacts();
     } catch (err) {
+      URL.revokeObjectURL(localUrl);
+      markLocalFailed(tempId);
       toast.error(err instanceof ApiError ? err.message : "Failed to upload voice message");
     }
-    requestAnimationFrame(() => forceScrollToBottom("auto"));
+    forceScrollToBottom("auto");
   };
 
   const sendGifItem = async (g: GifItem) => {
@@ -688,24 +783,28 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
     setEmojiOpen(false);
     pinToBottomRef.current = true;
     isNearBottomRef.current = true;
+    const tempId = nextTempMessageId();
+    appendLocal({
+      id: tempId,
+      user: "You",
+      msg: "",
+      time: nowTime(),
+      self: true,
+      pending: true,
+      mediaUrl: g.url,
+      mediaType: "gif",
+      ...(replySnap ? { replyTo: { id: replySnap.id, user: replySnap.user, preview: replySnap.msg.slice(0, 60) || "GIF" } } : {}),
+    });
+    forceScrollToBottom("auto");
     try {
       const { message } = await api.messages.sendGif(sel.id, g.url, g.label, replySnap?.id);
-      appendLocal(toChatMsg(message, currentUserId));
+      replaceOptimistic(tempId, toChatMsg(message, currentUserId));
       refreshContacts();
     } catch {
-      appendLocal({
-        id: Date.now(),
-        user: "You",
-        msg: "",
-        time: nowTime(),
-        self: true,
-        mediaUrl: g.url,
-        mediaType: "gif",
-        ...(replySnap ? { replyTo: { id: replySnap.id, user: replySnap.user, preview: replySnap.msg.slice(0, 60) || "GIF" } } : {}),
-      });
-      toast.message("GIF sent locally — server sync failed");
+      markLocalFailed(tempId);
+      toast.error("Failed to send GIF");
     }
-    requestAnimationFrame(() => forceScrollToBottom("auto"));
+    forceScrollToBottom("auto");
   };
 
   const startDmCall = (type: "voice" | "video") => {
@@ -742,7 +841,9 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
   };
 
   const deleteMsg = async (id: number) => {
-    try { await api.messages.delete(id); } catch { /* */ }
+    if (id > 0) {
+      try { await api.messages.delete(id); } catch { /* */ }
+    }
     applyDeletedMessage(id);
   };
 
@@ -793,6 +894,8 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
 
   const filteredContacts = contacts
     .filter(c => {
+      // Soft-deleted DM peers are omitted from the active inbox
+      if (c.type === "dm" && c.isDeleted) return false;
       if (listFilter === "dm-requests") return false;
       if (listFilter !== "all" && c.type !== listFilter) return false;
       if (searchQuery.trim()) {
@@ -1261,15 +1364,38 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
               endReached={() => { void loadNewerMessages(); }}
               atBottomStateChange={(atBottom) => {
                 isNearBottomRef.current = atBottom;
-                pinToBottomRef.current = atBottom;
-                setShowJumpBtn(!atBottom && sel.id > 0);
                 if (atBottom) {
+                  if (unpinGraceTimer.current) {
+                    clearTimeout(unpinGraceTimer.current);
+                    unpinGraceTimer.current = null;
+                  }
+                  pinToBottomRef.current = true;
+                  setShowJumpBtn(false);
                   setUnreadBelow(0);
                   if (sel.id && msgsRef.current.length && !hasMoreNewer) {
-                    const newest = msgsRef.current[msgsRef.current.length - 1].id;
+                    const newest = [...msgsRef.current].reverse().find(m => m.id > 0)?.id
+                      ?? msgsRef.current[msgsRef.current.length - 1].id;
                     setLastReadMessageId(newest);
                     scheduleMarkRead(sel.id);
+                    if (currentUserId) {
+                      saveConversationReadState(currentUserId, sel.id, {
+                        anchorMessageId: newest,
+                        atBottom: true,
+                        lastReadMessageId: newest,
+                        lastOpenedAt: Date.now(),
+                      });
+                    }
                   }
+                } else {
+                  // Defer unpin: new rows briefly report not-at-bottom before followOutput catches up.
+                  if (unpinGraceTimer.current) clearTimeout(unpinGraceTimer.current);
+                  unpinGraceTimer.current = setTimeout(() => {
+                    unpinGraceTimer.current = null;
+                    if (!isNearBottomRef.current) {
+                      pinToBottomRef.current = false;
+                      setShowJumpBtn(sel.id > 0);
+                    }
+                  }, 80);
                 }
               }}
               scrollerRef={(ref) => {
@@ -1376,7 +1502,19 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
                     forceScrollToBottom("smooth");
                     if (sel?.id) {
                       scheduleMarkRead(sel.id);
-                      if (msgsRef.current.length) setLastReadMessageId(msgsRef.current[msgsRef.current.length - 1].id);
+                      const newest = [...msgsRef.current].reverse().find(m => m.id > 0)?.id
+                        ?? msgsRef.current[msgsRef.current.length - 1]?.id;
+                      if (newest != null) {
+                        setLastReadMessageId(newest);
+                        if (currentUserId) {
+                          saveConversationReadState(currentUserId, sel.id, {
+                            anchorMessageId: newest,
+                            atBottom: true,
+                            lastReadMessageId: newest,
+                            lastOpenedAt: Date.now(),
+                          });
+                        }
+                      }
                     }
                   }}
                   className="w-12 h-12 rounded-full flex items-center justify-center hover:opacity-95 focus-visible:outline-none focus-visible:ring-2 transition-transform hover:scale-105"

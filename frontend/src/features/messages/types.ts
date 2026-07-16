@@ -10,6 +10,9 @@ export type ChatMsg = {
   self: boolean;
   avatarUrl?: string | null;
   isDeleted?: boolean;
+  /** Optimistic local send — negative temp id until server confirms. */
+  pending?: boolean;
+  failed?: boolean;
   mediaUrl?: string;
   mediaType?: "image" | "video" | "audio" | "gif" | "file" | "call_event";
   fileName?: string;
@@ -25,6 +28,20 @@ export type ChatMsg = {
   channels?: number;
   waveform?: number[];
 };
+
+/** Stable descending temp ids (negative) so they never collide with DB ids. */
+let _tempMsgSeq = 0;
+export function nextTempMessageId(): number {
+  _tempMsgSeq += 1;
+  return -_tempMsgSeq;
+}
+
+/** Keep real messages ordered by id; pending (temp) rows always at the live edge. */
+export function sortChatMessages(msgs: ChatMsg[]): ChatMsg[] {
+  const real = msgs.filter(m => m.id > 0).sort((a, b) => a.id - b.id);
+  const pending = msgs.filter(m => m.id <= 0);
+  return [...real, ...pending];
+}
 
 export function toChatMsg(m: ApiMessage, viewerId: number): ChatMsg {
   const isSelf = m.userId === viewerId;

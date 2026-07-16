@@ -14,7 +14,7 @@ import { hardDeleteMessage } from "../services/messageModeration.js";
 import { logActivitySync } from "../services/activityLog.js";
 import { createAdminSystemNotification } from "../services/adminNotifications.js";
 import { MESSAGE_MAX_FILE_BYTES, MESSAGE_MAX_FILE_ERROR } from "../services/messageUpload.js";
-import { tombstoneSenderFields, DELETED_USER_DISPLAY_NAME } from "../services/deletedUser.js";
+import { tombstoneSenderFields, DELETED_USER_DISPLAY_NAME, isDeletedUser } from "../services/deletedUser.js";
 import { createMemoryUploader, persistMulterFile } from "../storage/multerUpload.js";
 import {
   assertCanAccessConversation,
@@ -307,27 +307,29 @@ async function formatConversations(
   `, userId, ...ids);
   const selfByConv = new Map(selfParts.map(r => [r.conversation_id, r]));
 
+  // Use snake_case aliases only — Postgres lowercases unquoted camelCase aliases
+  // (conversationId → conversationid), which breaks Map lookups and marks every DM peer deleted.
   const others = await qAll<{
-    conversationId: number; id: number | null; is_online: number; last_seen_at: string | null; status: string;
-    username: string | null; avatarUrl: string | null; bio: string; village: string; clan: string;
-    level: number; rank: string; memberSince: string; isTeamMember: number; isAdmin: number; country: string; city: string | null;
-    isDeleted: number | null;
+    conversation_id: number; id: number | null; is_online: number; last_seen_at: string | null; status: string;
+    username: string | null; avatar_url: string | null; bio: string; village: string; clan: string;
+    level: number; rank: string; member_since: string; is_team_member: number; is_admin: number; country: string; city: string | null;
+    is_deleted: number | null;
   }>(`
-    SELECT cp.conversation_id as conversationId, u.id, u.is_online, u.last_seen_at, u.status, u.username,
-           u.avatar_url as avatarUrl, u.bio, u.village, u.clan, u.level, u.rank,
-           u.member_since as memberSince, u.is_team_member as isTeamMember, u.is_admin as isAdmin, u.country, u.city,
-           u.is_deleted as isDeleted
+    SELECT cp.conversation_id, u.id, u.is_online, u.last_seen_at, u.status, u.username,
+           u.avatar_url, u.bio, u.village, u.clan, u.level, u.rank,
+           u.member_since, u.is_team_member, u.is_admin, u.country, u.city,
+           u.is_deleted
     FROM conversation_participants cp
     LEFT JOIN users u ON u.id = cp.user_id
     WHERE cp.conversation_id IN (${placeholders}) AND cp.user_id != ?
   `, ...ids, userId);
   const otherByConv = new Map<number, typeof others[0]>();
   for (const o of others) {
-    if (!otherByConv.has(o.conversationId)) otherByConv.set(o.conversationId, o);
+    if (!otherByConv.has(o.conversation_id)) otherByConv.set(o.conversation_id, o);
   }
 
-  const unreadRows = await qAll<{ conversationId: number; c: number }>(`
-    SELECT m.conversation_id as conversationId, COUNT(*) as c
+  const unreadRows = await qAll<{ conversation_id: number; c: number }>(`
+    SELECT m.conversation_id, COUNT(*) as c
     FROM messages m
     JOIN conversation_participants cp
       ON cp.conversation_id = m.conversation_id AND cp.user_id = ?
@@ -336,13 +338,17 @@ async function formatConversations(
       AND (cp.last_read_at IS NULL OR m.created_at > cp.last_read_at)
     GROUP BY m.conversation_id
   `, userId, ...ids, userId);
-  const unreadByConv = new Map(unreadRows.map(r => [r.conversationId, r.c]));
+  const unreadByConv = new Map(unreadRows.map(r => [r.conversation_id, Number(r.c) || 0]));
 
   return Promise.all(convs.map(async conv => {
     const other = otherByConv.get(conv.id);
     const selfPart = selfByConv.get(conv.id);
     const isDm = conv.type === "dm";
-    const peerDeleted = isDm && (!other?.id || other.isDeleted === 1 || !other.username);
+    const peerDeleted = isDm && (
+      !other?.id
+      || isDeletedUser(other)
+      || !other.username
+    );
     const otherOnline = other && !peerDeleted ? isUserOnline(other as { is_online: number; last_seen_at: string | null; status: string }) : false;
     const presenceStatus = peerDeleted || !other ? "Offline"
       : (!otherOnline || other.status === "Offline") ? "Offline"
@@ -396,7 +402,7 @@ async function formatConversations(
       bio: isDm ? (peerDeleted ? "" : (other?.bio || "")) : conv.bio,
       type: conv.type,
       avatarUrl: isDm
-        ? (peerDeleted ? null : (other?.avatarUrl || undefined))
+        ? (peerDeleted ? null : (other?.avatar_url || undefined))
         : (conv.avatar_url || undefined),
       otherUserId: isDm ? peerId : undefined,
       isDeleted: isDm ? peerDeleted : undefined,
@@ -404,9 +410,9 @@ async function formatConversations(
       clan: isDm && !peerDeleted ? other?.clan : undefined,
       level: isDm && !peerDeleted ? other?.level : undefined,
       rank: isDm && !peerDeleted ? other?.rank : undefined,
-      memberSince: isDm && !peerDeleted ? other?.memberSince : undefined,
-      isTeamMember: isDm && !peerDeleted ? other?.isTeamMember === 1 : undefined,
-      isAdmin: isDm && !peerDeleted ? other?.isAdmin === 1 : undefined,
+      memberSince: isDm && !peerDeleted ? other?.member_since : undefined,
+      isTeamMember: isDm && !peerDeleted ? Number(other?.is_team_member) === 1 : undefined,
+      isAdmin: isDm && !peerDeleted ? Number(other?.is_admin) === 1 : undefined,
       country: isDm && !peerDeleted ? other?.country : undefined,
       city: isDm && !peerDeleted ? other?.city : undefined,
     };
@@ -439,7 +445,11 @@ router.get("/conversations", requireAuth, async (req, res) => {
 
   const accessFlags = await Promise.all(convs.map(c => c.type !== "channel" ? Promise.resolve(true) : userCanAccessChannel(userId, c.id)));
   const filtered = convs.filter((_, i) => accessFlags[i]);
-  res.json({ conversations: await formatConversations(filtered, userId) });
+  const formatted = await formatConversations(filtered, userId);
+  // Hide DMs with soft-deleted peers from the active inbox (history remains in DB).
+  res.json({
+    conversations: formatted.filter(c => !(c.type === "dm" && c.isDeleted)),
+  });
 });
 
 router.get("/conversations/:id", requireAuth, async (req, res) => {

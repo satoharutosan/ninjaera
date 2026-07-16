@@ -2,7 +2,7 @@ import {
   MAX_CACHED_CONVERSATIONS,
   MAX_CACHED_MESSAGES_PER_CONV,
 } from "./messageConfig";
-import type { ChatMsg } from "./types";
+import { sortChatMessages, type ChatMsg } from "./types";
 
 export type ConversationCacheEntry = {
   messages: ChatMsg[];
@@ -39,7 +39,7 @@ function mergeById(existing: ChatMsg[], incoming: ChatMsg[]): ChatMsg[] {
   const map = new Map<number, ChatMsg>();
   for (const m of existing) map.set(m.id, m);
   for (const m of incoming) map.set(m.id, m);
-  return [...map.values()].sort((a, b) => a.id - b.id);
+  return sortChatMessages([...map.values()]);
 }
 
 export const messageCache = {
@@ -148,14 +148,20 @@ export const messageCache = {
     if (idx >= 0) {
       messages = [...prev.messages];
       messages[idx] = msg;
+    } else if (msg.pending || msg.id <= 0) {
+      // Optimistic rows always sit at the live edge (do not sort by negative id).
+      messages = [...prev.messages, msg];
+      prev.hasMoreNewer = false;
     } else {
       // Only append if contiguous with newest cached edge (or empty)
-      const newest = prev.messages[prev.messages.length - 1];
-      if (!newest || msg.id > newest.id) {
-        messages = [...prev.messages, msg];
+      const newestReal = [...prev.messages].reverse().find(m => m.id > 0);
+      if (!newestReal || msg.id > newestReal.id) {
+        const withoutPending = prev.messages.filter(m => m.id > 0);
+        const pending = prev.messages.filter(m => m.id <= 0);
+        messages = [...withoutPending, msg, ...pending];
         prev.hasMoreNewer = false;
-      } else if (msg.id < prev.messages[0].id) {
-        messages = [msg, ...prev.messages];
+      } else if (msg.id < prev.messages.filter(m => m.id > 0)[0]?.id) {
+        messages = sortChatMessages([msg, ...prev.messages]);
       } else {
         messages = mergeById(prev.messages, [msg]);
       }

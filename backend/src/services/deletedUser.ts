@@ -25,7 +25,8 @@ type UserLike = {
 export function isDeletedUser(user: UserLike): boolean {
   if (!user) return true;
   if (user.isDeleted === true) return true;
-  if (user.is_deleted === 1) return true;
+  // Postgres may return bigint/string; treat any truthy 1 as deleted.
+  if (Number(user.is_deleted) === 1) return true;
   return false;
 }
 

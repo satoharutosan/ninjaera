@@ -13,6 +13,9 @@ function AlarmsPage({ setPage, onConversationsRefresh, onNotificationsRefresh }:
   const C = useC();
   const [notifs, setNotifs] = useState<ApiNotification[]>([]);
 
+  const [acceptingId, setAcceptingId] = useState<number | null>(null);
+  const [rejectingId, setRejectingId] = useState<number | null>(null);
+
   const load = () => {
     api.notifications.list().then(r => setNotifs(r.notifications)).catch(() => {});
   };
@@ -23,9 +26,11 @@ function AlarmsPage({ setPage, onConversationsRefresh, onNotificationsRefresh }:
     const unsubs = [
       onRealtimeEvent("notification:new", () => { load(); onNotificationsRefresh?.(); }),
       onRealtimeEvent("counts:update", () => { load(); onNotificationsRefresh?.(); }),
+      onRealtimeEvent("dm_request:accepted", () => { load(); onNotificationsRefresh?.(); onConversationsRefresh?.(); }),
+      onRealtimeEvent("dm_request:resolved", () => { load(); onNotificationsRefresh?.(); }),
     ];
     return () => { unsubs.forEach(u => u()); };
-  }, [onNotificationsRefresh]);
+  }, [onNotificationsRefresh, onConversationsRefresh]);
 
   const markAllRead = async () => {
     try {
@@ -42,24 +47,38 @@ function AlarmsPage({ setPage, onConversationsRefresh, onNotificationsRefresh }:
   };
 
   const handleAcceptDm = async (n: ApiNotification) => {
+    if (acceptingId != null) return;
+    setAcceptingId(n.id);
+    setNotifs(ns => ns.map(x => x.id === n.id ? { ...x, read: true, metadata: { ...x.metadata, processed: true } } : x));
     try {
-      const { conversationId } = await api.notifications.acceptDm(n.id);
-      toast.success("Direct message request accepted");
-      setNotifs(ns => ns.map(x => x.id === n.id ? { ...x, read: true, metadata: { ...x.metadata, processed: true } } : x));
+      const result = await api.notifications.acceptDm(n.id);
+      toast.success(result.alreadyExists ? "Conversation already open" : "Direct message request accepted");
       onConversationsRefresh?.();
-      if (setPage && conversationId) setPage("messages");
-    } catch {
-      toast.error("Could not accept request");
+      onNotificationsRefresh?.();
+      if (setPage && result.conversationId) setPage("messages");
+    } catch (err) {
+      setNotifs(ns => ns.map(x => x.id === n.id ? { ...x, metadata: { ...x.metadata, processed: false } } : x));
+      load();
+      toast.error(err instanceof Error ? err.message : "Could not accept request");
+    } finally {
+      setAcceptingId(null);
     }
   };
 
   const handleRejectDm = async (n: ApiNotification) => {
+    if (rejectingId != null) return;
+    setRejectingId(n.id);
+    setNotifs(ns => ns.map(x => x.id === n.id ? { ...x, read: true, metadata: { ...x.metadata, processed: true } } : x));
     try {
       await api.notifications.rejectDm(n.id);
       toast.success("Request declined");
-      setNotifs(ns => ns.map(x => x.id === n.id ? { ...x, read: true, metadata: { ...x.metadata, processed: true } } : x));
-    } catch {
-      toast.error("Could not decline request");
+      onNotificationsRefresh?.();
+    } catch (err) {
+      setNotifs(ns => ns.map(x => x.id === n.id ? { ...x, metadata: { ...x.metadata, processed: false } } : x));
+      load();
+      toast.error(err instanceof Error ? err.message : "Could not decline request");
+    } finally {
+      setRejectingId(null);
     }
   };
 
@@ -94,8 +113,18 @@ function AlarmsPage({ setPage, onConversationsRefresh, onNotificationsRefresh }:
                   <p className="text-sm leading-relaxed" style={{ color: n.read ? C.onSurfaceVar : C.onSurface, fontFamily: "Roboto", opacity: n.read ? 0.7 : 1 }}>{n.body}</p>
                   {n.notifType === "dm_request" && !n.metadata?.processed && (
                     <div className="flex gap-2 mt-3" onClick={e => e.stopPropagation()}>
-                      <FilledBtn onClick={() => handleAcceptDm(n)}><CheckIcon style={{ fontSize: 14 }} /> Accept</FilledBtn>
-                      <OutlinedBtn onClick={() => handleRejectDm(n)}><CloseIcon style={{ fontSize: 14 }} /> Reject</OutlinedBtn>
+                      <FilledBtn
+                        disabled={acceptingId === n.id || rejectingId === n.id}
+                        onClick={() => void handleAcceptDm(n)}
+                      >
+                        <CheckIcon style={{ fontSize: 14 }} /> {acceptingId === n.id ? "Accepting…" : "Accept"}
+                      </FilledBtn>
+                      <OutlinedBtn
+                        disabled={acceptingId === n.id || rejectingId === n.id}
+                        onClick={() => void handleRejectDm(n)}
+                      >
+                        <CloseIcon style={{ fontSize: 14 }} /> {rejectingId === n.id ? "Declining…" : "Reject"}
+                      </OutlinedBtn>
                     </div>
                   )}
                   <p className="text-[11px] mt-2" style={{ color: C.onSurfaceVar, fontFamily: "Roboto Mono,monospace" }}>{n.time} · Ninja Era Operations</p>

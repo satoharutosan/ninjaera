@@ -741,6 +741,12 @@ export default function App() {
       }),
       onRealtimeEvent("dm_request:new", () => refreshDmRequests()),
       onRealtimeEvent("dm_request:resolved", () => refreshDmRequests()),
+      onRealtimeEvent<{ requestId: number; conversationId: number }>("dm_request:accepted", ({ conversationId }) => {
+        joinConversation(conversationId);
+        refreshDmRequests();
+        refreshConversations();
+        refreshNotifications();
+      }),
       onRealtimeEvent<{ userId: number; status: string; online: boolean }>("presence:update", ({ userId, status, online }) => {
         // Skip identity-preserving updates so App/Navbar don't thrash on identical presence.
         setContacts(prev => {

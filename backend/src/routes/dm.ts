@@ -4,11 +4,12 @@ import { requireAuth, timeAgo } from "../middleware/auth.js";
 import { rateLimit } from "../middleware/rateLimit.js";
 import { isUserActive } from "../middleware/admin.js";
 import { logActivitySync } from "../services/activityLog.js";
-import { emitToUser, getConversationParticipantIds } from "../services/realtime.js";
+import { emitToUser } from "../services/realtime.js";
 import {
   canOpenDmWithoutRequest,
   usersAreBlocked,
 } from "../services/conversationAccess.js";
+import { acceptDmRequest, rejectDmRequest } from "../services/dmRequests.js";
 
 const router = Router();
 const now = () => new Date().toISOString();
@@ -37,7 +38,7 @@ async function createDmConversation(userId1: number, userId2: number): Promise<n
   const ts = now();
   const requester = await qGet<{ username: string; bio: string }>("SELECT username, bio FROM users WHERE id = ?", userId1);
   const result = await qRun("INSERT INTO conversations (type, name, bio, created_at) VALUES ('dm', ?, ?, ?)", requester!.username, requester!.bio || "", ts);
-  const convId = result.lastInsertRowid as number;
+  const convId = Number(result.lastInsertRowid);
   await qRun("INSERT INTO conversation_participants (conversation_id, user_id, joined_at) VALUES (?, ?, ?)", convId, userId1, ts);
   await qRun("INSERT INTO conversation_participants (conversation_id, user_id, joined_at) VALUES (?, ?, ?)", convId, userId2, ts);
   await addContact(userId1, userId2);
@@ -135,12 +136,26 @@ router.post("/dm-requests", requireAuth, rateLimit({
     return;
   }
 
+  // UNIQUE(requester_id, recipient_id) — reopen a prior rejected/accepted row as pending when no DM exists.
+  const prior = await qGet<{ id: number; status: string }>(`
+    SELECT id, status FROM dm_requests WHERE requester_id = ? AND recipient_id = ?
+  `, req.user!.id, recipient.id);
+
   const ts = now();
-  const result = await qRun(`
-    INSERT INTO dm_requests (requester_id, recipient_id, status, created_at, updated_at)
-    VALUES (?, ?, 'pending', ?, ?)
-  `, req.user!.id, recipient.id, ts, ts);
-  const requestId = result.lastInsertRowid as number;
+  let requestId: number;
+  if (prior) {
+    await qRun(`
+      UPDATE dm_requests SET status = 'pending', conversation_id = NULL, updated_at = ?, created_at = ?
+      WHERE id = ?
+    `, ts, ts, prior.id);
+    requestId = prior.id;
+  } else {
+    const result = await qRun(`
+      INSERT INTO dm_requests (requester_id, recipient_id, status, created_at, updated_at)
+      VALUES (?, ?, 'pending', ?, ?)
+    `, req.user!.id, recipient.id, ts, ts);
+    requestId = Number(result.lastInsertRowid);
+  }
 
   const requesterName = req.user!.username;
   await qRun(`
@@ -207,82 +222,31 @@ router.get("/dm-requests", requireAuth, async (req, res) => {
 // Accept DM request
 router.post("/dm-requests/:id/accept", requireAuth, async (req, res) => {
   const requestId = Number(req.params.id);
-  const request = await qGet<{ id: number; requester_id: number; recipient_id: number }>(`
-    SELECT * FROM dm_requests WHERE id = ? AND recipient_id = ? AND status = 'pending'
-  `, requestId, req.user!.id);
-
-  if (!request) {
-    res.status(404).json({ error: "Request not found" });
+  const result = await acceptDmRequest(requestId, req.user!.id, req.user!.username);
+  if (!result.success) {
+    res.status(result.status).json({ success: false, error: result.error });
     return;
   }
-
-  const requester = await qGet<{ id: number; username: string; is_deleted: number }>(
-    "SELECT id, username, is_deleted FROM users WHERE id = ?", request.requester_id,
-  );
-  if (!requester || requester.is_deleted === 1) {
-    await qRun("UPDATE dm_requests SET status = 'rejected', updated_at = ? WHERE id = ?", now(), requestId);
-    res.status(410).json({ error: "This user no longer exists" });
-    return;
-  }
-
-  const convId = await createDmConversation(request.requester_id, request.recipient_id);
-  const ts = now();
-
-  await qRun("UPDATE dm_requests SET status = 'accepted', conversation_id = ?, updated_at = ? WHERE id = ?", convId, ts, requestId);
-
-  await qRun(`
-    UPDATE notifications SET metadata = json_set(COALESCE(metadata, '{}'), '$.processed', true)
-    WHERE notif_type = 'dm_request' AND json_extract(metadata, '$.requestId') = ?
-  `, requestId);
-
-  await qRun(`
-    INSERT INTO notifications (title, body, source, page, user_id, notif_type, created_at)
-    VALUES ('Request Accepted', ?, 'Messages', 'messages', ?, 'announcement', ?)
-  `, `${req.user!.username} accepted your direct message request.`, request.requester_id, ts);
-
-  for (const pid of await getConversationParticipantIds(convId)) {
-    emitToUser(pid, "conversation:new", { conversationId: convId });
-    emitToUser(pid, "conversation:update", { conversationId: convId });
-  }
-  emitToUser(request.requester_id, "notification:new", {});
-  emitToUser(request.requester_id, "counts:update", {});
-  emitToUser(req.user!.id, "dm_request:resolved", { requestId });
-  emitToUser(req.user!.id, "counts:update", {});
-
-  res.json({ ok: true, conversationId: convId });
+  res.json({
+    success: true,
+    ok: true,
+    message: result.message,
+    alreadyExists: result.alreadyExists ?? false,
+    conversationId: result.conversationId,
+    requestId: result.requestId,
+    dm: result.dm,
+  });
 });
 
 // Reject DM request
 router.post("/dm-requests/:id/reject", requireAuth, async (req, res) => {
   const requestId = Number(req.params.id);
-  const request = await qGet<{ id: number; requester_id: number }>(`
-    SELECT * FROM dm_requests WHERE id = ? AND recipient_id = ? AND status = 'pending'
-  `, requestId, req.user!.id);
-
-  if (!request) {
-    res.status(404).json({ error: "Request not found" });
+  const result = await rejectDmRequest(requestId, req.user!.id, req.user!.username);
+  if (!result.success) {
+    res.status(result.status).json({ success: false, error: result.error });
     return;
   }
-
-  const ts = now();
-  await qRun("UPDATE dm_requests SET status = 'rejected', updated_at = ? WHERE id = ?", ts, requestId);
-
-  await qRun(`
-    UPDATE notifications SET metadata = json_set(COALESCE(metadata, '{}'), '$.processed', true)
-    WHERE notif_type = 'dm_request' AND json_extract(metadata, '$.requestId') = ?
-  `, requestId);
-
-  await qRun(`
-    INSERT INTO notifications (title, body, source, page, user_id, notif_type, created_at)
-    VALUES ('Request Declined', ?, 'Messages', 'messages', ?, 'announcement', ?)
-  `, `${req.user!.username} declined your direct message request.`, request.requester_id, ts);
-
-  emitToUser(request.requester_id, "notification:new", {});
-  emitToUser(request.requester_id, "counts:update", {});
-  emitToUser(req.user!.id, "dm_request:resolved", { requestId });
-  emitToUser(req.user!.id, "counts:update", {});
-
-  res.json({ ok: true });
+  res.json({ success: true, ok: true, message: result.message, requestId: result.requestId });
 });
 
 // DM contacts list

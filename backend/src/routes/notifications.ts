@@ -2,7 +2,8 @@ import { Router } from "express";
 import { qGet, qAll, qRun } from "../db/query.js";
 import { requireAuth, optionalAuth, timeAgo } from "../middleware/auth.js";
 import { isAdmin, isTeamMember } from "../middleware/admin.js";
-import { emitToUser, getConversationParticipantIds } from "../services/realtime.js";
+import { emitToUser } from "../services/realtime.js";
+import { acceptDmRequest, rejectDmRequest } from "../services/dmRequests.js";
 
 const router = Router();
 const now = () => new Date().toISOString();
@@ -127,114 +128,72 @@ router.patch("/read-all", requireAuth, async (req, res) => {
 // DM request actions via notification
 router.post("/:id/dm-accept", requireAuth, async (req, res) => {
   const notifId = Number(req.params.id);
-  const notif = await qGet<{ notif_type: string; metadata: string }>("SELECT * FROM notifications WHERE id = ? AND user_id = ?", notifId, req.user!.id);
-  if (!notif || notif.notif_type !== "dm_request") {
-    res.status(404).json({ error: "Notification not found" });
-    return;
-  }
-  const metadata = JSON.parse(notif.metadata || "{}");
-  if (metadata.processed) {
-    res.status(400).json({ error: "Request already processed" });
-    return;
-  }
-  const requestId = metadata.requestId;
-  if (!requestId) {
-    res.status(400).json({ error: "Invalid notification" });
-    return;
-  }
-
-  // Accept DM request via notification action
-  const request = await qGet<{ id: number; requester_id: number; recipient_id: number }>(`
-    SELECT * FROM dm_requests WHERE id = ? AND recipient_id = ? AND status = 'pending'
-  `, requestId, req.user!.id);
-
-  if (!request) {
-    res.status(404).json({ error: "Request not found" });
-    return;
-  }
-
-  const requester = await qGet<{ id: number; username: string; bio: string; is_deleted: number }>(
-    "SELECT id, username, bio, is_deleted FROM users WHERE id = ?", request.requester_id,
+  const notif = await qGet<{ notif_type: string; metadata: string }>(
+    "SELECT * FROM notifications WHERE id = ? AND user_id = ?",
+    notifId,
+    req.user!.id,
   );
-  if (!requester || requester.is_deleted === 1) {
-    const tsGone = now();
-    await qRun("UPDATE dm_requests SET status = 'rejected', updated_at = ? WHERE id = ?", tsGone, requestId);
-    await qRun("UPDATE notifications SET metadata = ? WHERE id = ?", JSON.stringify({ ...metadata, processed: true }), notifId);
-    res.status(410).json({ error: "This user no longer exists" });
+  if (!notif || notif.notif_type !== "dm_request") {
+    res.status(404).json({ success: false, error: "Notification not found" });
+    return;
+  }
+  let metadata: { requestId?: number; processed?: boolean } = {};
+  try {
+    metadata = JSON.parse(notif.metadata || "{}");
+  } catch {
+    metadata = {};
+  }
+  const requestId = Number(metadata.requestId);
+  if (!requestId) {
+    res.status(400).json({ success: false, error: "Invalid notification" });
     return;
   }
 
-  const findDm = async (u1: number, u2: number) => {
-    const row = await qGet<{ id: number }>(`
-      SELECT c.id FROM conversations c
-      JOIN conversation_participants cp1 ON cp1.conversation_id = c.id AND cp1.user_id = ?
-      JOIN conversation_participants cp2 ON cp2.conversation_id = c.id AND cp2.user_id = ?
-      WHERE c.type = 'dm' LIMIT 1
-    `, u1, u2);
-    return row?.id ?? null;
-  };
-
-  let convId = await findDm(request.requester_id, request.recipient_id);
-  const ts = now();
-  if (!convId) {
-    const result = await qRun("INSERT INTO conversations (type, name, bio, created_at) VALUES ('dm', ?, ?, ?)", requester.username, requester.bio || "", ts);
-    convId = result.lastInsertRowid as number;
-    await qRun("INSERT INTO conversation_participants (conversation_id, user_id, joined_at) VALUES (?, ?, ?)", convId, request.requester_id, ts);
-    await qRun("INSERT INTO conversation_participants (conversation_id, user_id, joined_at) VALUES (?, ?, ?)", convId, request.recipient_id, ts);
-    await qRun("INSERT OR IGNORE INTO dm_contacts (user_id, contact_user_id, created_at) VALUES (?, ?, ?)", request.requester_id, request.recipient_id, ts);
-    await qRun("INSERT OR IGNORE INTO dm_contacts (user_id, contact_user_id, created_at) VALUES (?, ?, ?)", request.recipient_id, request.requester_id, ts);
+  const result = await acceptDmRequest(requestId, req.user!.id, req.user!.username);
+  if (!result.success) {
+    res.status(result.status).json({ success: false, error: result.error });
+    return;
   }
-
-  await qRun("UPDATE dm_requests SET status = 'accepted', conversation_id = ?, updated_at = ? WHERE id = ?", convId, ts, requestId);
-  await qRun("UPDATE notifications SET metadata = ? WHERE id = ?", JSON.stringify({ ...metadata, processed: true }), notifId);
-  await qRun(`
-    INSERT INTO notifications (title, body, source, page, user_id, notif_type, created_at)
-    VALUES ('Request Accepted', ?, 'Messages', 'messages', ?, 'announcement', ?)
-  `, `${req.user!.username} accepted your direct message request.`, request.requester_id, ts);
-
-  for (const pid of await getConversationParticipantIds(convId)) {
-    emitToUser(pid, "conversation:new", { conversationId: convId });
-    emitToUser(pid, "conversation:update", { conversationId: convId });
-  }
-  emitToUser(request.requester_id, "notification:new", {});
-  emitToUser(request.requester_id, "counts:update", {});
-  emitToUser(req.user!.id, "dm_request:resolved", { requestId });
-  emitToUser(req.user!.id, "counts:update", {});
-
-  res.json({ ok: true, conversationId: convId });
+  res.json({
+    success: true,
+    ok: true,
+    message: result.message,
+    alreadyExists: result.alreadyExists ?? false,
+    conversationId: result.conversationId,
+    requestId: result.requestId,
+    dm: result.dm,
+  });
 });
 
 router.post("/:id/dm-reject", requireAuth, async (req, res) => {
   const notifId = Number(req.params.id);
-  const notif = await qGet<{ notif_type: string; metadata: string }>("SELECT * FROM notifications WHERE id = ? AND user_id = ?", notifId, req.user!.id);
+  const notif = await qGet<{ notif_type: string; metadata: string }>(
+    "SELECT * FROM notifications WHERE id = ? AND user_id = ?",
+    notifId,
+    req.user!.id,
+  );
   if (!notif || notif.notif_type !== "dm_request") {
-    res.status(404).json({ error: "Notification not found" });
+    res.status(404).json({ success: false, error: "Notification not found" });
     return;
   }
-  const metadata = JSON.parse(notif.metadata || "{}");
-  if (metadata.processed) {
-    res.status(400).json({ error: "Request already processed" });
+  let metadata: { requestId?: number } = {};
+  try {
+    metadata = JSON.parse(notif.metadata || "{}");
+  } catch {
+    metadata = {};
+  }
+  const requestId = Number(metadata.requestId);
+  if (!requestId) {
+    res.status(400).json({ success: false, error: "Invalid notification" });
     return;
   }
-  const requestId = metadata.requestId;
-  const ts = now();
-  await qRun("UPDATE dm_requests SET status = 'rejected', updated_at = ? WHERE id = ? AND recipient_id = ?", ts, requestId, req.user!.id);
-  await qRun("UPDATE notifications SET metadata = ? WHERE id = ?", JSON.stringify({ ...metadata, processed: true }), notifId);
 
-  const request = await qGet<{ requester_id: number }>("SELECT requester_id FROM dm_requests WHERE id = ?", requestId);
-  if (request) {
-    await qRun(`
-      INSERT INTO notifications (title, body, source, page, user_id, notif_type, created_at)
-      VALUES ('Request Declined', ?, 'Messages', 'messages', ?, 'announcement', ?)
-    `, `${req.user!.username} declined your direct message request.`, request.requester_id, ts);
-    emitToUser(request.requester_id, "notification:new", {});
-    emitToUser(request.requester_id, "counts:update", {});
+  const result = await rejectDmRequest(requestId, req.user!.id, req.user!.username);
+  if (!result.success) {
+    res.status(result.status).json({ success: false, error: result.error });
+    return;
   }
-
-  emitToUser(req.user!.id, "dm_request:resolved", { requestId });
-  emitToUser(req.user!.id, "counts:update", {});
-
-  res.json({ ok: true });
+  res.json({ success: true, ok: true, message: result.message, requestId: result.requestId });
 });
 
 export default router;

@@ -351,8 +351,16 @@ export const api = {
     list: () => request<{ notifications: ApiNotification[] }>("/notifications"),
     markRead: (id: number) => request<{ ok: boolean }>(`/notifications/${id}/read`, { method: "PATCH" }),
     markAllRead: () => request<{ ok: boolean }>("/notifications/read-all", { method: "PATCH" }),
-    acceptDm: (id: number) => request<{ ok: boolean; conversationId: number }>(`/notifications/${id}/dm-accept`, { method: "POST" }),
-    rejectDm: (id: number) => request<{ ok: boolean }>(`/notifications/${id}/dm-reject`, { method: "POST" }),
+    acceptDm: (id: number) => request<{
+      success: boolean;
+      ok: boolean;
+      message: string;
+      alreadyExists?: boolean;
+      conversationId: number;
+      requestId: number;
+      dm: { id: number; userId: number; username: string; avatarUrl: string | null };
+    }>(`/notifications/${id}/dm-accept`, { method: "POST" }),
+    rejectDm: (id: number) => request<{ success: boolean; ok: boolean; message: string; requestId: number }>(`/notifications/${id}/dm-reject`, { method: "POST" }),
   },
 
   contact: {
@@ -425,8 +433,16 @@ export const api = {
     searchUser: (username: string) => request<{ user: { id: number; username: string; avatarUrl?: string; status: string } }>(`/user-search?username=${encodeURIComponent(username)}`),
     createRequest: (username: string) => request<{ ok: boolean; requestId?: number; conversationId?: number }>("/dm-requests", { method: "POST", body: JSON.stringify({ username }) }),
     listRequests: () => request<{ incoming: { id: number; requesterId: number; requesterName: string; requesterAvatar?: string | null; requesterDisplayName?: string; time: string; createdAt: string }[]; outgoing: { id: number; recipientName: string; time: string }[] }>("/dm-requests"),
-    accept: (id: number) => request<{ ok: boolean; conversationId: number }>(`/dm-requests/${id}/accept`, { method: "POST" }),
-    reject: (id: number) => request<{ ok: boolean }>(`/dm-requests/${id}/reject`, { method: "POST" }),
+    accept: (id: number) => request<{
+      success: boolean;
+      ok: boolean;
+      message: string;
+      alreadyExists?: boolean;
+      conversationId: number;
+      requestId: number;
+      dm: { id: number; userId: number; username: string; avatarUrl: string | null };
+    }>(`/dm-requests/${id}/accept`, { method: "POST" }),
+    reject: (id: number) => request<{ success: boolean; ok: boolean; message: string; requestId: number }>(`/dm-requests/${id}/reject`, { method: "POST" }),
     contacts: () => request<{ contacts: { id: number; username: string; avatarUrl?: string; status: string }[] }>("/dm-contacts"),
   },
 

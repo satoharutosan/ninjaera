@@ -106,6 +106,8 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
   const [newDmError, setNewDmError] = useState("");
   const [newDmLoading, setNewDmLoading] = useState(false);
   const [dmRequests, setDmRequests] = useState<{ id: number; requesterId: number; requesterName: string; requesterAvatar?: string | null; requesterDisplayName?: string; time: string }[]>([]);
+  const [acceptingRequestId, setAcceptingRequestId] = useState<number | null>(null);
+  const [rejectingRequestId, setRejectingRequestId] = useState<number | null>(null);
   const [typingUsers, setTypingUsers] = useState<{ userId: number; username: string }[]>([]);
   const [pendingPaste, setPendingPaste] = useState<{ file: File; previewUrl: string } | null>(null);
   const [uploadingPaste, setUploadingPaste] = useState(false);
@@ -369,6 +371,15 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
       }),
       onRealtimeEvent("dm_request:new", () => loadDmRequests()),
       onRealtimeEvent("dm_request:resolved", () => loadDmRequests()),
+      onRealtimeEvent<{
+        requestId: number;
+        conversationId: number;
+        dm?: { id: number; userId: number; username: string; avatarUrl: string | null };
+      }>("dm_request:accepted", ({ requestId, conversationId }) => {
+        setDmRequests(prev => prev.filter(r => r.id !== requestId));
+        joinConversation(conversationId);
+        refreshContacts();
+      }),
       onRealtimeEvent<{ userId: number; status: string; online: boolean }>("presence:update", ({ userId, status, online }) => {
         setContacts(prev => {
           let changed = false;
@@ -950,30 +961,52 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
   };
 
   const acceptDmRequest = async (requestId: number) => {
+    if (acceptingRequestId != null) return;
+    setAcceptingRequestId(requestId);
+    // Optimistic: remove from inbox immediately so UI never looks "still pending".
+    const removed = dmRequests.find(r => r.id === requestId);
+    setDmRequests(prev => prev.filter(r => r.id !== requestId));
     try {
-      const { conversationId } = await api.dm.accept(requestId);
-      loadDmRequests();
-      joinConversation(conversationId);
-      const convs = await api.messages.conversations();
-      setContacts(convs.conversations as Contact[]);
-      const conv = convs.conversations.find(c => c.id === conversationId);
-      if (conv) {
-        setSel(conv as Contact);
-        setListFilter("dm");
+      const result = await api.dm.accept(requestId);
+      joinConversation(result.conversationId);
+      refreshContacts();
+      try {
+        const convs = await api.messages.conversations();
+        setContacts(convs.conversations as Contact[]);
+        const conv = convs.conversations.find(c => c.id === result.conversationId);
+        if (conv) {
+          setSel(conv as Contact);
+          setListFilter("dm");
+          if (isMobile) setShowSidebar(false);
+        }
+      } catch {
+        // Accept succeeded — list refresh can catch up via realtime / refreshContacts.
       }
-      toast.success("Request accepted");
-    } catch {
-      toast.error("Could not accept request");
+      toast.success(result.alreadyExists ? "Conversation already open" : "Request accepted");
+    } catch (err) {
+      // Restore request only when the server says it is still pending / failed.
+      if (removed) setDmRequests(prev => (prev.some(r => r.id === requestId) ? prev : [removed, ...prev]));
+      loadDmRequests();
+      toast.error(err instanceof ApiError ? err.message : "Could not accept request");
+    } finally {
+      setAcceptingRequestId(null);
     }
   };
 
   const rejectDmRequest = async (requestId: number) => {
+    if (rejectingRequestId != null) return;
+    setRejectingRequestId(requestId);
+    const removed = dmRequests.find(r => r.id === requestId);
+    setDmRequests(prev => prev.filter(r => r.id !== requestId));
     try {
       await api.dm.reject(requestId);
-      loadDmRequests();
       toast.success("Request declined");
-    } catch {
-      toast.error("Could not decline request");
+    } catch (err) {
+      if (removed) setDmRequests(prev => (prev.some(r => r.id === requestId) ? prev : [removed, ...prev]));
+      loadDmRequests();
+      toast.error(err instanceof ApiError ? err.message : "Could not decline request");
+    } finally {
+      setRejectingRequestId(null);
     }
   };
 
@@ -1174,8 +1207,24 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
                             <p className="text-[10px]" style={{ color: C.onSurfaceVar, fontFamily: "Roboto Mono,monospace" }}>{req.time}</p>
                           </div>
                           <div className="flex flex-col gap-1 shrink-0">
-                            <button onClick={() => acceptDmRequest(req.id)} className="px-2.5 py-1 rounded-full text-[10px] font-medium text-white" style={{ background: C.primary, fontFamily: "Roboto" }}>Accept</button>
-                            <button onClick={() => rejectDmRequest(req.id)} className="px-2.5 py-1 rounded-full text-[10px] font-medium border" style={{ borderColor: C.outline, color: C.error, fontFamily: "Roboto" }}>Reject</button>
+                            <button
+                              type="button"
+                              disabled={acceptingRequestId === req.id || rejectingRequestId === req.id}
+                              onClick={() => void acceptDmRequest(req.id)}
+                              className="px-2.5 py-1 rounded-full text-[10px] font-medium text-white disabled:opacity-60"
+                              style={{ background: C.primary, fontFamily: "Roboto" }}
+                            >
+                              {acceptingRequestId === req.id ? "Accepting…" : "Accept"}
+                            </button>
+                            <button
+                              type="button"
+                              disabled={acceptingRequestId === req.id || rejectingRequestId === req.id}
+                              onClick={() => void rejectDmRequest(req.id)}
+                              className="px-2.5 py-1 rounded-full text-[10px] font-medium border disabled:opacity-60"
+                              style={{ borderColor: C.outline, color: C.error, fontFamily: "Roboto" }}
+                            >
+                              {rejectingRequestId === req.id ? "Declining…" : "Reject"}
+                            </button>
                           </div>
                         </div>
                       ))}

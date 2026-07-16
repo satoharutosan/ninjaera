@@ -20,8 +20,14 @@ export function UserAvatar({ user, size = 32 }: { user: AdminUser; size?: number
 
 export const StatCard = memo(function StatCard({ label, value, color, hint, Icon }: { label: string; value: number; color?: string; hint?: string; Icon?: typeof PeopleIcon }) {
   const C = useC();
-  const n = typeof value === "number" && Number.isFinite(value) ? value : Number(value);
-  const display = Number.isFinite(n) ? n : 0;
+  // Never render [object Object] — coerce unknown payloads to a safe integer.
+  let n = 0;
+  if (typeof value === "number" && Number.isFinite(value)) n = Math.trunc(value);
+  else if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) n = Math.trunc(parsed);
+  }
+  const display = n;
   return (
     <div className="rounded-2xl p-4 md:p-5 min-h-[96px] flex flex-col justify-between gap-2" style={{ background: C.surface, boxShadow: SH1 }} role="group" aria-label={`${label}: ${display}`}>
       <div className="flex items-start justify-between gap-2">

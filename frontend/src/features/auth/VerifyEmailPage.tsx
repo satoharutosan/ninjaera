@@ -8,6 +8,9 @@ import type { ApiUser } from "@/app/api";
 import { hashQueryParams, setPageInLocationWithQuery } from "@/shared/routing";
 import { BrandLogo } from "@/shared/BrandLogo";
 import { persistAuthSession, isAuthPersistent } from "@/shared/authStorage";
+import { clearSignupDraft } from "@/features/auth/signupDraft";
+
+type DeliveryStatus = "queued" | "sending" | "sent" | "failed" | "none";
 
 function openMailApp() {
   // mailto: opens the default mail client; Gmail/web users can still use their inbox manually.
@@ -28,6 +31,10 @@ function VerifyEmailPage({ setPage, onLogin }: {
   const [resending, setResending] = useState(false);
   const [cooldown, setCooldown] = useState(0);
   const [success, setSuccess] = useState(false);
+  const [deliveryStatus, setDeliveryStatus] = useState<DeliveryStatus>(() => {
+    const stored = sessionStorage.getItem("pending-verify-status");
+    return stored === "queued" || stored === "sending" || stored === "sent" || stored === "failed" ? stored : "queued";
+  });
   const tokenHandled = useRef(false);
 
   useEffect(() => {
@@ -41,6 +48,39 @@ function VerifyEmailPage({ setPage, onLogin }: {
   }, [cooldown]);
 
   useEffect(() => {
+    if (!email || success || tokenHandled.current) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    const refresh = async () => {
+      try {
+        const status = await api.auth.verificationStatus(email.trim());
+        if (cancelled) return;
+        setDeliveryStatus(status.status);
+        sessionStorage.setItem("pending-verify-status", status.status);
+        setCooldown(status.cooldownSeconds || 0);
+        if (status.status === "sent") {
+          setInfo("Verification email sent. Enter the code from your inbox to activate your account.");
+        } else if (status.status === "failed") {
+          setInfo("");
+        } else if (status.status === "queued" || status.status === "sending") {
+          setInfo("Your verification email is being sent in the background.");
+        }
+      } catch {
+        /* Status is best-effort; verification/resend buttons remain usable. */
+      } finally {
+        if (!cancelled && deliveryStatus !== "sent") {
+          timer = window.setTimeout(refresh, 5000);
+        }
+      }
+    };
+    void refresh();
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [email, success, deliveryStatus]);
+
+  useEffect(() => {
     const token = hashQueryParams().get("token");
     if (!token || tokenHandled.current) return;
     tokenHandled.current = true;
@@ -52,6 +92,8 @@ function VerifyEmailPage({ setPage, onLogin }: {
         persistAuthSession(result.token, result.user, isAuthPersistent());
         onLogin(result.user);
         sessionStorage.removeItem("pending-verify-email");
+        sessionStorage.removeItem("pending-verify-status");
+        clearSignupDraft();
         setSuccess(true);
         setInfo("Your email is verified. Welcome to Ninja Era!");
         setPage("home");
@@ -80,6 +122,8 @@ function VerifyEmailPage({ setPage, onLogin }: {
       persistAuthSession(result.token, result.user, isAuthPersistent());
       onLogin(result.user);
       sessionStorage.removeItem("pending-verify-email");
+      sessionStorage.removeItem("pending-verify-status");
+      clearSignupDraft();
       setSuccess(true);
       setInfo("Your email is verified. Welcome to Ninja Era!");
       setPage("home");
@@ -102,7 +146,9 @@ function VerifyEmailPage({ setPage, onLogin }: {
     try {
       const result = await api.auth.resendVerification(email.trim());
       setCooldown(result.cooldownSeconds || 60);
-      setInfo("If a pending registration exists for that email, a new verification message has been sent.");
+      setDeliveryStatus(result.emailStatus || "queued");
+      sessionStorage.setItem("pending-verify-status", result.emailStatus || "queued");
+      setInfo("Verification email queued. You can stay here while it sends in the background.");
       setPageInLocationWithQuery("verify-email", { email: email.trim() });
     } catch (e) {
       if (e instanceof ApiError) {
@@ -133,7 +179,7 @@ function VerifyEmailPage({ setPage, onLogin }: {
             <p className="text-sm" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
               {success
                 ? "Your account is ready. You can continue into Ninja Era."
-                : "We sent a verification code to your inbox. Your account stays inactive until you verify."}
+                : "Your account is pending verification. Email delivery happens in the background so you can stay on this page."}
             </p>
           </div>
 
@@ -147,6 +193,14 @@ function VerifyEmailPage({ setPage, onLogin }: {
               {info}
             </p>
           )}
+          {deliveryStatus === "failed" && !success && (
+            <div className="rounded-2xl p-4 mb-4" role="alert" style={{ background: "#FCEEEE", color: C.error, fontFamily: "Roboto" }}>
+              <p className="text-sm font-medium mb-1">We couldn't send your verification email.</p>
+              <p className="text-xs leading-relaxed">
+                Your pending account is still saved. Retry delivery, change the email address, or contact support.
+              </p>
+            </div>
+          )}
 
           {success ? (
             <FilledBtn onClick={() => setPage("home")} cls="w-full justify-center">
@@ -155,6 +209,18 @@ function VerifyEmailPage({ setPage, onLogin }: {
           ) : (
             <>
               <div className="space-y-4 mb-5" onKeyDown={(e) => { if (e.key === "Enter" && !loading) handleVerifyCode(); }}>
+                <div className="rounded-2xl px-4 py-3 flex items-start gap-3" style={{ background: C.surfaceVar, color: C.onSurfaceVar }}>
+                  <MailOutlineIcon style={{ fontSize: 20, color: C.primary, marginTop: 1 }} />
+                  <div className="min-w-0">
+                    <p className="text-xs" style={{ fontFamily: "Roboto" }}>Verification code for</p>
+                    <p className="text-sm font-medium truncate" style={{ color: C.onSurface, fontFamily: "Roboto" }}>
+                      {email || "your email address"}
+                    </p>
+                    <p className="text-xs mt-1 capitalize" style={{ fontFamily: "Roboto Mono, monospace" }}>
+                      Email status: {deliveryStatus === "none" ? "pending lookup" : deliveryStatus}
+                    </p>
+                  </div>
+                </div>
                 <Field
                   label="Email"
                   type="email"
@@ -194,6 +260,16 @@ function VerifyEmailPage({ setPage, onLogin }: {
                 <OutlinedBtn onClick={openMailApp} cls="w-full justify-center">
                   <MailOutlineIcon style={{ fontSize: 16 }} /> Open email app
                 </OutlinedBtn>
+                {deliveryStatus === "failed" && (
+                  <>
+                    <OutlinedBtn onClick={() => setPage("signup")} cls="w-full justify-center">
+                      Change Email Address
+                    </OutlinedBtn>
+                    <OutlinedBtn onClick={() => setPage("contact")} cls="w-full justify-center">
+                      Contact Support
+                    </OutlinedBtn>
+                  </>
+                )}
               </div>
 
               <p className="text-xs text-center mb-4" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
@@ -202,7 +278,7 @@ function VerifyEmailPage({ setPage, onLogin }: {
               <p className="text-center text-sm" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
                 Wrong email?{" "}
                 <button type="button" onClick={() => setPage("signup")} className="font-medium" style={{ color: C.primary }}>
-                  Register again
+                  Change email
                 </button>
                 {" · "}
                 <button type="button" onClick={() => setPage("login")} className="font-medium" style={{ color: C.primary }}>

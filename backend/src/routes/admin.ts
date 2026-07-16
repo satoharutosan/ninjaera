@@ -100,189 +100,369 @@ router.use(requireAuth, requireAdmin);
 
 // ── Dashboard ────────────────────────────────────────────────────────────────
 const STATS_CACHE_TTL_MS = 5000;
-let statsCache: { at: number; body: unknown } | null = null;
+let statsCache: { at: number; body: Record<string, unknown> } | null = null;
 
-router.get("/stats", async (_req, res) => {
-  if (statsCache && Date.now() - statsCache.at < STATS_CACHE_TTL_MS) {
-    // Always recompute unique online users — presence changes faster than the general stats cache.
-    const cached = statsCache.body as Record<string, unknown>;
-    res.json({ ...cached, onlineUsers: countOnlineUsers() });
-    return;
+/** Coerce COUNT/SUM results from SQLite (number) or Postgres (string bigint) to a finite integer. */
+function asInt(value: unknown, fallback = 0): number {
+  if (typeof value === "number" && Number.isFinite(value)) return Math.trunc(value);
+  if (typeof value === "bigint") return Number(value);
+  if (typeof value === "string" && value.trim() !== "") {
+    const n = Number(value);
+    if (Number.isFinite(n)) return Math.trunc(n);
   }
+  return fallback;
+}
 
-  const totalUsers = (await qGet<{ c: number }>("SELECT COUNT(*) as c FROM users WHERE is_npc = 0 AND is_deleted = 0"))!.c;
-  // Unique users online — ISO cutoff matches presence.ts ONLINE_WINDOW_MS (avoids SQLite datetime() vs ISO string bug).
-  const onlineUsers = countOnlineUsers();
-  const roleCounts = (await qGet<{ adminCount: number; teamCount: number }>(`
-    SELECT
-      SUM(CASE WHEN is_admin = 1 THEN 1 ELSE 0 END) as adminCount,
-      SUM(CASE WHEN is_team_member = 1 AND is_admin != 1 THEN 1 ELSE 0 END) as teamCount
-    FROM users WHERE is_npc = 0 AND is_deleted = 0
-  `))!;
-  const adminCount = roleCounts.adminCount || 0;
-  const teamCount = roleCounts.teamCount || 0;
-  const registeredCount = Math.max(0, totalUsers - adminCount - teamCount);
+function daysAgoIso(days: number): string {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - days);
+  return d.toISOString();
+}
 
-  const totalChannels = (await qGet<{ c: number }>("SELECT COUNT(*) as c FROM conversations WHERE type = 'channel' AND archived = 0"))!.c;
-  const totalDms = (await qGet<{ c: number }>("SELECT COUNT(*) as c FROM conversations WHERE type = 'dm'"))!.c;
-  const pendingApplications = (await qGet<{ c: number }>("SELECT COUNT(*) as c FROM job_applications WHERE status = 'pending'"))!.c;
-  const approvedApplications = (await qGet<{ c: number }>("SELECT COUNT(*) as c FROM job_applications WHERE status = 'approved'"))!.c;
-  const rejectedApplications = (await qGet<{ c: number }>("SELECT COUNT(*) as c FROM job_applications WHERE status = 'rejected'"))!.c;
-  const teamMembers = (await qGet<{ c: number }>("SELECT COUNT(*) as c FROM users WHERE is_team_member = 1 AND is_deleted = 0"))!.c;
-  const unreadNotifications = (await qGet<{ c: number }>(`
-    SELECT COUNT(*) as c FROM notifications n
-    WHERE n.user_id IS NULL
-    AND NOT EXISTS (SELECT 1 FROM notification_reads nr WHERE nr.notification_id = n.id)
-  `))!.c;
-  const unreadContacts = (await qGet<{ c: number }>("SELECT COUNT(*) as c FROM contact_tickets WHERE is_read = 0"))!.c;
-  const totalContacts = (await qGet<{ c: number }>("SELECT COUNT(*) as c FROM contact_tickets"))!.c;
-  const repliedContacts = (await qGet<{ c: number }>("SELECT COUNT(*) as c FROM contact_tickets WHERE reply_status = 'replied'"))!.c;
-  const pendingContactReplies = (await qGet<{ c: number }>("SELECT COUNT(*) as c FROM contact_tickets WHERE reply_status = 'pending'"))!.c;
-
-  const totalMessages = (await qGet<{ c: number }>("SELECT COUNT(*) as c FROM messages"))!.c;
-  const pendingDmRequests = (await qGet<{ c: number }>("SELECT COUNT(*) as c FROM dm_requests WHERE status = 'pending'"))!.c;
-  const totalResources = (await qGet<{ c: number }>("SELECT COUNT(*) as c FROM resources"))!.c;
-  const totalDownloads = (await qGet<{ c: number }>(`
-    SELECT COUNT(*) as c FROM activity_logs
-    WHERE event_category = 'downloads' AND result = 'success'
-  `))!.c;
-
-  const dayKeys: string[] = [];
-  for (let i = 13; i >= 0; i--) {
+function dayKeysLastN(days: number): string[] {
+  const keys: string[] = [];
+  for (let i = days - 1; i >= 0; i--) {
     const d = new Date();
     d.setHours(0, 0, 0, 0);
     d.setDate(d.getDate() - i);
-    dayKeys.push(d.toISOString().slice(0, 10));
+    keys.push(d.toISOString().slice(0, 10));
   }
+  return keys;
+}
 
-  const registrationsByDay = Object.fromEntries(
-    (await qAll<{ d: string; c: number }>(`
-      SELECT substr(created_at, 1, 10) as d, COUNT(*) as c
-      FROM users
-      WHERE is_npc = 0 AND is_deleted = 0 AND created_at >= date('now', '-13 days')
-      GROUP BY substr(created_at, 1, 10)
-    `)).map(r => [r.d, r.c])
-  );
+async function safeCount(label: string, sql: string, ...params: unknown[]): Promise<number> {
+  try {
+    const row = await qGet<{ c: unknown }>(sql, ...params);
+    return asInt(row?.c, 0);
+  } catch (err) {
+    console.warn(`[Admin Stats] count failed (${label}):`, err instanceof Error ? err.message : err);
+    return 0;
+  }
+}
 
-  const messagesByDay = Object.fromEntries(
-    (await qAll<{ d: string; c: number }>(`
-      SELECT substr(created_at, 1, 10) as d, COUNT(*) as c
-      FROM messages
-      WHERE created_at >= date('now', '-13 days')
-      GROUP BY substr(created_at, 1, 10)
-    `)).map(r => [r.d, r.c])
-  );
+async function safeQueryAll<T>(label: string, sql: string, ...params: unknown[]): Promise<T[]> {
+  try {
+    return await qAll<T>(sql, ...params);
+  } catch (err) {
+    console.warn(`[Admin Stats] query failed (${label}):`, err instanceof Error ? err.message : err);
+    return [];
+  }
+}
 
-  const loginsByDay = Object.fromEntries(
-    (await qAll<{ d: string; c: number }>(`
-      SELECT substr(timestamp, 1, 10) as d, COUNT(*) as c
-      FROM activity_logs
-      WHERE event_type IN ('login', 'register') AND timestamp >= date('now', '-13 days')
-      GROUP BY substr(timestamp, 1, 10)
-    `)).map(r => [r.d, r.c])
-  );
+async function safeQueryOne<T>(label: string, sql: string, ...params: unknown[]): Promise<T | undefined> {
+  try {
+    return await qGet<T>(sql, ...params);
+  } catch (err) {
+    console.warn(`[Admin Stats] query failed (${label}):`, err instanceof Error ? err.message : err);
+    return undefined;
+  }
+}
 
-  const downloadsByDay = Object.fromEntries(
-    (await qAll<{ d: string; c: number }>(`
-      SELECT substr(timestamp, 1, 10) as d, COUNT(*) as c
-      FROM activity_logs
-      WHERE event_category = 'downloads' AND result = 'success' AND timestamp >= date('now', '-13 days')
-      GROUP BY substr(timestamp, 1, 10)
-    `)).map(r => [r.d, r.c])
-  );
+function logAdminStatsError(req: import("express").Request, err: unknown, context?: { sql?: string; params?: unknown[] }) {
+  const e = err as { message?: string; stack?: string; code?: string };
+  console.error("[Admin Stats] ============================================");
+  console.error(`[Admin Stats] Provider: ${dbAsync.provider}`);
+  console.error(`[Admin Stats] Route: ${req.originalUrl || req.path}`);
+  console.error(`[Admin Stats] User: ${(req.user as { email?: string } | undefined)?.email || "unknown"}`);
+  console.error(`[Admin Stats] Error: ${e?.message || String(err)}`);
+  if (e?.code) console.error(`[Admin Stats] Code: ${e.code}`);
+  if (context?.sql) console.error(`[Admin Stats] SQL: ${context.sql.replace(/\s+/g, " ").trim().slice(0, 400)}`);
+  if (context?.params) console.error(`[Admin Stats] Params: ${JSON.stringify(context.params).slice(0, 200)}`);
+  if (e?.stack) console.error(`[Admin Stats] Stack:\n${e.stack}`);
+  console.error("[Admin Stats] ============================================");
+}
 
-  const userGrowth = dayKeys.map(date => ({
-    date,
-    label: date.slice(5),
-    count: registrationsByDay[date] || 0,
-  }));
+router.get("/stats", async (req, res) => {
+  try {
+    if (statsCache && Date.now() - statsCache.at < STATS_CACHE_TTL_MS) {
+      // Always recompute unique online users — presence changes faster than the general stats cache.
+      const onlineUsers = asInt(countOnlineUsers(), 0);
+      res.json({ ...statsCache.body, onlineUsers });
+      return;
+    }
 
-  const activityTimeline = dayKeys.map(date => ({
-    date,
-    label: date.slice(5),
-    messages: messagesByDay[date] || 0,
-    downloads: downloadsByDay[date] || 0,
-    logins: loginsByDay[date] || 0,
-  }));
+    // Portable cutoff: never use SQLite-only date('now', '-13 days') — it fails on PostgreSQL.
+    const sinceIso = daysAgoIso(13);
+    const dayKeys = dayKeysLastN(14);
 
-  const downloadsByPlatform = await Promise.all((["windows", "android", "ios"] as const).map(async platform => {
-    const count = (await qGet<{ c: number }>(`
-      SELECT COUNT(*) as c FROM activity_logs
-      WHERE event_type = 'game_download' AND result = 'success'
-        AND (description LIKE ? OR affected_object LIKE ?)
-    `, `%${platform}%`, `%${platform}%`))!.c;
-    return { platform, label: platform.charAt(0).toUpperCase() + platform.slice(1), count };
-  }));
+    const [
+      totalUsers,
+      roleCounts,
+      totalChannels,
+      totalDms,
+      pendingApplications,
+      approvedApplications,
+      rejectedApplications,
+      teamMembers,
+      unreadNotifications,
+      unreadContacts,
+      totalContacts,
+      repliedContacts,
+      pendingContactReplies,
+      totalMessages,
+      pendingDmRequests,
+      totalResources,
+      totalDownloads,
+      registrationRows,
+      messageDayRows,
+      loginDayRows,
+      downloadDayRows,
+      mostDownloadedResource,
+      recentUsers,
+      recentApplications,
+      recentContacts,
+      recentActivity,
+    ] = await Promise.all([
+      safeCount("totalUsers", "SELECT COUNT(*) as c FROM users WHERE is_npc = 0 AND is_deleted = 0"),
+      safeQueryOne<{ adminCount: unknown; teamCount: unknown }>(
+        "roleCounts",
+        `SELECT
+          COALESCE(SUM(CASE WHEN is_admin = 1 THEN 1 ELSE 0 END), 0) as adminCount,
+          COALESCE(SUM(CASE WHEN is_team_member = 1 AND is_admin != 1 THEN 1 ELSE 0 END), 0) as teamCount
+         FROM users WHERE is_npc = 0 AND is_deleted = 0`,
+      ),
+      safeCount("totalChannels", "SELECT COUNT(*) as c FROM conversations WHERE type = 'channel' AND archived = 0"),
+      safeCount("totalDms", "SELECT COUNT(*) as c FROM conversations WHERE type = 'dm'"),
+      safeCount("pendingApplications", "SELECT COUNT(*) as c FROM job_applications WHERE status = 'pending'"),
+      safeCount("approvedApplications", "SELECT COUNT(*) as c FROM job_applications WHERE status = 'approved'"),
+      safeCount("rejectedApplications", "SELECT COUNT(*) as c FROM job_applications WHERE status = 'rejected'"),
+      safeCount("teamMembers", "SELECT COUNT(*) as c FROM users WHERE is_team_member = 1 AND is_deleted = 0"),
+      safeCount(
+        "unreadNotifications",
+        `SELECT COUNT(*) as c FROM notifications n
+         WHERE n.user_id IS NULL
+         AND NOT EXISTS (SELECT 1 FROM notification_reads nr WHERE nr.notification_id = n.id)`,
+      ),
+      safeCount("unreadContacts", "SELECT COUNT(*) as c FROM contact_tickets WHERE is_read = 0"),
+      safeCount("totalContacts", "SELECT COUNT(*) as c FROM contact_tickets"),
+      safeCount("repliedContacts", "SELECT COUNT(*) as c FROM contact_tickets WHERE reply_status = 'replied'"),
+      safeCount("pendingContactReplies", "SELECT COUNT(*) as c FROM contact_tickets WHERE reply_status = 'pending'"),
+      safeCount("totalMessages", "SELECT COUNT(*) as c FROM messages"),
+      safeCount("pendingDmRequests", "SELECT COUNT(*) as c FROM dm_requests WHERE status = 'pending'"),
+      safeCount("totalResources", "SELECT COUNT(*) as c FROM resources"),
+      safeCount(
+        "totalDownloads",
+        `SELECT COUNT(*) as c FROM activity_logs
+         WHERE event_category = 'downloads' AND result = 'success'`,
+      ),
+      safeQueryAll<{ d: string; c: unknown }>(
+        "registrationsByDay",
+        `SELECT substr(created_at, 1, 10) as d, COUNT(*) as c
+         FROM users
+         WHERE is_npc = 0 AND is_deleted = 0 AND created_at >= ?
+         GROUP BY substr(created_at, 1, 10)`,
+        sinceIso,
+      ),
+      safeQueryAll<{ d: string; c: unknown }>(
+        "messagesByDay",
+        `SELECT substr(created_at, 1, 10) as d, COUNT(*) as c
+         FROM messages
+         WHERE created_at >= ?
+         GROUP BY substr(created_at, 1, 10)`,
+        sinceIso,
+      ),
+      safeQueryAll<{ d: string; c: unknown }>(
+        "loginsByDay",
+        `SELECT substr(timestamp, 1, 10) as d, COUNT(*) as c
+         FROM activity_logs
+         WHERE event_type IN ('login', 'register') AND timestamp >= ?
+         GROUP BY substr(timestamp, 1, 10)`,
+        sinceIso,
+      ),
+      safeQueryAll<{ d: string; c: unknown }>(
+        "downloadsByDay",
+        `SELECT substr(timestamp, 1, 10) as d, COUNT(*) as c
+         FROM activity_logs
+         WHERE event_category = 'downloads' AND result = 'success' AND timestamp >= ?
+         GROUP BY substr(timestamp, 1, 10)`,
+        sinceIso,
+      ),
+      safeQueryOne<{ title: string; downloads: unknown }>(
+        "mostDownloadedResource",
+        `SELECT r.title as title, COUNT(*) as downloads
+         FROM activity_logs al
+         JOIN resources r ON al.affected_object = 'resource:' || CAST(r.id AS TEXT)
+         WHERE al.event_type = 'resource_download' AND al.result = 'success'
+         GROUP BY r.id, r.title
+         ORDER BY downloads DESC
+         LIMIT 1`,
+      ),
+      safeQueryAll<{
+        id: number; username: string; avatarUrl: string | null; createdAt: string;
+        isOnline: number; lastSeenAt: string | null;
+      }>(
+        "recentUsers",
+        `SELECT id, username, avatar_url as avatarUrl, created_at as createdAt,
+                is_online as isOnline, last_seen_at as lastSeenAt
+         FROM users WHERE is_npc = 0 AND is_deleted = 0
+         ORDER BY created_at DESC LIMIT 5`,
+      ),
+      safeQueryAll<{
+        id: number; status: string; createdAt: string; username: string | null; position: string | null;
+      }>(
+        "recentApplications",
+        `SELECT ja.id, ja.status, ja.created_at as createdAt, u.username, jp.title as position
+         FROM job_applications ja
+         LEFT JOIN users u ON u.id = ja.user_id
+         LEFT JOIN job_postings jp ON jp.id = ja.job_id
+         ORDER BY ja.created_at DESC LIMIT 5`,
+      ),
+      safeQueryAll<{
+        id: number; name: string; subject: string; isRead: number; replyStatus: string; createdAt: string;
+      }>(
+        "recentContacts",
+        `SELECT id, name, subject, is_read as isRead, reply_status as replyStatus, created_at as createdAt
+         FROM contact_tickets
+         ORDER BY created_at DESC LIMIT 5`,
+      ),
+      safeQueryAll<{
+        id: number; timestamp: string; username: string | null; eventType: string;
+        eventCategory: string; description: string; userRole: string | null; result: string;
+      }>(
+        "recentActivity",
+        `SELECT id, timestamp, username, event_type as eventType, event_category as eventCategory,
+                description, user_role as userRole, result
+         FROM activity_logs
+         ORDER BY timestamp DESC LIMIT 8`,
+      ),
+    ]);
 
-  const mostDownloadedResource = await qGet<{ title: string; downloads: number }>(`
-    SELECT r.title as title, COUNT(*) as downloads
-    FROM activity_logs al
-    JOIN resources r ON al.affected_object = 'resource:' || r.id
-    WHERE al.event_type = 'resource_download' AND al.result = 'success'
-    GROUP BY r.id
-    ORDER BY downloads DESC
-    LIMIT 1
-  `);
+    const onlineUsers = asInt(countOnlineUsers(), 0);
+    const adminCount = asInt(roleCounts?.adminCount, 0);
+    const teamCount = asInt(roleCounts?.teamCount, 0);
+    const registeredCount = Math.max(0, totalUsers - adminCount - teamCount);
 
-  const recentUsers = await qAll<{ id: number; username: string; avatarUrl: string | null; createdAt: string; isOnline: number; lastSeenAt: string | null }>(`
-    SELECT id, username, avatar_url as avatarUrl, created_at as createdAt, is_online as isOnline, last_seen_at as lastSeenAt
-    FROM users WHERE is_npc = 0 AND is_deleted = 0
-    ORDER BY created_at DESC LIMIT 5
-  `);
+    const registrationsByDay = Object.fromEntries(registrationRows.map((r) => [r.d, asInt(r.c)]));
+    const messagesByDay = Object.fromEntries(messageDayRows.map((r) => [r.d, asInt(r.c)]));
+    const loginsByDay = Object.fromEntries(loginDayRows.map((r) => [r.d, asInt(r.c)]));
+    const downloadsByDay = Object.fromEntries(downloadDayRows.map((r) => [r.d, asInt(r.c)]));
 
-  const recentApplications = await qAll<{ id: number; status: string; createdAt: string; username: string | null; position: string | null }>(`
-    SELECT ja.id, ja.status, ja.created_at as createdAt, u.username, jp.title as position
-    FROM job_applications ja
-    LEFT JOIN users u ON u.id = ja.user_id
-    LEFT JOIN job_postings jp ON jp.id = ja.job_id
-    ORDER BY ja.created_at DESC LIMIT 5
-  `);
+    const userGrowth = dayKeys.map((date) => ({
+      date,
+      label: date.slice(5),
+      count: registrationsByDay[date] || 0,
+    }));
 
-  const recentContacts = await qAll<{ id: number; name: string; subject: string; isRead: number; replyStatus: string; createdAt: string }>(`
-    SELECT id, name, subject, is_read as isRead, reply_status as replyStatus, created_at as createdAt
-    FROM contact_tickets
-    ORDER BY created_at DESC LIMIT 5
-  `);
+    const activityTimeline = dayKeys.map((date) => ({
+      date,
+      label: date.slice(5),
+      messages: messagesByDay[date] || 0,
+      downloads: downloadsByDay[date] || 0,
+      logins: loginsByDay[date] || 0,
+    }));
 
-  const recentActivity = await qAll<{
-    id: number; timestamp: string; username: string | null; eventType: string;
-    eventCategory: string; description: string; userRole: string | null; result: string;
-  }>(`
-    SELECT id, timestamp, username, event_type as eventType, event_category as eventCategory,
-           description, user_role as userRole, result
-    FROM activity_logs
-    ORDER BY timestamp DESC LIMIT 8
-  `);
+    const downloadsByPlatform = await Promise.all(
+      (["windows", "android", "ios"] as const).map(async (platform) => {
+        const count = await safeCount(
+          `downloadsByPlatform:${platform}`,
+          `SELECT COUNT(*) as c FROM activity_logs
+           WHERE event_type = 'game_download' AND result = 'success'
+             AND (description LIKE ? OR affected_object LIKE ?)`,
+          `%${platform}%`,
+          `%${platform}%`,
+        );
+        return {
+          platform,
+          label: platform === "ios" ? "iOS" : platform.charAt(0).toUpperCase() + platform.slice(1),
+          count,
+        };
+      }),
+    );
 
-  const body = {
-    totalUsers, onlineUsers, totalChannels, totalDms, pendingApplications, teamMembers, unreadNotifications,
-    unreadContacts, totalContacts, repliedContacts, pendingContactReplies,
-    totalMessages, pendingDmRequests, totalResources, totalDownloads,
-    approvedApplications, rejectedApplications,
-    userDistribution: [
-      { name: "Administrators", value: adminCount },
-      { name: "Team Members", value: teamCount },
-      { name: "Registered Users", value: registeredCount },
-    ],
-    userGrowth,
-    activityTimeline,
-    downloadsByPlatform,
-    mostDownloadedResource: mostDownloadedResource || null,
-    recentUsers: recentUsers.map(u => ({
-      ...u,
-      isOnline: isUserOnline({ is_online: u.isOnline, last_seen_at: u.lastSeenAt }),
-      time: timeAgo(u.createdAt),
-    })),
-    recentApplications: recentApplications.map(a => ({ ...a, time: timeAgo(a.createdAt) })),
-    recentContacts: recentContacts.map(c => ({
-      ...c,
-      isRead: c.isRead === 1,
-      time: timeAgo(c.createdAt),
-    })),
-    recentActivity: recentActivity.map(a => ({ ...a, time: timeAgo(a.timestamp) })),
-  };
-  statsCache = { at: Date.now(), body };
-  res.json(body);
+    const body = {
+      totalUsers,
+      onlineUsers,
+      totalChannels,
+      totalDms,
+      pendingApplications,
+      teamMembers,
+      unreadNotifications,
+      unreadContacts,
+      totalContacts,
+      repliedContacts,
+      pendingContactReplies,
+      totalMessages,
+      pendingDmRequests,
+      totalResources,
+      totalDownloads,
+      approvedApplications,
+      rejectedApplications,
+      userDistribution: [
+        { name: "Administrators", value: adminCount },
+        { name: "Team Members", value: teamCount },
+        { name: "Registered Users", value: registeredCount },
+      ],
+      userGrowth,
+      activityTimeline,
+      downloadsByPlatform,
+      mostDownloadedResource: mostDownloadedResource
+        ? {
+            title: mostDownloadedResource.title,
+            downloads: asInt(mostDownloadedResource.downloads, 0),
+          }
+        : null,
+      recentUsers: recentUsers.map((u) => ({
+        id: u.id,
+        username: u.username,
+        avatarUrl: u.avatarUrl,
+        createdAt: u.createdAt,
+        isOnline: isUserOnline({ is_online: u.isOnline, last_seen_at: u.lastSeenAt }),
+        time: timeAgo(u.createdAt),
+      })),
+      recentApplications: recentApplications.map((a) => ({ ...a, time: timeAgo(a.createdAt) })),
+      recentContacts: recentContacts.map((c) => ({
+        ...c,
+        isRead: c.isRead === 1,
+        time: timeAgo(c.createdAt),
+      })),
+      recentActivity: recentActivity.map((a) => ({ ...a, time: timeAgo(a.timestamp) })),
+    };
+
+    statsCache = { at: Date.now(), body };
+    res.json(body);
+  } catch (err) {
+    logAdminStatsError(req, err);
+    // Last-resort empty dashboard — never leave the admin UI on a hard 500 for stats.
+    res.status(200).json({
+      totalUsers: 0,
+      onlineUsers: asInt(countOnlineUsers(), 0),
+      totalChannels: 0,
+      totalDms: 0,
+      pendingApplications: 0,
+      teamMembers: 0,
+      unreadNotifications: 0,
+      unreadContacts: 0,
+      totalContacts: 0,
+      repliedContacts: 0,
+      pendingContactReplies: 0,
+      totalMessages: 0,
+      pendingDmRequests: 0,
+      totalResources: 0,
+      totalDownloads: 0,
+      approvedApplications: 0,
+      rejectedApplications: 0,
+      userDistribution: [
+        { name: "Administrators", value: 0 },
+        { name: "Team Members", value: 0 },
+        { name: "Registered Users", value: 0 },
+      ],
+      userGrowth: [],
+      activityTimeline: [],
+      downloadsByPlatform: [
+        { platform: "windows", label: "Windows", count: 0 },
+        { platform: "android", label: "Android", count: 0 },
+        { platform: "ios", label: "iOS", count: 0 },
+      ],
+      mostDownloadedResource: null,
+      recentUsers: [],
+      recentApplications: [],
+      recentContacts: [],
+      recentActivity: [],
+      degraded: true,
+      error: "Some dashboard statistics could not be loaded. See server logs for details.",
+    });
+  }
 });
 
 // ── Users ──────────────────────────────────────────────────────────────────────
@@ -901,6 +1081,13 @@ router.delete("/channels/:id", async (req, res) => {
   const row = await qGet<{ avatar_url: string | null }>("SELECT avatar_url FROM conversations WHERE id = ? AND type = 'channel'", id);
   const participantIds = (await qAll<{ user_id: number }>("SELECT user_id FROM conversation_participants WHERE conversation_id = ?", id))
     .map((p) => p.user_id);
+  const mediaRows = await qAll<{ media_url: string | null }>(
+    "SELECT media_url FROM messages WHERE conversation_id = ? AND media_url IS NOT NULL",
+    id,
+  );
+  for (const m of mediaRows) {
+    await unlinkLocalUpload(m.media_url);
+  }
   await qRun("DELETE FROM messages WHERE conversation_id = ?", id);
   await qRun("DELETE FROM conversation_participants WHERE conversation_id = ?", id);
   await qRun("DELETE FROM conversations WHERE id = ? AND type = 'channel'", id);
@@ -1119,12 +1306,21 @@ router.post("/applications/:id/reject", async (req, res) => {
 
 router.delete("/applications/:id", async (req, res) => {
   const id = Number(req.params.id);
-  const app = await qGet<{ id: number; full_name: string; status: string; username: string }>(`
-    SELECT ja.id, ja.full_name, ja.status, u.username
+  const app = await qGet<{
+    id: number;
+    full_name: string;
+    status: string;
+    username: string;
+    photo_url: string | null;
+    cv_url: string | null;
+  }>(`
+    SELECT ja.id, ja.full_name, ja.status, ja.photo_url, ja.cv_url, u.username
     FROM job_applications ja JOIN users u ON u.id = ja.user_id
     WHERE ja.id = ?
   `, id);
   if (!app) { res.status(404).json({ error: "Application not found" }); return; }
+  await unlinkLocalUpload(app.photo_url);
+  await unlinkLocalUpload(app.cv_url);
   await qRun("DELETE FROM job_applications WHERE id = ?", id);
   logActivitySync({
     req, userId: req.user!.id,

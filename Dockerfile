@@ -9,7 +9,8 @@
 #   DATABASE_PROVIDER=postgres + DATABASE_URL=...
 #   JWT_SECRET, CORS_ORIGIN, FRONTEND_URL, OAUTH_CALLBACK_BASE
 #   SMTP_* / OAuth secrets — never bake secrets into this file
-#   STORAGE_PROVIDER=s3 + S3_* for durable uploads (recommended on Railway)
+#   STORAGE_PROVIDER=cloudinary + CLOUDINARY_* for durable uploads (recommended on Railway)
+#   STORAGE_PROVIDER=s3 + S3_* for large game builds
 
 # ── Frontend (Vite) ──────────────────────────────────────────────────────────
 FROM node:22-bookworm-slim AS frontend-build
@@ -56,7 +57,7 @@ ENV MAIL_FROM_NAME="Ninja Era"
 ENV SPA_DIR=/app/backend/public
 
 # Railway volumes mount as root; stay root so /data is writable when using local storage.
-# Prefer STORAGE_PROVIDER=s3 in production so uploads survive without a volume.
+# Prefer STORAGE_PROVIDER=cloudinary in production so uploads survive without a volume.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates \
   && rm -rf /var/lib/apt/lists/* \

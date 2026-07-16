@@ -14,7 +14,6 @@ import { setPageInLocationWithQuery } from "@/shared/routing";
 import { BrandLogo } from "@/shared/BrandLogo";
 import {
   beginSignupLegalReview,
-  clearSignupDraft,
   clearSignupLegalReview,
   loadSignupDraft,
   saveSignupDraft,
@@ -93,9 +92,9 @@ function SignUpPage({ setPage }: {
     setLoading(true);
     try {
       const result = await api.auth.register(email.trim(), username, pw);
-      clearSignupDraft();
       clearSignupLegalReview();
       sessionStorage.setItem("pending-verify-email", result.email);
+      if (result.emailStatus) sessionStorage.setItem("pending-verify-status", result.emailStatus);
       setPageInLocationWithQuery("verify-email", { email: result.email });
       setPage("verify-email");
     } catch (e) {
@@ -182,7 +181,7 @@ function SignUpPage({ setPage }: {
             </div>
           </div>
           <FilledBtn onClick={handleSignup} cls="w-full justify-center mb-4" disabled={loading}>
-            <PersonAddIcon style={{ fontSize: 16 }} />{loading ? "Sending…" : "Create Account"}
+            <PersonAddIcon style={{ fontSize: 16 }} />{loading ? "Creating…" : "Create Account"}
           </FilledBtn>
           <div className="flex items-center gap-3 mb-4"><div className="flex-1 h-px" style={{ background: C.outlineVar }} /><span className="text-xs" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>or continue with</span><div className="flex-1 h-px" style={{ background: C.outlineVar }} /></div>
           <SocialAuthButtons disabled={loading} onError={setError} />

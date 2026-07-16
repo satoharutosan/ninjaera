@@ -1,12 +1,13 @@
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
-import { qGet, qRun } from "../db/query.js";
+import { qGet, qRun, qTransaction } from "../db/query.js";
 import {
   EMAIL_RESEND_COOLDOWN_MS,
   EMAIL_VERIFY_TTL_MS,
   generateVerificationCode,
   generateVerificationToken,
   hashSecret,
+  mailConfigured,
   sendVerificationEmail,
 } from "./mail.js";
 import { validateUsernameForWrite, isUsernameTaken } from "./username.js";
@@ -27,7 +28,22 @@ export type PendingRegistration = {
   last_sent_at: string;
   attempt_count: number;
   created_at: string;
+  email_status?: "queued" | "sending" | "sent" | "failed";
+  email_error?: string | null;
+  email_queued_at?: string | null;
+  last_email_attempt_at?: string | null;
+  email_sent_at?: string | null;
 };
+
+type AppError = Error & {
+  status?: number;
+  code?: string;
+  retryAfter?: number;
+};
+
+function authError(message: string, status: number, code: string, extra: Record<string, unknown> = {}): AppError {
+  return Object.assign(new Error(message), { status, code, ...extra });
+}
 
 function safeEqualDigest(a: string, b: string): boolean {
   const ba = Buffer.from(a);
@@ -37,6 +53,7 @@ function safeEqualDigest(a: string, b: string): boolean {
 }
 
 const rateBuckets = new Map<string, { count: number; resetAt: number }>();
+const EMAIL_RESEND_MAX_PER_HOUR = Number(process.env.EMAIL_RESEND_MAX_PER_HOUR) || 8;
 
 export function checkRateLimit(key: string, limit: number, windowMs: number): boolean {
   const now = Date.now();
@@ -59,7 +76,10 @@ export function isEmailFormatValid(email: string): boolean {
 }
 
 export async function purgeExpiredPendingRegistrations() {
-  await qRun("DELETE FROM pending_registrations WHERE expires_at < ?", new Date().toISOString());
+  const expired = await qRun("DELETE FROM pending_registrations WHERE expires_at < ?", new Date().toISOString());
+  if (expired.changes > 0) {
+    console.info(`[verification] expired pending registrations purged count=${expired.changes}`);
+  }
 }
 
 export async function findPendingByEmail(email: string): Promise<PendingRegistration | undefined> {
@@ -83,13 +103,151 @@ export async function isUsernamePending(username: string, excludeEmail?: string)
 function issueSecrets() {
   const code = generateVerificationCode();
   const token = generateVerificationToken();
+  const now = new Date().toISOString();
   return {
     code,
     token,
     codeHash: hashSecret(code),
     tokenHash: hashSecret(token),
     expiresAt: new Date(Date.now() + EMAIL_VERIFY_TTL_MS).toISOString(),
-    sentAt: new Date().toISOString(),
+    issuedAt: now,
+  };
+}
+
+function sanitizeDeliveryError(err: unknown): string {
+  if (err instanceof Error) return err.message.slice(0, 220);
+  return String(err).slice(0, 220);
+}
+
+function queueVerificationEmail(opts: {
+  email: string;
+  username: string;
+  code: string;
+  token: string;
+  tokenHash: string;
+  reason: "registration" | "resend";
+}): "queued" | "failed" {
+  if (!mailConfigured()) {
+    const message = "Email delivery is not configured";
+    void qRun(`
+      UPDATE pending_registrations
+      SET email_status = 'failed',
+          email_error = ?,
+          last_email_attempt_at = ?
+      WHERE email = ? AND token_hash = ?
+    `, message, new Date().toISOString(), opts.email, opts.tokenHash).catch((err) => {
+      console.error("[verification] failed to persist unconfigured email status", {
+        email: opts.email,
+        error: sanitizeDeliveryError(err),
+      });
+    });
+    console.error("[verification] email delivery unavailable", {
+      email: opts.email,
+      reason: opts.reason,
+      code: "EMAIL_SERVICE_UNAVAILABLE",
+    });
+    return "failed";
+  }
+
+  const queuedAt = new Date().toISOString();
+  void qRun(`
+    UPDATE pending_registrations
+    SET email_status = 'queued',
+        email_error = NULL,
+        email_queued_at = ?,
+        last_email_attempt_at = NULL,
+        email_sent_at = NULL
+    WHERE email = ?
+  `, queuedAt, opts.email).catch((err) => {
+    console.error("[verification] failed to mark email queued", { email: opts.email, error: sanitizeDeliveryError(err) });
+  });
+
+  console.info(`[verification] email queued email=${opts.email} reason=${opts.reason}`);
+
+  setTimeout(() => {
+    void (async () => {
+      const attemptAt = new Date().toISOString();
+      try {
+        const current = await qGet<{ token_hash: string }>(
+          "SELECT token_hash FROM pending_registrations WHERE email = ?",
+          opts.email,
+        );
+        if (!current || current.token_hash !== opts.tokenHash) {
+          console.info(`[verification] skipped superseded email task email=${opts.email} reason=${opts.reason}`);
+          return;
+        }
+        await qRun(`
+          UPDATE pending_registrations
+          SET email_status = 'sending',
+              last_email_attempt_at = ?,
+              email_error = NULL
+          WHERE email = ?
+        `, attemptAt, opts.email);
+        console.info(`[verification] email send started email=${opts.email} reason=${opts.reason}`);
+
+        await sendVerificationEmail({
+          to: opts.email,
+          username: opts.username,
+          code: opts.code,
+          token: opts.token,
+        });
+
+        await qRun(`
+          UPDATE pending_registrations
+          SET email_status = 'sent',
+              email_error = NULL,
+              email_sent_at = ?
+          WHERE email = ? AND token_hash = ?
+        `, new Date().toISOString(), opts.email, opts.tokenHash);
+        console.info(`[verification] email sent email=${opts.email} reason=${opts.reason}`);
+      } catch (err) {
+        const message = sanitizeDeliveryError(err);
+        await qRun(`
+          UPDATE pending_registrations
+          SET email_status = 'failed',
+              email_error = ?
+          WHERE email = ? AND token_hash = ?
+        `, message, opts.email, opts.tokenHash).catch((updateErr) => {
+          console.error("[verification] failed to persist email delivery failure", {
+            email: opts.email,
+            error: sanitizeDeliveryError(updateErr),
+          });
+        });
+        console.error("[verification] email delivery failed", {
+          email: opts.email,
+          reason: opts.reason,
+          error: message,
+        });
+      }
+    })();
+  }, 0).unref?.();
+  return "queued";
+}
+
+export async function verificationStatus(emailRaw: string): Promise<{
+  pending: boolean;
+  email: string;
+  status: "queued" | "sending" | "sent" | "failed" | "none";
+  cooldownSeconds: number;
+  expiresAt: string | null;
+  canResend: boolean;
+}> {
+  await purgeExpiredPendingRegistrations();
+  const email = normalizeEmail(emailRaw);
+  const pending = await findPendingByEmail(email);
+  if (!pending) {
+    return { pending: false, email, status: "none", cooldownSeconds: 0, expiresAt: null, canResend: false };
+  }
+  const lastSent = new Date(pending.last_sent_at).getTime();
+  const waitMs = Math.max(0, EMAIL_RESEND_COOLDOWN_MS - (Date.now() - lastSent));
+  const cooldownSeconds = Math.ceil(waitMs / 1000);
+  return {
+    pending: true,
+    email,
+    status: pending.email_status || "queued",
+    cooldownSeconds,
+    expiresAt: pending.expires_at,
+    canResend: cooldownSeconds <= 0,
   };
 }
 
@@ -98,71 +256,76 @@ export async function startEmailRegistration(input: {
   username: string;
   password: string;
   req?: Request;
-}): Promise<{ email: string; cooldownSeconds: number }> {
+}): Promise<{ email: string; cooldownSeconds: number; emailStatus: "queued" | "failed" }> {
+  console.info("[verification] registration request received");
   await purgeExpiredPendingRegistrations();
 
   const email = normalizeEmail(input.email);
   if (!isEmailFormatValid(email)) {
-    throw Object.assign(new Error("Please enter a valid email address"), { status: 400 });
+    throw authError("Please enter a valid email address", 400, "INVALID_EMAIL");
   }
 
   const usernameCheck = await validateUsernameForWrite(input.username);
   if (!usernameCheck.ok) {
-    throw Object.assign(new Error(usernameCheck.error), { status: usernameCheck.status });
+    throw authError(usernameCheck.error, usernameCheck.status, "INVALID_USERNAME");
   }
   const username = usernameCheck.username;
 
   const pwErr = validateNewPassword(input.password);
   if (pwErr) {
-    throw Object.assign(new Error(pwErr), { status: 400 });
+    throw authError(pwErr, 400, "INVALID_PASSWORD");
   }
 
   const existingUser = await qGet("SELECT id FROM users WHERE email = ? AND is_npc = 0", email);
   if (existingUser) {
-    throw Object.assign(new Error("An account with this email already exists"), { status: 409 });
+    throw authError("An account with this email already exists", 409, "EMAIL_ALREADY_EXISTS");
   }
 
   if ((await isUsernameTaken(username)) || (await isUsernamePending(username, email))) {
-    throw Object.assign(new Error("This username is already in use. Please choose a different username."), { status: 409 });
+    throw authError(
+      "This username is already in use. Please choose a different username.",
+      409,
+      "USERNAME_ALREADY_EXISTS",
+    );
   }
 
   if (!checkRateLimit(`register:${email}`, 5, 15 * 60_000)) {
-    throw Object.assign(new Error("Too many registration attempts. Please try again later."), { status: 429 });
+    throw authError("Too many registration attempts. Please try again later.", 429, "RATE_LIMITED");
   }
 
   const secrets = issueSecrets();
+  console.info(`[verification] verification secret material generated email=${email}`);
   const passwordHash = bcrypt.hashSync(input.password, 10);
 
-  await qRun("DELETE FROM pending_registrations WHERE email = ?", email);
-  await qRun(`
-    INSERT INTO pending_registrations (
-      email, username, password_hash, code_hash, token_hash, expires_at, last_sent_at, attempt_count, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
-  `,
+  await qTransaction(async () => {
+    await qRun("DELETE FROM pending_registrations WHERE email = ?", email);
+    await qRun(`
+      INSERT INTO pending_registrations (
+        email, username, password_hash, code_hash, token_hash, expires_at, last_sent_at, attempt_count, created_at,
+        email_status, email_error, email_queued_at, last_email_attempt_at, email_sent_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 'queued', NULL, ?, NULL, NULL)
+    `,
+      email,
+      username,
+      passwordHash,
+      secrets.codeHash,
+      secrets.tokenHash,
+      secrets.expiresAt,
+      secrets.issuedAt,
+      secrets.issuedAt,
+      secrets.issuedAt,
+    );
+  });
+
+  console.info(`[verification] pending account created email=${email} username=${username}`);
+  const emailStatus = queueVerificationEmail({
     email,
     username,
-    passwordHash,
-    secrets.codeHash,
-    secrets.tokenHash,
-    secrets.expiresAt,
-    secrets.sentAt,
-    secrets.sentAt,
-  );
-
-  try {
-    await sendVerificationEmail({
-      to: email,
-      username,
-      code: secrets.code,
-      token: secrets.token,
-    });
-  } catch (e) {
-    await qRun("DELETE FROM pending_registrations WHERE email = ?", email);
-    throw Object.assign(
-      new Error("We could not send the verification email. Please try again shortly."),
-      { status: 503, cause: e },
-    );
-  }
+    code: secrets.code,
+    token: secrets.token,
+    tokenHash: secrets.tokenHash,
+    reason: "registration",
+  });
 
   if (input.req) {
     logActivitySync({
@@ -171,50 +334,67 @@ export async function startEmailRegistration(input: {
       username,
       eventType: "register_pending",
       eventCategory: "authentication",
-      description: `Email verification started for ${email}`,
+      description: `Pending email verification created for ${email}`,
       metadata: { email },
     });
   }
 
-  return { email, cooldownSeconds: Math.ceil(EMAIL_RESEND_COOLDOWN_MS / 1000) };
+  return { email, cooldownSeconds: Math.ceil(EMAIL_RESEND_COOLDOWN_MS / 1000), emailStatus };
 }
 
-export async function resendVerificationEmail(emailRaw: string, req?: Request): Promise<{ cooldownSeconds: number }> {
+export async function resendVerificationEmail(emailRaw: string, req?: Request): Promise<{
+  cooldownSeconds: number;
+  emailStatus: "queued" | "failed";
+}> {
   await purgeExpiredPendingRegistrations();
   const email = normalizeEmail(emailRaw);
   const pending = await findPendingByEmail(email);
   if (!pending) {
     // Do not reveal whether email exists
-    return { cooldownSeconds: Math.ceil(EMAIL_RESEND_COOLDOWN_MS / 1000) };
+    return { cooldownSeconds: Math.ceil(EMAIL_RESEND_COOLDOWN_MS / 1000), emailStatus: "queued" };
   }
 
-  if (!checkRateLimit(`resend:${email}`, 8, 60 * 60_000)) {
-    throw Object.assign(new Error("Too many resend requests. Please try again later."), { status: 429 });
+  if (!checkRateLimit(`resend:${email}`, EMAIL_RESEND_MAX_PER_HOUR, 60 * 60_000)) {
+    throw authError("Too many resend requests. Please try again later.", 429, "RATE_LIMITED");
   }
 
   const lastSent = new Date(pending.last_sent_at).getTime();
   const wait = EMAIL_RESEND_COOLDOWN_MS - (Date.now() - lastSent);
   if (wait > 0) {
-    throw Object.assign(
-      new Error(`Please wait ${Math.ceil(wait / 1000)} seconds before requesting another email.`),
-      { status: 429, retryAfter: Math.ceil(wait / 1000) },
+    throw authError(
+      `Please wait ${Math.ceil(wait / 1000)} seconds before requesting another email.`,
+      429,
+      "VERIFICATION_COOLDOWN",
+      { retryAfter: Math.ceil(wait / 1000) },
     );
   }
 
-  console.info(`[mail] verification email resend requested for=${email}`);
+  console.info(`[verification] resend requested email=${email}`);
 
   const secrets = issueSecrets();
   await qRun(`
     UPDATE pending_registrations
-    SET code_hash = ?, token_hash = ?, expires_at = ?, last_sent_at = ?, attempt_count = 0
+    SET code_hash = ?,
+        token_hash = ?,
+        expires_at = ?,
+        last_sent_at = ?,
+        attempt_count = 0,
+        email_status = 'queued',
+        email_error = NULL,
+        email_queued_at = ?,
+        last_email_attempt_at = NULL,
+        email_sent_at = NULL
     WHERE email = ?
-  `, secrets.codeHash, secrets.tokenHash, secrets.expiresAt, secrets.sentAt, email);
+  `, secrets.codeHash, secrets.tokenHash, secrets.expiresAt, secrets.issuedAt, secrets.issuedAt, email);
 
-  await sendVerificationEmail({
-    to: email,
+  console.info(`[verification] new verification secret material generated email=${email}`);
+  const emailStatus = queueVerificationEmail({
+    email,
     username: pending.username,
     code: secrets.code,
     token: secrets.token,
+    tokenHash: secrets.tokenHash,
+    reason: "resend",
   });
 
   if (req) {
@@ -229,33 +409,36 @@ export async function resendVerificationEmail(emailRaw: string, req?: Request): 
     });
   }
 
-  return { cooldownSeconds: Math.ceil(EMAIL_RESEND_COOLDOWN_MS / 1000) };
+  return { cooldownSeconds: Math.ceil(EMAIL_RESEND_COOLDOWN_MS / 1000), emailStatus };
 }
 
 async function createUserFromPending(pending: PendingRegistration, req?: Request): Promise<number> {
   const ts = new Date().toISOString();
-  const result = await qRun(`
-    INSERT INTO users (
-      email, username, password_hash, member_since, created_at, updated_at, email_verified, email_verified_at
-    ) VALUES (?, ?, ?, ?, ?, ?, 1, ?)
-  `, pending.email, pending.username, pending.password_hash, ts.slice(0, 10), ts, ts, ts);
+  const userId = await qTransaction(async () => {
+    const result = await qRun(`
+      INSERT INTO users (
+        email, username, password_hash, member_since, created_at, updated_at, email_verified, email_verified_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+    `, pending.email, pending.username, pending.password_hash, ts.slice(0, 10), ts, ts, ts);
 
-  const userId = Number(result.lastInsertRowid);
-  await qRun("INSERT INTO user_settings (user_id) VALUES (?)", userId);
+    const id = Number(result.lastInsertRowid);
+    await qRun("INSERT INTO user_settings (user_id) VALUES (?)", id);
 
-  const registrationOrder = (await qGet<{ c: number }>(`
-    SELECT COUNT(*) as c FROM users WHERE is_npc = 0 AND id <= ?
-  `, userId))!.c;
-  const globalRank = 1200 + registrationOrder;
+    const registrationOrder = (await qGet<{ c: number }>(`
+      SELECT COUNT(*) as c FROM users WHERE is_npc = 0 AND id <= ?
+    `, id))!.c;
+    const globalRank = 1200 + registrationOrder;
 
-  await qRun(`
-    INSERT INTO game_stats (
-      user_id, missions_complete, pvp_wins, playtime_hours, legendary_items,
-      ninjutsu, taijutsu, genjutsu, senjutsu, kenjutsu, global_rank
-    ) VALUES (?, 0, 0, 0, 0, 0, 0, 0, 0, 0, ?)
-  `, userId, globalRank);
+    await qRun(`
+      INSERT INTO game_stats (
+        user_id, missions_complete, pvp_wins, playtime_hours, legendary_items,
+        ninjutsu, taijutsu, genjutsu, senjutsu, kenjutsu, global_rank
+      ) VALUES (?, 0, 0, 0, 0, 0, 0, 0, 0, 0, ?)
+    `, id, globalRank);
 
-  await qRun("DELETE FROM pending_registrations WHERE id = ?", pending.id);
+    await qRun("DELETE FROM pending_registrations WHERE id = ?", pending.id);
+    return id;
+  });
 
   setUserOnline(userId);
   syncPublicChannels(userId);
@@ -281,53 +464,58 @@ export async function verifyPendingByCode(emailRaw: string, codeRaw: string, req
   const code = String(codeRaw || "").trim();
 
   if (!/^\d{6}$/.test(code)) {
-    throw Object.assign(new Error("Enter the 6-digit verification code"), { status: 400 });
+    throw authError("Enter the 6-digit verification code", 400, "INVALID_VERIFICATION_CODE");
   }
 
   if (!checkRateLimit(`verify:${email}`, 12, 15 * 60_000)) {
-    throw Object.assign(new Error("Too many verification attempts. Please try again later."), { status: 429 });
+    throw authError("Too many verification attempts. Please try again later.", 429, "RATE_LIMITED");
   }
 
   const pending = await findPendingByEmail(email);
   if (!pending) {
-    throw Object.assign(new Error("Invalid or expired verification code"), { status: 400 });
+    throw authError("Invalid or expired verification code", 400, "INVALID_VERIFICATION_CODE");
   }
   if (new Date(pending.expires_at) < new Date()) {
     await qRun("DELETE FROM pending_registrations WHERE id = ?", pending.id);
-    throw Object.assign(new Error("This verification code has expired. Please request a new one."), { status: 400 });
+    console.info(`[verification] verification expired email=${email}`);
+    throw authError("This verification code has expired. Please request a new one.", 400, "VERIFICATION_EXPIRED");
   }
 
   const codeHash = hashSecret(code);
   if (!safeEqualDigest(codeHash, pending.code_hash)) {
     await qRun("UPDATE pending_registrations SET attempt_count = attempt_count + 1 WHERE id = ?", pending.id);
-    throw Object.assign(new Error("Invalid or expired verification code"), { status: 400 });
+    throw authError("Invalid or expired verification code", 400, "INVALID_VERIFICATION_CODE");
   }
 
-  return createUserFromPending(pending, req);
+  const userId = await createUserFromPending(pending, req);
+  console.info(`[verification] verification completed email=${email} userId=${userId}`);
+  return userId;
 }
 
 export async function verifyPendingByToken(tokenRaw: string, req?: Request): Promise<{ userId: number; email: string }> {
   await purgeExpiredPendingRegistrations();
   const token = String(tokenRaw || "").trim();
   if (!token || token.length < 32) {
-    throw Object.assign(new Error("Invalid or expired verification link"), { status: 400 });
+    throw authError("Invalid or expired verification link", 400, "INVALID_VERIFICATION_LINK");
   }
 
   if (!checkRateLimit(`verify-token:${token.slice(0, 16)}`, 20, 15 * 60_000)) {
-    throw Object.assign(new Error("Too many verification attempts. Please try again later."), { status: 429 });
+    throw authError("Too many verification attempts. Please try again later.", 429, "RATE_LIMITED");
   }
 
   const tokenHash = hashSecret(token);
   const pending = await qGet<PendingRegistration>("SELECT * FROM pending_registrations WHERE token_hash = ?", tokenHash);
 
   if (!pending) {
-    throw Object.assign(new Error("Invalid or expired verification link"), { status: 400 });
+    throw authError("Invalid or expired verification link", 400, "INVALID_VERIFICATION_LINK");
   }
   if (new Date(pending.expires_at) < new Date()) {
     await qRun("DELETE FROM pending_registrations WHERE id = ?", pending.id);
-    throw Object.assign(new Error("This verification link has expired. Please request a new one."), { status: 400 });
+    console.info(`[verification] verification link expired email=${pending.email}`);
+    throw authError("This verification link has expired. Please request a new one.", 400, "VERIFICATION_EXPIRED");
   }
 
   const userId = await createUserFromPending(pending, req);
+  console.info(`[verification] verification completed email=${pending.email} userId=${userId}`);
   return { userId, email: pending.email };
 }

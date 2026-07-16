@@ -18,6 +18,7 @@ import {
   normalizeEmail,
   resendVerificationEmail,
   startEmailRegistration,
+  verificationStatus,
   verifyPendingByCode,
   verifyPendingByToken,
 } from "../services/emailVerification.js";
@@ -43,6 +44,13 @@ function errStatus(e: unknown): number {
 
 function errMessage(e: unknown, fallback: string): string {
   return e instanceof Error ? e.message : fallback;
+}
+
+function errCode(e: unknown): string | undefined {
+  if (e && typeof e === "object" && "code" in e && typeof (e as { code: unknown }).code === "string") {
+    return (e as { code: string }).code;
+  }
+  return undefined;
 }
 
 /** Lightweight availability check for debounced client UX. */
@@ -90,13 +98,15 @@ router.post("/register", rateLimit({
     res.status(202).json({
       pending: true,
       email: result.email,
-      message: "Check your email for a verification code to activate your account.",
+      message: "Your account is pending verification. We are sending your verification email now.",
       cooldownSeconds: result.cooldownSeconds,
+      emailStatus: result.emailStatus,
     });
   } catch (e) {
     const status = errStatus(e);
     res.status(status >= 400 && status < 600 ? status : 500).json({
       error: errMessage(e, "Registration failed"),
+      code: errCode(e) || "REGISTRATION_FAILED",
     });
   }
 });
@@ -130,6 +140,7 @@ router.post("/verify-email", rateLimit({
     const status = errStatus(e);
     res.status(status >= 400 && status < 600 ? status : 500).json({
       error: errMessage(e, "Verification failed"),
+      code: errCode(e) || "VERIFICATION_FAILED",
     });
   }
 });
@@ -145,16 +156,36 @@ router.post("/resend-verification", async (req, res) => {
     const result = await resendVerificationEmail(email, req);
     res.json({
       ok: true,
-      message: "If a pending registration exists for that email, a new verification message has been sent.",
+      message: "If a pending registration exists for that email, a new verification message has been queued.",
       cooldownSeconds: result.cooldownSeconds,
+      emailStatus: result.emailStatus,
     });
   } catch (e) {
     const status = errStatus(e);
-    const body: Record<string, unknown> = { error: errMessage(e, "Could not resend verification email") };
+    const body: Record<string, unknown> = {
+      error: errMessage(e, "Could not resend verification email"),
+      code: errCode(e) || "RESEND_VERIFICATION_FAILED",
+    };
     if (e && typeof e === "object" && "retryAfter" in e) {
       body.retryAfter = (e as { retryAfter: number }).retryAfter;
     }
     res.status(status >= 400 && status < 600 ? status : 500).json(body);
+  }
+});
+
+router.get("/verification-status", async (req, res) => {
+  const email = typeof req.query.email === "string" ? req.query.email : "";
+  if (!email) {
+    res.status(400).json({ error: "Email is required", code: "INVALID_EMAIL" });
+    return;
+  }
+  try {
+    res.json(await verificationStatus(email));
+  } catch (e) {
+    res.status(500).json({
+      error: errMessage(e, "Could not load verification status"),
+      code: errCode(e) || "VERIFICATION_STATUS_FAILED",
+    });
   }
 });
 

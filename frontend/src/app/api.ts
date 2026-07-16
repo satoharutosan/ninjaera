@@ -103,6 +103,12 @@ export class ApiError extends Error {
   }
 }
 
+const DEFAULT_REQUEST_TIMEOUT_MS = 15000;
+
+type RequestOptions = RequestInit & {
+  timeoutMs?: number;
+};
+
 import {
   getStoredToken,
   setStoredToken,
@@ -123,19 +129,45 @@ export function setToken(token: string | null, persist?: boolean) {
   setStoredToken(token, persist ?? isAuthPersistent());
 }
 
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const headers: Record<string, string> = { ...(options.headers as Record<string, string>) };
+async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const { timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, signal, ...fetchOptions } = options;
+  const headers: Record<string, string> = { ...(fetchOptions.headers as Record<string, string>) };
   const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
-  if (!(options.body instanceof FormData)) {
+  if (!(fetchOptions.body instanceof FormData)) {
     headers["Content-Type"] = headers["Content-Type"] || "application/json";
   }
 
-  const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
-  const data = await res.json().catch(() => ({}));
+  const controller = new AbortController();
+  const onAbort = () => controller.abort();
+  if (signal) {
+    if (signal.aborted) controller.abort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+  }
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+
+  let res: Response;
+  let data: unknown;
+  try {
+    res = await fetch(`${API_BASE}${path}`, { ...fetchOptions, headers, signal: controller.signal });
+    data = await res.json().catch(() => ({}));
+  } catch (e) {
+    if (e instanceof DOMException && e.name === "AbortError") {
+      throw new ApiError(
+        "The verification service is temporarily unavailable. Please try again in a few minutes.",
+        408,
+        { code: "REQUEST_TIMEOUT" },
+      );
+    }
+    throw e;
+  } finally {
+    window.clearTimeout(timeout);
+    signal?.removeEventListener("abort", onAbort);
+  }
 
   if (!res.ok) {
-    throw new ApiError(data.error || res.statusText, res.status, typeof data === "object" && data ? data as Record<string, unknown> : {});
+    const body = typeof data === "object" && data ? data as Record<string, unknown> : {};
+    throw new ApiError(String(body.error || res.statusText), res.status, body);
   }
   return data as T;
 }
@@ -148,9 +180,11 @@ export const api = {
         email: string;
         message: string;
         cooldownSeconds: number;
+        emailStatus?: "queued" | "sending" | "sent" | "failed";
       }>("/auth/register", {
         method: "POST",
         body: JSON.stringify({ email, username, password }),
+        timeoutMs: 8000,
       }),
     login: (email: string, password: string) =>
       request<{ token: string; user: ApiUser }>("/auth/login", {
@@ -161,12 +195,23 @@ export const api = {
       request<{ token: string; user: ApiUser; verified: boolean }>("/auth/verify-email", {
         method: "POST",
         body: JSON.stringify(payload),
+        timeoutMs: 10000,
       }),
     resendVerification: (email: string) =>
-      request<{ ok: boolean; message: string; cooldownSeconds: number }>("/auth/resend-verification", {
+      request<{ ok: boolean; message: string; cooldownSeconds: number; emailStatus?: "queued" | "sending" | "sent" | "failed" }>("/auth/resend-verification", {
         method: "POST",
         body: JSON.stringify({ email }),
+        timeoutMs: 8000,
       }),
+    verificationStatus: (email: string) =>
+      request<{
+        pending: boolean;
+        email: string;
+        status: "queued" | "sending" | "sent" | "failed" | "none";
+        cooldownSeconds: number;
+        expiresAt: string | null;
+        canResend: boolean;
+      }>(`/auth/verification-status?${new URLSearchParams({ email })}`, { timeoutMs: 8000 }),
     me: () => request<{ user: ApiUser }>("/auth/me"),
     logout: () => request<{ ok: boolean }>("/auth/logout", { method: "POST" }),
     forgotPassword: (email: string) =>

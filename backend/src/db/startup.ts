@@ -51,7 +51,7 @@ const REQUIRED_TABLES = [
   "oauth_states",
   "admin_action_audits",
   "pending_registrations",
-  "site_content",
+  "uploaded_assets",
 ];
 
 async function appliedMigrationIds(): Promise<Set<string>> {

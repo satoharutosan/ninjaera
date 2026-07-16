@@ -122,7 +122,28 @@ Other SMTP presets (host/port auto-filled): `sendgrid`, `mailgun`, `ses`, `brevo
 | `SMTP_PASS` | **Google App Password** only |
 | `SMTP_IP_FAMILY` | `4` (default) — forces IPv4 DNS/connect |
 
-Startup logs print a clear `MAIL UNAVAILABLE` banner if verify fails. `/api/health` includes `mail.transport`, `mail.provider`, and `mail.verified` (no secrets). Signup still **requires** working mail (email-dependent endpoints return **503** if unset/broken) — the rest of the app keeps functioning and auth is not weakened.
+Startup logs print a clear `MAIL UNAVAILABLE` banner if verify fails. `/api/health` includes `mail.transport`, `mail.provider`, and `mail.verified` (no secrets). Signup still **requires email verification before login**, but the registration request no longer waits for the provider; failed delivery is shown on the verification page with retry/change-email options.
+
+## Email verification flow
+
+Registration is intentionally decoupled from email-provider speed:
+
+1. `/api/auth/register` validates input, creates a `pending_registrations` row, commits it, and returns `202` immediately.
+2. Verification email delivery is queued in a background task. The request never waits for SMTP/Resend network timeouts.
+3. The verification page polls `/api/auth/verification-status?email=...` for `queued`, `sending`, `sent`, or `failed`.
+4. If delivery fails, the pending account remains stored and the user can retry from the verification page.
+5. `/api/auth/resend-verification` generates a new code/token, invalidates previous ones, enforces cooldown/hourly limits, queues delivery, and returns immediately.
+6. `/api/auth/verify-email` atomically activates the user from the pending row and deletes the pending registration.
+
+Relevant variables:
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `EMAIL_VERIFY_TTL_MS` | `900000` | Code/link expiry (15 minutes). |
+| `EMAIL_RESEND_COOLDOWN_MS` | `60000` | Minimum wait between resend requests. |
+| `EMAIL_RESEND_MAX_PER_HOUR` | `8` | Per-email resend cap. |
+
+Logs include registration received, pending account created, email queued/sending/sent/failed, verification completed, and expired pending cleanup. They never include passwords, verification codes, tokens, or provider credentials.
 
 ## OAuth redirect URIs
 
@@ -136,14 +157,34 @@ Also set `GOOGLE_*`, `GITHUB_*`, `DISCORD_*` client id/secret in Railway Variabl
 
 ## Storage (uploads must outlive deploys)
 
+**Do not use local disk on Railway.** Container files are wiped on every redeploy.
+
+### Recommended: Cloudinary
+
 | Variable | Notes |
 |----------|-------|
-| `STORAGE_PROVIDER` | `s3` recommended on Railway |
+| `STORAGE_PROVIDER` | `cloudinary` |
+| `CLOUDINARY_CLOUD_NAME` | From Cloudinary dashboard |
+| `CLOUDINARY_API_KEY` | Dashboard → API Keys |
+| `CLOUDINARY_API_SECRET` | Secret — Railway Variables only |
+| `CLOUDINARY_FOLDER` | Optional root folder (default `ninja-era`) |
+
+Upload flow: Browser → Backend API → Cloudinary → secure HTTPS URL + `public_id` stored in PostgreSQL (`uploaded_assets` registry + domain URL columns). No media is written into the Railway container.
+
+Folder layout inside Cloudinary: `avatars/`, `channels/`, `team/`, `messages/images|voice|video|files/`, `resources/`, `contacts/`, `screenshots/`, `temp/`.
+
+### Alternative: S3 / R2
+
+Use for very large game builds that exceed Cloudinary plan limits.
+
+| Variable | Notes |
+|----------|-------|
+| `STORAGE_PROVIDER` | `s3` |
 | `S3_BUCKET` / `S3_ENDPOINT` / `S3_REGION` | R2/S3/MinIO |
 | `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` | Secrets |
 | `S3_FORCE_PATH_STYLE` | `true` for R2/MinIO often |
 
-Local `STORAGE_PROVIDER=local` + volume mount `/data` works, but **re-deploys without a volume wipe uploads**. Prefer object storage.
+Local `STORAGE_PROVIDER=local` is for development only.
 
 ## Super Admin bootstrap
 
@@ -183,7 +224,7 @@ Login at `/#/login` with that email/password after deploy.
 - [ ] Mail set via `RESEND_API_KEY` (recommended) or SMTP; `/api/health` shows `mail.verified: true`
 - [ ] OAuth secrets set in Railway only
 - [ ] OAuth provider consoles updated with Railway callbacks
-- [ ] Storage: S3/R2 **or** volume at `/data`
+- [ ] Storage: `STORAGE_PROVIDER=cloudinary` + Cloudinary credentials (or S3/R2 for large builds)
 - [ ] Push to GitHub → Railway auto-builds
 
 ## Local vs production
@@ -192,5 +233,5 @@ Login at `/#/login` with that email/password after deploy.
 |---------|-------|---------|
 | Database | SQLite (`DATABASE_PROVIDER=sqlite`) | Postgres via `DATABASE_URL` |
 | Frontend | Vite `:5173` proxy | Built into image, served by Express |
-| Uploads | `./uploads` | S3/R2 or `/data/uploads` volume |
+| Uploads | `./uploads` (local) | Cloudinary (or S3/R2) — never container disk |
 | Secrets | `backend/.env` (gitignored) | Railway Variables |

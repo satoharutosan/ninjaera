@@ -34,6 +34,64 @@ export function createPostgresAdapter(opts: PostgresProviderOptions): DatabaseAd
     console.error("[postgres] idle client error:", err.message);
   });
 
+  /**
+   * Cache of "does this table have an `id` column" so we only append
+   * `RETURNING id` to INSERTs that can actually satisfy it. Tables like
+   * `oauth_states` (PK = state), `password_reset_tokens` (PK = token_hash),
+   * `user_settings`/`game_stats`/`user_locations` (PK = user_id) and all
+   * composite-PK tables have no `id` column — appending RETURNING id there
+   * raises: `column "id" does not exist`.
+   */
+  const hasIdColumnCache = new Map<string, boolean>();
+
+  function insertTargetTable(sql: string): string | null {
+    const m = sql.match(/INSERT\s+INTO\s+"?([A-Za-z_][A-Za-z0-9_$]*)"?/i);
+    return m?.[1]?.toLowerCase() ?? null;
+  }
+
+  async function tableHasIdColumn(client: pg.Pool | pg.PoolClient, table: string): Promise<boolean> {
+    const cached = hasIdColumnCache.get(table);
+    if (cached !== undefined) return cached;
+    const r = await client.query(
+      `SELECT 1
+         FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = $1
+          AND column_name = 'id'
+        LIMIT 1`,
+      [table],
+    );
+    const has = r.rows.length > 0;
+    hasIdColumnCache.set(table, has);
+    return has;
+  }
+
+  /**
+   * Turn opaque Postgres errors into actionable diagnostics. Common schema
+   * problems (missing column / table) are logged with the offending SQL and a
+   * suggested cause, then re-thrown so callers still see the failure.
+   */
+  function describeAndRethrow(err: unknown, sql: string, params: unknown[]): never {
+    const e = err as { code?: string; message?: string; table?: string; column?: string };
+    const schemaCodes: Record<string, string> = {
+      "42703": "undefined_column — a query referenced a column the table does not have (schema mismatch / migration not applied)",
+      "42P01": "undefined_table — the table does not exist (migration not executed)",
+      "42P07": "duplicate_table — table already exists",
+      "23505": "unique_violation — duplicate key",
+      "23503": "foreign_key_violation — referenced row missing",
+      "23502": "not_null_violation — required column was null",
+    };
+    if (e?.code && schemaCodes[e.code]) {
+      console.error("[postgres] query failed —", schemaCodes[e.code]);
+      console.error(`[postgres]   code: ${e.code}`);
+      if (e.table) console.error(`[postgres]   table: ${e.table}`);
+      if (e.column) console.error(`[postgres]   column: ${e.column}`);
+      console.error(`[postgres]   sql: ${sql.replace(/\s+/g, " ").trim().slice(0, 300)}`);
+      console.error(`[postgres]   params: ${JSON.stringify(params).slice(0, 200)}`);
+    }
+    throw err;
+  }
+
   const adapter: TxCapable = {
     provider: "postgres",
     engineLabel: "PostgreSQL",
@@ -73,31 +131,50 @@ export function createPostgresAdapter(opts: PostgresProviderOptions): DatabaseAd
     async get<T = Record<string, unknown>>(sql: string, ...params: unknown[]) {
       const client = adapter.__txClient || pool;
       const text = toPostgresParams(rewriteSqlForPostgres(sql));
-      const r = await client.query(text, params);
-      return (r.rows[0] as T) || undefined;
+      try {
+        const r = await client.query(text, params);
+        return (r.rows[0] as T) || undefined;
+      } catch (err) {
+        return describeAndRethrow(err, sql, params);
+      }
     },
 
     async all<T = Record<string, unknown>>(sql: string, ...params: unknown[]) {
       const client = adapter.__txClient || pool;
       const text = toPostgresParams(rewriteSqlForPostgres(sql));
-      const r = await client.query(text, params);
-      return r.rows as T[];
+      try {
+        const r = await client.query(text, params);
+        return r.rows as T[];
+      } catch (err) {
+        return describeAndRethrow(err, sql, params);
+      }
     },
 
     async run(sql: string, ...params: unknown[]) {
       const client = adapter.__txClient || pool;
       let text = rewriteSqlForPostgres(sql);
       const upper = text.trim().toUpperCase();
+      // Only request the generated key back when the target table actually has
+      // an `id` column, mirroring SQLite's lastInsertRowid without breaking
+      // inserts into tables keyed by something other than `id`.
       if (upper.startsWith("INSERT") && !/\bRETURNING\b/i.test(text)) {
-        text = text.replace(/;?\s*$/, "") + " RETURNING id";
+        const table = insertTargetTable(text);
+        if (table && (await tableHasIdColumn(client, table))) {
+          text = text.replace(/;?\s*$/, "") + " RETURNING id";
+        }
       }
       text = toPostgresParams(text);
-      const r = await client.query(text, params);
-      const id = r.rows?.[0]?.id;
-      return {
-        changes: r.rowCount ?? 0,
-        lastInsertRowid: id != null ? Number(id) : 0,
-      };
+      try {
+        const r = await client.query(text, params);
+        const rawId = r.rows?.[0]?.id;
+        const numId = rawId != null ? Number(rawId) : NaN;
+        return {
+          changes: r.rowCount ?? 0,
+          lastInsertRowid: Number.isFinite(numId) ? numId : 0,
+        };
+      } catch (err) {
+        return describeAndRethrow(err, sql, params);
+      }
     },
 
     async exec(sql: string) {

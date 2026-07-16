@@ -1,7 +1,13 @@
 import crypto from "crypto";
-import dns from "dns";
-import nodemailer from "nodemailer";
-import type { Transporter, SentMessageInfo, TransportOptions } from "nodemailer";
+import {
+  getMailTransport,
+  resetMailTransportCache,
+  resendApiKey,
+  smtpProviderHint,
+  useResendHttp,
+  type MailMessage,
+  type MailSendResult,
+} from "./mailTransport.js";
 
 const DEFAULT_FROM_NAME = "Ninja Era";
 const DEFAULT_FROM_ADDRESS = "softfuture28@gmail.com";
@@ -24,7 +30,6 @@ const USER_FACING_SEND_ERROR =
 const USER_FACING_RESET_SEND_ERROR =
   "We could not send the password reset email. Please try again shortly.";
 
-let transporter: Transporter | null = null;
 let lastVerifyOk: boolean | null = null;
 let lastVerifyError: string | null = null;
 
@@ -51,181 +56,52 @@ export const MAIL_FROM_ADDRESS = DEFAULT_FROM_ADDRESS;
 export const MAIL_FROM = `${DEFAULT_FROM_NAME} <${DEFAULT_FROM_ADDRESS}>`;
 
 export function mailConfigured(): boolean {
-  // Host defaults to smtp.gmail.com; App Password + account are required.
-  // Resend / SendGrid / Mailgun / SES also use SMTP_USER + SMTP_PASS (API key as pass).
+  // Resend HTTP API: RESEND_API_KEY (or SMTP_PASS when SMTP_PROVIDER=resend).
+  // SMTP transports (Gmail / SendGrid / Mailgun / SES / Brevo): SMTP_USER + SMTP_PASS.
+  if (resendApiKey() && useResendHttp()) return true;
   return Boolean(env("SMTP_USER") && env("SMTP_PASS"));
 }
 
-type SmtpPreset = {
-  host: string;
-  port: number;
-  secure: boolean;
-  /** Default SMTP_USER when unset (e.g. Resend uses literal "resend"). */
-  defaultUser?: string;
-  hint: string;
-};
-
-/**
- * Presets for Railway-friendly SMTP providers.
- * Set SMTP_PROVIDER=resend|sendgrid|mailgun|ses|brevo|gmail (or leave unset + SMTP_HOST).
- */
-function resolveSmtpPreset(): SmtpPreset {
-  const provider = env("SMTP_PROVIDER").toLowerCase();
-  switch (provider) {
-    case "resend":
-      return {
-        host: "smtp.resend.com",
-        port: 465,
-        secure: true,
-        defaultUser: "resend",
-        hint: "Resend: SMTP_USER=resend, SMTP_PASS=<API key>, MAIL_FROM_ADDRESS must be a verified domain sender",
-      };
-    case "sendgrid":
-      return {
-        host: "smtp.sendgrid.net",
-        port: 587,
-        secure: false,
-        defaultUser: "apikey",
-        hint: "SendGrid: SMTP_USER=apikey, SMTP_PASS=<API key>",
-      };
-    case "mailgun":
-      return {
-        host: env("SMTP_HOST") || "smtp.mailgun.org",
-        port: 587,
-        secure: false,
-        hint: "Mailgun: SMTP_USER=<smtp login>, SMTP_PASS=<smtp password> from Mailgun Sending → Domain → SMTP",
-      };
-    case "ses":
-    case "aws":
-    case "amazon":
-      return {
-        host: env("SMTP_HOST") || "email-smtp.us-east-1.amazonaws.com",
-        port: 587,
-        secure: false,
-        hint: "Amazon SES: set SMTP_HOST to your region endpoint, SMTP_USER/SMTP_PASS = SMTP credentials",
-      };
-    case "brevo":
-    case "sendinblue":
-      return {
-        host: "smtp-relay.brevo.com",
-        port: 587,
-        secure: false,
-        hint: "Brevo: SMTP_USER=<login email>, SMTP_PASS=<SMTP key>",
-      };
-    case "gmail":
-    case "":
-    default:
-      return {
-        host: env("SMTP_HOST") || "smtp.gmail.com",
-        port: Number(env("SMTP_PORT") || "587") || 587,
-        secure: env("SMTP_SECURE") === "true" || Number(env("SMTP_PORT") || "587") === 465,
-        hint:
-          "Gmail on Railway often times out / has IPv6 issues. Prefer SMTP_PROVIDER=resend (or sendgrid). " +
-          "If keeping Gmail: App Password + SMTP_IP_FAMILY=4.",
-      };
-  }
-}
-
-/** Force IPv4 DNS lookups — Railway containers frequently cannot reach Gmail AAAA (ENETUNREACH). */
-function ipv4Lookup(
-  hostname: string,
-  _options: unknown,
-  callback: (err: NodeJS.ErrnoException | null, address: string, family: number) => void,
-) {
-  dns.lookup(hostname, { family: 4 }, callback);
-}
-
-/**
- * SMTP transport options.
- * - Defaults force IPv4 (SMTP_IP_FAMILY=4) to avoid Gmail IPv6 ENETUNREACH on Railway.
- * - SMTP_PROVIDER selects host/port defaults for Resend / SendGrid / Mailgun / SES / Brevo / Gmail.
- */
-function createTransportOptions() {
-  const preset = resolveSmtpPreset();
-  const host = env("SMTP_HOST") || preset.host;
-  const port = Number(env("SMTP_PORT") || String(preset.port)) || preset.port;
-  const secure = env("SMTP_SECURE") === "true" || port === 465 || (env("SMTP_SECURE") === "" && preset.secure);
-  const user = env("SMTP_USER") || preset.defaultUser || "";
-  const pass = env("SMTP_PASS");
-
-  // Default IPv4; set SMTP_IP_FAMILY=0 or auto to use dual-stack.
-  const familyRaw = (env("SMTP_IP_FAMILY") || "4").trim().toLowerCase();
-  const forceIpv4 = familyRaw !== "0" && familyRaw !== "auto" && familyRaw !== "6";
-
-  return {
-    host,
-    port,
-    secure,
-    requireTLS: !secure && port === 587,
-    auth: { user, pass },
-    ...(forceIpv4
-      ? {
-          family: 4 as const,
-          lookup: ipv4Lookup,
-        }
-      : {}),
-    pool: true,
-    maxConnections: 2,
-    maxMessages: 50,
-    connectionTimeout: 20_000,
-    greetingTimeout: 20_000,
-    socketTimeout: 30_000,
-    tls: {
-      minVersion: "TLSv1.2" as const,
-      servername: host,
-    },
-  };
-}
-
-function getTransporter(): Transporter {
-  if (!mailConfigured()) {
-    throw Object.assign(new Error("Email delivery is not configured"), {
-      status: 503,
-      code: "SMTP_NOT_CONFIGURED",
-    });
-  }
-  if (transporter) return transporter;
-  transporter = nodemailer.createTransport(createTransportOptions() as TransportOptions);
-  return transporter;
-}
-
-export function resetMailTransport() {
-  transporter = null;
-  lastVerifyOk = null;
-  lastVerifyError = null;
-}
-
-function smtpRuntimeSummary(): {
+function mailRuntimeSummary(): {
+  transport: string;
   provider: string;
   host: string;
   port: number;
   ipv4: boolean;
   from: string;
 } {
-  const opts = createTransportOptions();
+  const t = getMailTransport();
   return {
-    provider: env("SMTP_PROVIDER") || "gmail",
-    host: opts.host,
-    port: opts.port,
-    ipv4: Boolean(opts.family === 4),
+    transport: t.kind,
+    provider: t.provider,
+    host: t.host,
+    port: t.port,
+    ipv4: t.ipv4,
     from: mailFromHeader(),
   };
 }
 
+export function resetMailTransport() {
+  resetMailTransportCache();
+  lastVerifyOk = null;
+  lastVerifyError = null;
+}
+
 function logMailFailureBanner(reason: string, detail?: unknown) {
-  const summary = smtpRuntimeSummary();
-  const preset = resolveSmtpPreset();
+  const summary = mailRuntimeSummary();
   console.error("[mail] ==========================================================");
-  console.error(`[mail] SMTP UNAVAILABLE — ${reason}`);
-  console.error(`[mail] provider=${summary.provider} host=${summary.host}:${summary.port} ipv4=${summary.ipv4}`);
+  console.error(`[mail] MAIL UNAVAILABLE — ${reason}`);
+  console.error(
+    `[mail] transport=${summary.transport} provider=${summary.provider} ` +
+      `host=${summary.host}:${summary.port} ipv4=${summary.ipv4}`,
+  );
   console.error(`[mail] from=${summary.from}`);
   if (detail) console.error("[mail] detail:", sanitizeMailError(detail));
   console.error("[mail] Email/password signup & password reset will return 503 until fixed.");
-  console.error(`[mail] Hint: ${preset.hint}`);
-  console.error("[mail] Railway-friendly quick fix (Resend):");
+  console.error(`[mail] Hint: ${smtpProviderHint()}`);
+  console.error("[mail] Railway-friendly quick fix (Resend HTTP API — no SMTP ports needed):");
   console.error("[mail]   SMTP_PROVIDER=resend");
-  console.error("[mail]   SMTP_USER=resend");
-  console.error("[mail]   SMTP_PASS=<Resend API key>");
+  console.error("[mail]   RESEND_API_KEY=<Resend API key>");
   console.error("[mail]   MAIL_FROM_ADDRESS=<verified@yourdomain>");
   console.error("[mail] ==========================================================");
 }
@@ -427,14 +303,13 @@ async function sleep(ms: number) {
 }
 
 async function sendWithRetry(
-  tx: Transporter,
-  mail: Parameters<Transporter["sendMail"]>[0],
+  mail: MailMessage,
   attempts = 3,
-): Promise<SentMessageInfo> {
+): Promise<MailSendResult> {
   let lastErr: unknown;
   for (let i = 0; i < attempts; i++) {
     try {
-      return await tx.sendMail(mail);
+      return await getMailTransport().send(mail);
     } catch (err) {
       lastErr = err;
       const info = sanitizeMailError(err);
@@ -459,19 +334,18 @@ export async function verifyMailOnStartup(): Promise<void> {
     return;
   }
 
-  const summary = smtpRuntimeSummary();
+  const summary = mailRuntimeSummary();
   try {
-    const tx = getTransporter();
-    await tx.verify();
+    await getMailTransport().verify();
     lastVerifyOk = true;
     lastVerifyError = null;
     console.info(
-      `[mail] SMTP ready provider=${summary.provider} host=${summary.host}:${summary.port} ` +
-        `ipv4=${summary.ipv4} from=${summary.from}`,
+      `[mail] ready transport=${summary.transport} provider=${summary.provider} ` +
+        `host=${summary.host}:${summary.port} ipv4=${summary.ipv4} from=${summary.from}`,
     );
-    if (summary.provider === "gmail" || summary.host.includes("gmail")) {
+    if (summary.transport === "smtp" && (summary.provider === "gmail" || summary.host.includes("gmail"))) {
       console.warn(
-        "[mail] Using Gmail SMTP. If Railway logs show ETIMEDOUT/ENETUNREACH, switch to SMTP_PROVIDER=resend.",
+        "[mail] Using Gmail SMTP. If Railway logs show ETIMEDOUT/ENETUNREACH, switch to SMTP_PROVIDER=resend + RESEND_API_KEY (HTTP API).",
       );
     }
   } catch (err) {
@@ -492,19 +366,21 @@ export function mailStatus(): {
   from: string;
   fromName: string;
   fromAddress: string;
+  transport: string;
   provider: string;
   host: string;
   port: number;
   ipv4: boolean;
   error: string | null;
 } {
-  const summary = smtpRuntimeSummary();
+  const summary = mailRuntimeSummary();
   return {
     configured: mailConfigured(),
     verified: lastVerifyOk,
     from: mailFromHeader(),
     fromName: mailFromName(),
     fromAddress: mailFromAddress(),
+    transport: summary.transport,
     provider: summary.provider,
     host: summary.host,
     port: summary.port,
@@ -561,8 +437,7 @@ export async function sendVerificationEmail(opts: {
   ].join("\n");
 
   try {
-    const tx = getTransporter();
-    const info = await sendWithRetry(tx, {
+    const info = await sendWithRetry({
       from: mailFromHeader(),
       to: opts.to,
       subject: `Verify your ${brand} email`,
@@ -739,8 +614,7 @@ export async function sendPasswordResetEmail(opts: {
   ].join("\n");
 
   try {
-    const tx = getTransporter();
-    const info = await sendWithRetry(tx, {
+    const info = await sendWithRetry({
       from: mailFromHeader(),
       to: opts.to,
       subject: `Reset your ${brand} password`,
@@ -813,8 +687,7 @@ export async function sendOAuthAccountReminderEmail(opts: {
   ].join("\n");
 
   try {
-    const tx = getTransporter();
-    await sendWithRetry(tx, {
+    await sendWithRetry({
       from: mailFromHeader(),
       to: opts.to,
       subject: `${brand} sign-in help`,

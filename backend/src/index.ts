@@ -11,7 +11,7 @@ import { fileURLToPath } from "url";
 
 import { dbAsync, dataDirectory } from "./db/index.js";
 import { qGet } from "./db/query.js";
-import { runAllMigrations } from "./db/migrate.js";
+import { initializeDatabase } from "./db/startup.js";
 import { seedDatabase } from "./db/seed.js";
 import { errorHandler, notFound } from "./middleware/error.js";
 import { initStorage, getStorage } from "./storage/index.js";
@@ -37,7 +37,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 async function main() {
   await initStorage();
-  await runAllMigrations();
+  await initializeDatabase();
   await seedDatabase();
 
   const storage = getStorage();

@@ -43,21 +43,73 @@ Docker `ENV` requires `name=value`. Unquoted spaces split the line, so `Era` was
 
 `PORT` is injected by Railway — do not hardcode it in the dashboard.
 
+## Database (PostgreSQL on Railway, SQLite locally)
+
+The app runs on both engines through one adapter (`backend/src/db/adapter.ts`).
+
+- **Local:** SQLite by default (`DATABASE_PROVIDER=sqlite`, file under the data dir).
+- **Railway:** PostgreSQL. Set `DATABASE_URL` (auto from the Postgres plugin). `DATABASE_PROVIDER=postgres` is inferred when `DATABASE_URL` is present.
+
+### Automatic schema initialization
+
+On every boot (`initializeDatabase()` in `backend/src/db/startup.ts`) the app:
+
+1. Logs the **provider** and engine **version**.
+2. Reports **applied vs. pending migrations** and the current **schema version**.
+3. Runs any **pending migrations automatically** (versioned, idempotent, ordered).
+4. **Validates** that every required table exists.
+5. **Aborts startup** with a clear error if the schema is incomplete — it never serves traffic on a half-built database.
+
+Example startup log:
+
+```
+[db] provider: postgres (PostgreSQL)
+[db] version:  16.4
+[db] migrations known:   3 [001_initial_schema, 002_legacy_columns, 003_site_content]
+[db] migrations applied: 0
+[db] migrations pending: 3 [...]
+[db] schema version: 003_site_content
+[db] schema validation: OK (32 required tables present)
+```
+
+You never need to edit the database by hand. To reset locally, delete the SQLite file; on Railway, migrations re-run automatically against the linked Postgres.
+
+### Portable queries (no SQLite-only assumptions)
+
+The Postgres adapter translates SQLite idioms: `?`→`$n` params, `INSERT OR IGNORE`→`ON CONFLICT DO NOTHING`, and it emulates `lastInsertRowid` by appending `RETURNING id` **only** to inserts on tables that actually have an `id` column. Tables keyed by something else (`oauth_states` = `state`, `password_reset_tokens` = `token_hash`, composite-PK join tables) are inserted without `RETURNING id`. Schema errors (undefined column/table) are logged with the offending SQL, table, column, and a suggested cause.
+
 ## Mail (email verification / password reset)
 
-Railway frequently **cannot** reach Gmail SMTP (`ETIMEDOUT` / `ENETUNREACH` on IPv6). Prefer a transactional provider.
+The mail subsystem is split into configurable modules:
 
-### Recommended: Resend (SMTP)
+- **Transport** (`mailTransport.ts`) — how messages are delivered.
+- **Templates + retry** (`mail.ts`) — Ninja Era branded HTML (Cloudinary logo, Trade Winds title), retry/backoff, error classification.
+
+Provider is switchable **entirely via environment variables** — no code changes.
+
+Railway frequently **cannot** open outbound SMTP connections (Gmail shows `ETIMEDOUT` / `ENETUNREACH` on IPv6, and even provider SMTP ports can be blocked). The most reliable option on Railway is Resend's **HTTP API** (port 443).
+
+### Recommended: Resend HTTP API (Railway-friendly, no SMTP ports)
+
+| Variable | Value |
+|----------|-------|
+| `SMTP_PROVIDER` | `resend` |
+| `RESEND_API_KEY` | Resend API key (dashboard only) |
+| `MAIL_FROM_NAME` | `Ninja Era` |
+| `MAIL_FROM_ADDRESS` | A sender on your **verified** Resend domain |
+
+When `RESEND_API_KEY` is present the app delivers via `https://api.resend.com/emails` automatically. Set `MAIL_TRANSPORT=smtp` to force SMTP instead.
+
+### Resend over SMTP (alternative)
 
 | Variable | Value |
 |----------|-------|
 | `SMTP_PROVIDER` | `resend` |
 | `SMTP_USER` | `resend` |
-| `SMTP_PASS` | Resend API key (dashboard only) |
-| `MAIL_FROM_NAME` | `Ninja Era` |
-| `MAIL_FROM_ADDRESS` | A sender on your **verified** Resend domain |
+| `SMTP_PASS` | Resend API key |
+| `MAIL_TRANSPORT` | `smtp` (only if you want SMTP instead of the HTTP API) |
 
-Other presets: `sendgrid`, `mailgun`, `ses`, `brevo`, `gmail`.
+Other SMTP presets (host/port auto-filled): `sendgrid`, `mailgun`, `ses`, `brevo`, `gmail`.
 
 ### Gmail (not reliable on Railway)
 
@@ -70,7 +122,7 @@ Other presets: `sendgrid`, `mailgun`, `ses`, `brevo`, `gmail`.
 | `SMTP_PASS` | **Google App Password** only |
 | `SMTP_IP_FAMILY` | `4` (default) — forces IPv4 DNS/connect |
 
-Startup logs print a clear `SMTP UNAVAILABLE` banner if verify fails. `/api/health` includes `mail.verified` (no secrets). Signup still **requires** working SMTP (returns 503 if unset/broken) — auth is not weakened.
+Startup logs print a clear `MAIL UNAVAILABLE` banner if verify fails. `/api/health` includes `mail.transport`, `mail.provider`, and `mail.verified` (no secrets). Signup still **requires** working mail (email-dependent endpoints return **503** if unset/broken) — the rest of the app keeps functioning and auth is not weakened.
 
 ## OAuth redirect URIs
 
@@ -125,9 +177,11 @@ Login at `/#/login` with that email/password after deploy.
 - [ ] Dockerfile parses (`MAIL_FROM_NAME` quoted)
 - [ ] `package-lock.json` committed for `frontend/` and `backend/` (`npm ci`)
 - [ ] Postgres linked → `DATABASE_URL` present
+- [ ] Startup log shows `schema validation: OK` (no missing tables)
 - [ ] Strong `JWT_SECRET` set
 - [ ] `FRONTEND_URL` / `CORS_ORIGIN` / `OAUTH_CALLBACK_BASE` = public HTTPS URL
-- [ ] SMTP + OAuth secrets set in Railway only
+- [ ] Mail set via `RESEND_API_KEY` (recommended) or SMTP; `/api/health` shows `mail.verified: true`
+- [ ] OAuth secrets set in Railway only
 - [ ] OAuth provider consoles updated with Railway callbacks
 - [ ] Storage: S3/R2 **or** volume at `/data`
 - [ ] Push to GitHub → Railway auto-builds

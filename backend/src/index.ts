@@ -50,7 +50,10 @@ async function main() {
 
   const app = express();
   const PORT = Number(process.env.PORT) || 3001;
-  const CORS_ORIGIN = process.env.CORS_ORIGIN || "http://localhost:5173";
+  const FRONTEND_URL = (process.env.FRONTEND_URL || "").trim().replace(/\/$/, "");
+  const CORS_ORIGIN = process.env.CORS_ORIGIN
+    || FRONTEND_URL
+    || "http://localhost:5173";
   const isProd = (process.env.NODE_ENV || "").toLowerCase() === "production";
   const trustProxyEnv = (process.env.TRUST_PROXY || "").trim().toLowerCase();
   if (trustProxyEnv === "1" || trustProxyEnv === "true" || (isProd && trustProxyEnv !== "0" && trustProxyEnv !== "false")) {
@@ -86,11 +89,16 @@ async function main() {
 
   app.use(compression());
 
-  // Explicit CORS allowlist (comma-separated CORS_ORIGIN supported)
-  const corsOrigins = CORS_ORIGIN.split(",").map((s) => s.trim()).filter(Boolean);
+  // Explicit CORS allowlist (comma-separated). Always include FRONTEND_URL when set.
+  const corsOrigins = [...new Set(
+    `${CORS_ORIGIN}${FRONTEND_URL ? `,${FRONTEND_URL}` : ""}`
+      .split(",")
+      .map((s) => s.trim().replace(/\/$/, ""))
+      .filter(Boolean),
+  )];
   app.use(cors({
     origin: (origin, cb) => {
-      if (!origin) return cb(null, true); // same-origin / curl
+      if (!origin) return cb(null, true); // same-origin / curl / Railway health
       if (corsOrigins.includes(origin) || corsOrigins.includes("*")) return cb(null, true);
       return cb(null, false);
     },
@@ -244,14 +252,24 @@ async function main() {
   app.use(errorHandler);
 
   const httpServer = http.createServer(app);
-  initRealtime(httpServer, CORS_ORIGIN);
+  initRealtime(httpServer, corsOrigins.join(","));
 
-  httpServer.listen(PORT, () => {
-    console.log(`Ninja Era API running on http://localhost:${PORT}`);
+  // Bind all interfaces so Railway/proxy health checks can reach the process.
+  const host = process.env.HOST || "0.0.0.0";
+  httpServer.listen(PORT, host, () => {
+    console.log(`Ninja Era API listening on http://${host}:${PORT}`);
     console.log(`  database: ${dbAsync.provider}`);
     console.log(`  storage:  ${storage.provider}`);
     void verifyMailOnStartup();
   });
+
+  const shutdown = (signal: string) => {
+    console.log(`[shutdown] ${signal} received — closing server`);
+    httpServer.close(() => process.exit(0));
+    setTimeout(() => process.exit(1), 10_000).unref();
+  };
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
 }
 
 main().catch((err) => {

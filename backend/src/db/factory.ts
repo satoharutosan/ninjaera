@@ -7,8 +7,11 @@ import { createPostgresAdapter } from "./providers/postgres.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export function resolveDatabaseProvider(): DatabaseProviderName {
-  const raw = (process.env.DATABASE_PROVIDER || "sqlite").trim().toLowerCase();
+  const raw = (process.env.DATABASE_PROVIDER || "").trim().toLowerCase();
   if (raw === "postgres" || raw === "postgresql" || raw === "pg") return "postgres";
+  if (raw === "sqlite" || raw === "better-sqlite3") return "sqlite";
+  // Railway / managed Postgres: DATABASE_URL alone implies postgres.
+  if ((process.env.DATABASE_URL || "").trim()) return "postgres";
   return "sqlite";
 }
 

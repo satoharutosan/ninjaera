@@ -141,7 +141,9 @@ export const messageCache = {
   upsertMessage(conversationId: number, msg: ChatMsg) {
     const prev = store.get(conversationId);
     if (!prev) {
-      return this.setWindow(conversationId, [msg], { hasMoreOlder: true, hasMoreNewer: false }, "replace");
+      // Cold insert from WS only — do NOT claim a complete newest window or openConversation
+      // will skip the network fetch and show a single orphaned message.
+      return this.setWindow(conversationId, [msg], { hasMoreOlder: true, hasMoreNewer: true }, "replace");
     }
     const idx = prev.messages.findIndex(m => m.id === msg.id);
     let messages: ChatMsg[];
@@ -186,6 +188,28 @@ export const messageCache = {
     const entry: ConversationCacheEntry = { ...prev, messages, lastAccessAt: Date.now() };
     touch(conversationId, entry);
     return entry;
+  },
+
+  /** Patch display identity for a user across all cached conversations. */
+  patchUserIdentity(userId: number, patch: { username?: string; avatarUrl?: string | null }, selfUserId?: number) {
+    for (const [conversationId, entry] of store) {
+      let changed = false;
+      const messages = entry.messages.map(m => {
+        if (m.userId !== userId) return m;
+        changed = true;
+        const isSelf = selfUserId != null && userId === selfUserId;
+        return {
+          ...m,
+          ...(patch.username !== undefined
+            ? { user: isSelf || m.self ? "You" : patch.username }
+            : {}),
+          ...(patch.avatarUrl !== undefined ? { avatarUrl: patch.avatarUrl } : {}),
+        };
+      });
+      if (changed) {
+        touch(conversationId, { ...entry, messages, lastAccessAt: Date.now() });
+      }
+    }
   },
 
   removeMessage(conversationId: number, messageId: number) {

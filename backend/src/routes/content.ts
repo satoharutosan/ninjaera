@@ -59,7 +59,8 @@ router.get("/team", async (_req, res) => {
           ? `/uploads/${rawAvatar.replace(/^\/+/, "")}`
           : null;
       return {
-        name: m.name,
+        // Prefer live users.username — team_members.name can lag after profile renames.
+        name: m.username || m.name,
         role: m.role,
         department: m.department,
         country: m.country,

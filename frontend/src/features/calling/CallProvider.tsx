@@ -190,6 +190,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
 
   const reset = useCallback((opts?: { keepCancelFlag?: boolean }) => {
     cleanupPeer();
+    phaseRef.current = "idle";
     setPhase("idle");
     setInvite(null);
     setCallId(null);
@@ -329,8 +330,14 @@ export function CallProvider({ children }: { children: ReactNode }) {
   }, [invite, beginMedia, reset, stopRingTimer]);
 
   const declineIncoming = useCallback(() => {
-    if (invite?.callId) emitCallDecline(invite.callId);
-    else if (callIdRef.current) emitCallDecline(callIdRef.current);
+    const id = (invite?.callId || callIdRef.current || "").trim();
+    if (!id) {
+      // No signaling id — still clear local UI so the recipient is never stuck.
+      reset();
+      return;
+    }
+    // Emit first so the caller receives call:ended / call:declined before we tear down.
+    emitCallDecline(id);
     reset();
   }, [invite, reset]);
 
@@ -478,7 +485,9 @@ export function CallProvider({ children }: { children: ReactNode }) {
           resetRef.current();
         }
       }),
-      onRealtimeEvent<{ callId: string }>("call:declined", () => {
+      onRealtimeEvent<{ callId: string }>("call:declined", (data) => {
+        if (phaseRef.current === "idle") return;
+        if (callIdRef.current && data?.callId && callIdRef.current !== data.callId) return;
         if (pendingStreamRef.current) {
           pendingStreamRef.current.getTracks().forEach(t => t.stop());
           pendingStreamRef.current = null;
@@ -487,12 +496,16 @@ export function CallProvider({ children }: { children: ReactNode }) {
         resetRef.current();
       }),
       onRealtimeEvent<{ callId: string; reason?: string }>("call:ended", (data) => {
+        if (phaseRef.current === "idle") return;
+        // Outgoing before ringing may have empty callIdRef — still accept end events.
+        if (callIdRef.current && data?.callId && callIdRef.current !== data.callId) return;
         if (pendingStreamRef.current) {
           pendingStreamRef.current.getTracks().forEach(t => t.stop());
           pendingStreamRef.current = null;
         }
         const reason = data?.reason;
-        if (reason === "timeout") toast.message("Missed call");
+        if (reason === "declined") toast.message("Call declined");
+        else if (reason === "timeout") toast.message("Missed call");
         else if (reason === "cancelled") toast.message("Call cancelled");
         else if (reason === "busy") toast.message("User is busy");
         else if (reason === "disconnect") toast.message("Call disconnected");

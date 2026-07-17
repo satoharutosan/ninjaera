@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback, useRef, useMemo, type ReactNode } fro
 import DashboardIcon from "@mui/icons-material/Dashboard";
 import PeopleIcon from "@mui/icons-material/People";
 import NotificationsIcon from "@mui/icons-material/Notifications";
-import TagIcon from "@mui/icons-material/Tag";
 import WorkIcon from "@mui/icons-material/Work";
 import MenuBookIcon from "@mui/icons-material/MenuBook";
 import SearchIcon from "@mui/icons-material/Search";
@@ -23,7 +22,6 @@ import ChatBubbleIcon from "@mui/icons-material/ChatBubble";
 import MailOutlineIcon from "@mui/icons-material/MailOutline";
 import InboxIcon from "@mui/icons-material/Inbox";
 import FiberManualRecordIcon from "@mui/icons-material/FiberManualRecord";
-import AdminPanelSettingsIcon from "@mui/icons-material/AdminPanelSettings";
 import {
   ResponsiveContainer, LineChart, Line, BarChart, Bar, AreaChart, Area,
   PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
@@ -531,8 +529,8 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
         ) : loading ? (
           <div className="space-y-4 py-4" aria-busy="true" aria-label="Loading">
             <div className="h-8 w-48 rounded-lg animate-pulse" style={{ background: C.surfaceVar }} />
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              {Array.from({ length: 8 }).map((_, i) => (
+            <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+              {Array.from({ length: 6 }).map((_, i) => (
                 <div key={i} className="h-24 rounded-2xl animate-pulse" style={{ background: C.surfaceVar }} />
               ))}
             </div>
@@ -555,28 +553,19 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                 <DashSection title="Overview" action={
                   <button type="button" onClick={() => loadSection()} className="text-xs font-medium px-3 py-1.5 rounded-full hover:bg-black/5" style={{ color: C.primary, fontFamily: "Roboto" }}>Refresh</button>
                 }>
-                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
-                    <StatCard label="Total Users" value={stats.totalUsers} Icon={PeopleIcon} />
-                    <StatCard label="Online Users" value={stats.onlineUsers} color="#386A20" Icon={FiberManualRecordIcon} />
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
                     <StatCard
-                      label="Administrators"
-                      value={Number(stats.userDistribution.find(d => d.name === "Administrators")?.value) || 0}
-                      Icon={AdminPanelSettingsIcon}
-                    />
-                    <StatCard
-                      label="Members"
-                      value={Number(stats.userDistribution.find(d => d.name === "Members")?.value) || 0}
+                      label="Total Users"
+                      value={stats.totalUsers}
+                      secondary={stats.onlineUsers}
+                      secondaryLabel="Online"
                       Icon={PeopleIcon}
                     />
-                    <StatCard label="Team Members" value={stats.teamMembers} Icon={WorkIcon} />
                     <StatCard label="Pending Applications" value={stats.pendingApplications} color="#B3261E" Icon={InboxIcon} />
-                    <StatCard label="Pending DM Requests" value={stats.pendingDmRequests} color="#B3261E" Icon={ChatBubbleIcon} />
                     <StatCard label="Unread Contacts" value={stats.unreadContacts} color="#B3261E" Icon={MailOutlineIcon} />
-                    <StatCard label="Notifications" value={stats.unreadNotifications} Icon={NotificationsIcon} />
-                    <StatCard label="Resources" value={stats.totalResources} Icon={MenuBookIcon} />
+                    <StatCard label="Notifications" value={stats.notifications} Icon={NotificationsIcon} />
                     <StatCard label="Total Downloads" value={stats.totalDownloads} Icon={DownloadIcon} />
                     <StatCard label="Total Messages" value={stats.totalMessages} Icon={ChatBubbleIcon} />
-                    <StatCard label="Active Channels" value={stats.totalChannels} Icon={TagIcon} />
                   </div>
                 </DashSection>
 
@@ -647,10 +636,6 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                   <DashSection title="User Activity" action={
                     <button type="button" onClick={() => setSection("users")} className="text-xs font-medium" style={{ color: C.primary, fontFamily: "Roboto" }}>View all</button>
                   }>
-                    <div className="grid grid-cols-2 gap-3 mb-4">
-                      <StatCard label="Online Now" value={stats.onlineUsers} color="#386A20" />
-                      <StatCard label="Total DMs" value={stats.totalDms} />
-                    </div>
                     {stats.recentUsers.length === 0 ? <EmptyNote text="No recent registrations" /> : (
                       <ul className="space-y-2" aria-label="Recent registrations">
                         {stats.recentUsers.map(u => (
@@ -674,10 +659,6 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                   <DashSection title="Downloads" action={
                     <button type="button" onClick={() => setSection("game-downloads")} className="text-xs font-medium" style={{ color: C.primary, fontFamily: "Roboto" }}>Manage</button>
                   }>
-                    <div className="grid grid-cols-2 gap-3 mb-4">
-                      <StatCard label="Total Downloads" value={stats.totalDownloads} />
-                      <StatCard label="Resources" value={stats.totalResources} />
-                    </div>
                     {stats.mostDownloadedResource ? (
                       <div className="rounded-xl px-3 py-3 mb-3" style={{ background: C.surfaceVar }}>
                         <p className="text-[11px] uppercase tracking-wide mb-1" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>Most downloaded resource</p>
@@ -698,11 +679,6 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                   <DashSection title="Teamwork" action={
                     <button type="button" onClick={() => setSection("applications")} className="text-xs font-medium" style={{ color: C.primary, fontFamily: "Roboto" }}>Applications</button>
                   }>
-                    <div className="grid grid-cols-3 gap-3 mb-4">
-                      <StatCard label="Pending" value={stats.pendingApplications} color="#B3261E" />
-                      <StatCard label="Approved" value={stats.approvedApplications} color="#386A20" />
-                      <StatCard label="Rejected" value={stats.rejectedApplications} />
-                    </div>
                     {stats.recentApplications.length === 0 ? <EmptyNote text="No applications yet" /> : (
                       <ul className="space-y-2" aria-label="Recent applications">
                         {stats.recentApplications.map(a => (
@@ -719,26 +695,9 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                     )}
                   </DashSection>
 
-                  <DashSection title="Messaging" action={
-                    <button type="button" onClick={() => setSection("channels")} className="text-xs font-medium" style={{ color: C.primary, fontFamily: "Roboto" }}>Channels</button>
-                  }>
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                      <StatCard label="Messages" value={stats.totalMessages} />
-                      <StatCard label="DMs" value={stats.totalDms} />
-                      <StatCard label="Channels" value={stats.totalChannels} />
-                      <StatCard label="DM Requests" value={stats.pendingDmRequests} color="#B3261E" />
-                    </div>
-                  </DashSection>
-
                   <DashSection title="Contacts" action={
                     <button type="button" onClick={() => setSection("contacts")} className="text-xs font-medium" style={{ color: C.primary, fontFamily: "Roboto" }}>Inbox</button>
                   }>
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-                      <StatCard label="Unread" value={stats.unreadContacts} color="#B3261E" />
-                      <StatCard label="Pending Reply" value={stats.pendingContactReplies} color="#B3261E" />
-                      <StatCard label="Replied" value={stats.repliedContacts} color="#386A20" />
-                      <StatCard label="Total" value={stats.totalContacts} />
-                    </div>
                     {stats.recentContacts.length === 0 ? <EmptyNote text="No contact requests" /> : (
                       <ul className="space-y-2" aria-label="Recent contacts">
                         {stats.recentContacts.map(c => (

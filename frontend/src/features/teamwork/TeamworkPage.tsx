@@ -27,7 +27,18 @@ const ALL_ROLES = [
 ];
 function TeamworkPage({ loggedIn, setPage, onAddDM }: { loggedIn:boolean; setPage:(p:Page)=>void; onAddDM:(name:string,role:string,country:string,city:string)=>void }) {
   const C = useC();
-  const [team, setTeam] = useState<{ name: string; role: string; dept: string; country: string; city: string; statusLabel?: string; statusColor?: string; avatarUrl?: string | null }[]>([]);
+  const [team, setTeam] = useState<{
+    name: string;
+    role: string;
+    dept: string;
+    country: string;
+    city: string;
+    statusLabel?: string;
+    statusColor?: string;
+    avatarUrl?: string | null;
+    userId?: number;
+    username?: string;
+  }[]>([]);
   const [memberModal, setMemberModal] = useState<typeof team[0]|null>(null);
   const [applyRole, setApplyRole] = useState<typeof ALL_ROLES[0]|null>(null);
 
@@ -62,8 +73,10 @@ function TeamworkPage({ loggedIn, setPage, onAddDM }: { loggedIn:boolean; setPag
               ? String(raw)
               : `/uploads/${String(raw).replace(/^\/+/, "")}`)
             : null;
+          // Live username is source of truth; team_members.name is fallback only.
+          const displayName = m.username || m.name || "Deleted User";
           return {
-            name: m.name || "Deleted User",
+            name: displayName,
             role: m.role,
             dept: m.department,
             country: m.country,
@@ -71,6 +84,8 @@ function TeamworkPage({ loggedIn, setPage, onAddDM }: { loggedIn:boolean; setPag
             statusLabel: m.statusLabel,
             statusColor: m.statusColor,
             avatarUrl,
+            userId: m.userId,
+            username: m.username,
           };
         }));
       } else {
@@ -82,8 +97,40 @@ function TeamworkPage({ loggedIn, setPage, onAddDM }: { loggedIn:boolean; setPag
   useEffect(() => {
     api.jobs.list().then(r => setJobs(r.jobs)).catch(() => {});
     loadTeam();
-    const unsub = onRealtimeEvent("team:updated", () => loadTeam());
-    return () => unsub();
+    const unsubs = [
+      onRealtimeEvent("team:updated", () => loadTeam()),
+      onRealtimeEvent<{
+        userId: number;
+        username: string;
+        avatarUrl?: string | null;
+      }>("profile:updated", (data) => {
+        if (!data?.userId || !data.username) return;
+        setTeam(prev => {
+          let changed = false;
+          const next = prev.map(m => {
+            if (m.userId !== data.userId) return m;
+            changed = true;
+            return {
+              ...m,
+              name: data.username,
+              username: data.username,
+              avatarUrl: data.avatarUrl !== undefined ? data.avatarUrl : m.avatarUrl,
+            };
+          });
+          return changed ? next : prev;
+        });
+        setMemberModal(prev => {
+          if (!prev || prev.userId !== data.userId) return prev;
+          return {
+            ...prev,
+            name: data.username,
+            username: data.username,
+            avatarUrl: data.avatarUrl !== undefined ? data.avatarUrl : prev.avatarUrl,
+          };
+        });
+      }),
+    ];
+    return () => unsubs.forEach(u => u());
   }, []);
 
   const submitApplication = async () => {
@@ -260,7 +307,7 @@ function TeamworkPage({ loggedIn, setPage, onAddDM }: { loggedIn:boolean; setPag
           {team.length === 0 ? (
             <p className="col-span-full text-center text-sm py-12" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>No approved team members yet.</p>
           ) : team.map(m => (
-              <div key={m.name} className="rounded-3xl p-6 text-center hover:scale-[1.02] transition-all cursor-pointer" style={{ background:C.surface, boxShadow:SH1 }} onClick={() => setMemberModal(m)}>
+              <div key={m.userId ?? m.name} className="rounded-3xl p-6 text-center hover:scale-[1.02] transition-all cursor-pointer" style={{ background:C.surface, boxShadow:SH1 }} onClick={() => setMemberModal(m)}>
                 <div className="relative inline-block mb-4">
                   <ChatAvatar name={m.name} avatarUrl={m.avatarUrl} size={96} className="mx-auto" />
                   {m.statusLabel && m.statusColor && <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 px-2 py-0.5 rounded-full text-[10px] font-bold text-white whitespace-nowrap" style={{ background: m.statusColor }}>{m.statusLabel}</span>}

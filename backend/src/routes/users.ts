@@ -14,6 +14,7 @@ import { deleteStoredUrl } from "../storage/index.js";
 import { createMemoryUploader, persistMulterFile } from "../storage/multerUpload.js";
 import { validateUpload } from "../services/uploadValidation.js";
 import { rateLimit } from "../middleware/rateLimit.js";
+import { emitProfileUpdated, syncTeamMemberDisplayName } from "../services/profileBroadcast.js";
 
 const router = Router();
 const now = () => new Date().toISOString();
@@ -43,6 +44,7 @@ router.patch("/me", requireAuth, async (req, res) => {
   const { username, gender, dateOfBirth, country, city, status, bio, village, clan } = req.body;
   const fields: string[] = [];
   const values: unknown[] = [];
+  let nextUsername: string | undefined;
 
   if (username !== undefined) {
     const check = await validateUsernameForWrite(username, req.user!.id);
@@ -50,6 +52,7 @@ router.patch("/me", requireAuth, async (req, res) => {
       res.status(check.status).json({ error: check.error });
       return;
     }
+    nextUsername = check.username;
     fields.push("username = ?");
     values.push(check.username);
   }
@@ -62,13 +65,14 @@ router.patch("/me", requireAuth, async (req, res) => {
   if (clan !== undefined) { fields.push("clan = ?"); values.push(clan); }
 
   const statusChanging = status !== undefined;
+  const identityChanging = fields.length > 0;
 
-  if (fields.length === 0 && !statusChanging) {
+  if (!identityChanging && !statusChanging) {
     res.status(400).json({ error: "No fields to update" });
     return;
   }
 
-  if (fields.length > 0) {
+  if (identityChanging) {
     fields.push("updated_at = ?");
     values.push(now(), req.user!.id);
     try {
@@ -82,10 +86,19 @@ router.patch("/me", requireAuth, async (req, res) => {
     }
   }
 
+  if (nextUsername) {
+    await syncTeamMemberDisplayName(req.user!.id, nextUsername);
+  }
+
   if (statusChanging) {
     await setUserStatus(req.user!.id, String(status));
-  } else if (fields.length > 0) {
+  } else if (identityChanging) {
     emitPresenceUpdate(req.user!.id);
+  }
+
+  // Always broadcast identity so other clients (Teamwork, DMs, messages) stay in sync.
+  if (identityChanging || statusChanging) {
+    await emitProfileUpdated(req.user!.id);
   }
 
   const updated = await qGet("SELECT * FROM users WHERE id = ?", req.user!.id);
@@ -122,6 +135,7 @@ router.post("/me/avatar", requireAuth, rateLimit({
     await deleteStoredUrl(previous.avatar_url);
   }
   emitPresenceUpdate(req.user!.id);
+  await emitProfileUpdated(req.user!.id);
   res.json({ avatarUrl: stored.url });
 });
 

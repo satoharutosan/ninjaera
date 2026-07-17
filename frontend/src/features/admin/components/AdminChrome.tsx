@@ -18,20 +18,47 @@ export function UserAvatar({ user, size = 32 }: { user: AdminUser; size?: number
   );
 }
 
-export const StatCard = memo(function StatCard({ label, value, color, hint, Icon }: { label: string; value: number; color?: string; hint?: string; Icon?: typeof PeopleIcon }) {
+export const StatCard = memo(function StatCard({
+  label,
+  value,
+  secondary,
+  secondaryLabel,
+  color,
+  hint,
+  Icon,
+}: {
+  label: string;
+  value: number;
+  /** Optional second metric — renders as `value / secondary secondaryLabel` (e.g. "14 / 5 Online"). */
+  secondary?: number;
+  secondaryLabel?: string;
+  color?: string;
+  hint?: string;
+  Icon?: typeof PeopleIcon;
+}) {
   const C = useC();
   // Never render [object Object] — coerce unknown payloads to a safe integer.
-  let n = 0;
-  if (typeof value === "number" && Number.isFinite(value)) n = Math.trunc(value);
-  else if (typeof value === "string" && value.trim() !== "") {
-    const parsed = Number(value);
-    if (Number.isFinite(parsed)) n = Math.trunc(parsed);
-  }
-  const display = n;
+  const toInt = (v: unknown) => {
+    if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
+    if (typeof v === "string" && v.trim() !== "") {
+      const parsed = Number(v);
+      if (Number.isFinite(parsed)) return Math.trunc(parsed);
+    }
+    return 0;
+  };
+  const n = toInt(value);
+  const hasSecondary = secondary !== undefined;
+  const secondaryN = hasSecondary ? toInt(secondary) : 0;
+  const display = hasSecondary
+    ? `${n.toLocaleString()} / ${secondaryN.toLocaleString()}${secondaryLabel ? ` ${secondaryLabel}` : ""}`
+    : n.toLocaleString();
+  const ariaValue = hasSecondary
+    ? `${n} total, ${secondaryN}${secondaryLabel ? ` ${secondaryLabel.toLowerCase()}` : ""}`
+    : String(n);
   return (
-    <div className="rounded-2xl p-4 md:p-5 min-h-[96px] flex flex-col justify-between gap-2" style={{ background: C.surface, boxShadow: SH1 }} role="group" aria-label={`${label}: ${display}`}>
+    <div className="rounded-2xl p-4 md:p-5 min-h-[96px] flex flex-col justify-between gap-2" style={{ background: C.surface, boxShadow: SH1 }} role="group" aria-label={`${label}: ${ariaValue}`}>
       <div className="flex items-start justify-between gap-2">
-        <p className="text-2xl md:text-3xl font-medium tabular-nums leading-none" style={{ color: color || C.primary, fontFamily: "Roboto" }}>{display.toLocaleString()}</p>
+        <p className="text-2xl md:text-3xl font-medium tabular-nums leading-none" style={{ color: color || C.primary, fontFamily: "Roboto" }}>{display}</p>
         {Icon && (
           <Icon style={{ fontSize: 32, color: color || C.primary }} aria-hidden className="shrink-0" />
         )}

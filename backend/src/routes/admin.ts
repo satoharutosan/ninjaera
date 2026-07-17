@@ -20,6 +20,7 @@ import {
 import { normalizeResourceCategory, RESOURCE_CATEGORY_ERROR } from "../services/resourceCategories.js";
 import { logActivitySync, formatPlatformLabel } from "../services/activityLog.js";
 import { emitToAdmins, emitToUser, broadcast, scheduleAdminStatsRefresh, emitConversationUpdate } from "../services/realtime.js";
+import { emitProfileUpdated, syncTeamMemberDisplayName } from "../services/profileBroadcast.js";
 import { isUserOnline, countOnlineUsers } from "../services/presence.js";
 import { syncPrivateChannelParticipants, syncPublicChannels, syncPrivateChannelsForUser, pruneIneligiblePrivateParticipants } from "../services/channels.js";
 import { forceLeaveConversationMany } from "../services/realtime.js";
@@ -189,20 +190,11 @@ router.get("/stats", async (req, res) => {
     const [
       totalUsers,
       roleCounts,
-      totalChannels,
-      totalDms,
-      pendingApplications,
-      approvedApplications,
-      rejectedApplications,
-      teamMembers,
-      unreadNotifications,
-      unreadContacts,
-      totalContacts,
-      repliedContacts,
-      pendingContactReplies,
-      totalMessages,
+      pendingJobApplications,
       pendingDmRequests,
-      totalResources,
+      notifications,
+      unreadContacts,
+      totalMessages,
       totalDownloads,
       registrationRows,
       messageDayRows,
@@ -223,25 +215,21 @@ router.get("/stats", async (req, res) => {
           COALESCE(SUM(CASE WHEN is_admin = 0 OR is_admin IS NULL THEN 1 ELSE 0 END), 0) as member_count
          FROM users WHERE is_npc = 0 AND is_deleted = 0`,
       ),
-      safeCount("totalChannels", "SELECT COUNT(*) as c FROM conversations WHERE type = 'channel' AND archived = 0"),
-      safeCount("totalDms", "SELECT COUNT(*) as c FROM conversations WHERE type = 'dm'"),
-      safeCount("pendingApplications", "SELECT COUNT(*) as c FROM job_applications WHERE status = 'pending'"),
-      safeCount("approvedApplications", "SELECT COUNT(*) as c FROM job_applications WHERE status = 'approved'"),
-      safeCount("rejectedApplications", "SELECT COUNT(*) as c FROM job_applications WHERE status = 'rejected'"),
-      safeCount("teamMembers", "SELECT COUNT(*) as c FROM users WHERE is_team_member = 1 AND is_deleted = 0"),
+      safeCount("pendingJobApplications", "SELECT COUNT(*) as c FROM job_applications WHERE status = 'pending'"),
+      safeCount("pendingDmRequests", "SELECT COUNT(*) as c FROM dm_requests WHERE status = 'pending'"),
       safeCount(
-        "unreadNotifications",
+        "notifications",
         `SELECT COUNT(*) as c FROM notifications n
          WHERE n.user_id IS NULL
          AND NOT EXISTS (SELECT 1 FROM notification_reads nr WHERE nr.notification_id = n.id)`,
       ),
       safeCount("unreadContacts", "SELECT COUNT(*) as c FROM contact_tickets WHERE is_read = 0"),
-      safeCount("totalContacts", "SELECT COUNT(*) as c FROM contact_tickets"),
-      safeCount("repliedContacts", "SELECT COUNT(*) as c FROM contact_tickets WHERE reply_status = 'replied'"),
-      safeCount("pendingContactReplies", "SELECT COUNT(*) as c FROM contact_tickets WHERE reply_status = 'pending'"),
-      safeCount("totalMessages", "SELECT COUNT(*) as c FROM messages"),
-      safeCount("pendingDmRequests", "SELECT COUNT(*) as c FROM dm_requests WHERE status = 'pending'"),
-      safeCount("totalResources", "SELECT COUNT(*) as c FROM resources"),
+      // Hard-deleted messages are removed from the table; exclude call_event system chips.
+      safeCount(
+        "totalMessages",
+        `SELECT COUNT(*) as c FROM messages
+         WHERE media_type IS NULL OR media_type != 'call_event'`,
+      ),
       safeCount(
         "totalDownloads",
         `SELECT COUNT(*) as c FROM activity_logs
@@ -260,6 +248,7 @@ router.get("/stats", async (req, res) => {
         `SELECT substr(created_at, 1, 10) as d, COUNT(*) as c
          FROM messages
          WHERE created_at >= ?
+           AND (media_type IS NULL OR media_type != 'call_event')
          GROUP BY substr(created_at, 1, 10)`,
         sinceIso,
       ),
@@ -333,6 +322,8 @@ router.get("/stats", async (req, res) => {
     const adminCount = asInt(roleCounts?.admin_count, 0);
     // Members = non-admin active users (excludes deleted/NPC via WHERE).
     const memberCount = asInt(roleCounts?.member_count, Math.max(0, totalUsers - adminCount));
+    // Overview "Pending Applications" = teamwork apps + pending DM requests.
+    const pendingApplications = pendingJobApplications + pendingDmRequests;
 
     const registrationsByDay = Object.fromEntries(registrationRows.map((r) => [r.d, asInt(r.c)]));
     const messagesByDay = Object.fromEntries(messageDayRows.map((r) => [r.d, asInt(r.c)]));
@@ -374,21 +365,11 @@ router.get("/stats", async (req, res) => {
     const body = {
       totalUsers,
       onlineUsers,
-      totalChannels,
-      totalDms,
       pendingApplications,
-      teamMembers,
-      unreadNotifications,
       unreadContacts,
-      totalContacts,
-      repliedContacts,
-      pendingContactReplies,
-      totalMessages,
-      pendingDmRequests,
-      totalResources,
+      notifications,
       totalDownloads,
-      approvedApplications,
-      rejectedApplications,
+      totalMessages,
       userDistribution: [
         { name: "Administrators", value: adminCount },
         { name: "Members", value: memberCount },
@@ -448,21 +429,11 @@ router.get("/stats", async (req, res) => {
     res.status(200).json({
       totalUsers: 0,
       onlineUsers: asInt(countOnlineUsers(), 0),
-      totalChannels: 0,
-      totalDms: 0,
       pendingApplications: 0,
-      teamMembers: 0,
-      unreadNotifications: 0,
       unreadContacts: 0,
-      totalContacts: 0,
-      repliedContacts: 0,
-      pendingContactReplies: 0,
-      totalMessages: 0,
-      pendingDmRequests: 0,
-      totalResources: 0,
+      notifications: 0,
       totalDownloads: 0,
-      approvedApplications: 0,
-      rejectedApplications: 0,
+      totalMessages: 0,
       userDistribution: [
         { name: "Administrators", value: 0 },
         { name: "Members", value: 0 },
@@ -707,6 +678,10 @@ router.patch("/users/:id", async (req, res) => {
   }
 
   const updated = (await qGet<Record<string, unknown>>("SELECT * FROM users WHERE id = ?", id))!;
+  if (username !== undefined && updated.username) {
+    await syncTeamMemberDisplayName(id, String(updated.username));
+  }
+  await emitProfileUpdated(id);
   res.json({ user: await formatAdminUser(updated) });
 });
 

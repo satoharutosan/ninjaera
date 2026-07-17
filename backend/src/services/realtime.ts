@@ -253,13 +253,27 @@ export function initRealtime(httpServer: HttpServer, corsOrigin: string) {
     });
 
     socket.on("call:decline", async (data: { callId: string }) => {
-      const callId = String(data?.callId || "");
-      const call = assertCallParticipant(callId, userId);
-      await declineCall(callId, userId);
-      if (call) {
-        emitToUser(peerIdFor(call, userId), "call:declined", { callId, by: userId });
-        socket.emit("call:declined", { callId, by: userId });
+      const callId = String(data?.callId || "").trim();
+      if (!callId) {
+        socket.emit("call:error", { error: "Invalid call", code: "invalid" });
+        return;
       }
+      const call = assertCallParticipant(callId, userId);
+      if (!call) {
+        // Call already ended elsewhere — ack so the declining client UI stays consistent.
+        socket.emit("call:declined", { callId, by: userId });
+        return;
+      }
+      const peerId = peerIdFor(call, userId);
+      const result = await declineCall(callId, userId);
+      if (!result.ok) {
+        socket.emit("call:error", { error: result.error || "Could not decline call" });
+        return;
+      }
+      // call:ended is already emitted inside declineCall → endCallInternal.
+      // Emit call:declined immediately so the caller closes the outgoing modal + toast.
+      emitToUser(peerId, "call:declined", { callId, by: userId });
+      socket.emit("call:declined", { callId, by: userId });
     });
 
     socket.on("call:busy", async (data: { callId: string }) => {

@@ -21,6 +21,7 @@ import PersonIcon from "@mui/icons-material/Person";
 import PersonAddIcon from "@mui/icons-material/PersonAdd";
 import InboxIcon from "@mui/icons-material/Inbox";
 import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
+import CheckIcon from "@mui/icons-material/Check";
 import CircularProgress from "@mui/material/CircularProgress";
 import Badge from "@mui/material/Badge";
 import CallIcon from "@mui/icons-material/Call";
@@ -161,11 +162,12 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
   const thread = useMessageThread({
     conversationId: sel.id,
     currentUserId,
+    expectedUnread: sel.unread,
     onContactsRefresh: refreshContacts,
   });
 
   const {
-    msgs, msgsRef,
+    msgs, setMsgs, msgsRef,
     hasMoreOlder, hasMoreNewer, loadingOlder, loadingNewer,
     threadReady, threadBootId, initialScrollIndex,
     lastReadMessageId, setLastReadMessageId,
@@ -341,6 +343,9 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
             setUnreadBelow(n => n + 1);
             setShowJumpBtn(true);
           }
+        } else {
+          // Keep non-active threads warm so switching/reopening shows new msgs instantly.
+          messageCache.upsertMessage(conversationId, toChatMsg(message, currentUserId));
         }
         refreshContacts();
       }),
@@ -397,6 +402,52 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
           return { ...prev, online, status };
         });
       }),
+      onRealtimeEvent<{
+        userId: number;
+        username: string;
+        avatarUrl?: string | null;
+        bio?: string;
+        status?: string;
+      }>("profile:updated", (data) => {
+        if (!data?.userId || !data.username) return;
+        // Live thread bubbles
+        setMsgs(prev => {
+          let changed = false;
+          const next = prev.map(m => {
+            if (m.userId !== data.userId) return m;
+            changed = true;
+            const isSelf = data.userId === currentUserId || m.self;
+            return {
+              ...m,
+              user: isSelf ? "You" : data.username,
+              avatarUrl: data.avatarUrl !== undefined ? data.avatarUrl : m.avatarUrl,
+            };
+          });
+          if (changed) msgsRef.current = next;
+          return changed ? next : prev;
+        });
+        // Selected / details contact card
+        setSel(prev => {
+          if (prev.otherUserId !== data.userId) return prev;
+          return {
+            ...prev,
+            name: data.username,
+            avatarUrl: data.avatarUrl !== undefined ? data.avatarUrl : prev.avatarUrl,
+            bio: data.bio !== undefined ? data.bio : prev.bio,
+            ...(data.status !== undefined ? { status: data.status } : {}),
+          };
+        });
+        setDetailsContact(prev => {
+          if (!prev || prev.otherUserId !== data.userId) return prev;
+          return {
+            ...prev,
+            name: data.username,
+            avatarUrl: data.avatarUrl !== undefined ? data.avatarUrl : prev.avatarUrl,
+            bio: data.bio !== undefined ? data.bio : prev.bio,
+            ...(data.status !== undefined ? { status: data.status } : {}),
+          };
+        });
+      }),
     ];
     return () => {
       unsubs.forEach(u => u());
@@ -414,7 +465,7 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
   }, [
     currentUserId, applyNewMessage, applyUpdatedMessage, applyDeletedMessage, applyReaction,
     forceScrollToBottom, refreshContacts, scheduleMarkRead, setContacts, setLastReadMessageId, setUnreadBelow,
-    setShowJumpBtn, isNearBottomRef, pinToBottomRef,
+    setShowJumpBtn, isNearBottomRef, pinToBottomRef, setMsgs, msgsRef,
   ]);
 
   useEffect(() => {

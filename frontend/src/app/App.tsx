@@ -34,12 +34,13 @@ import {
 } from "@/app/shared";
 import { connectRealtime, disconnectRealtime, onRealtimeEvent, joinConversation } from "@/app/realtime";
 import { messageCache } from "@/features/messages/messageCache";
+import { toChatMsg } from "@/features/messages/types";
 import { appPerf } from "@/shared/perf";
 import { pageFromLocation, setPageInLocation } from "@/shared/routing";
 import { BrandLogo } from "@/shared/BrandLogo";
 import { BRAND_LOGO_SRC, BRAND_NAME } from "@/shared/branding";
 import { getCachedUser, setCachedUser, clearAuthStorage, getStoredToken } from "@/shared/authStorage";
-import { api, setToken, ApiError, type ApiUser, type ApiNotification } from "@/app/api";
+import { api, setToken, ApiError, type ApiUser, type ApiNotification, type ApiMessage } from "@/app/api";
 import { SOCIAL_LINKS, isSocialUrlConfigured, type SocialPlatform } from "@/shared/socialLinks";
 import { SECTION_IDS, scrollToSection, scrollToSectionWhenReady } from "@/shared/scrollToSection";
 import { CallProvider } from "@/features/calling/CallProvider";
@@ -106,11 +107,12 @@ function NavIconBadge({
 }
 
 // ── NAVBAR ───────────────────────────────────────────────────────────────────
-function Navbar({ page, setPage, isDark, setIsDark, loggedIn, user, userAvatar, notifs, setNotifs, msgUnread, dmRequestCount, isAdmin, onLogout }: {
+function Navbar({ page, setPage, isDark, setIsDark, loggedIn, user, userAvatar, notifs, setNotifs, messageBadge, isAdmin, onLogout }: {
   page:Page; setPage:(p:Page)=>void; isDark:boolean; setIsDark:(v:boolean)=>void;
   loggedIn:boolean; user: ApiUser | null; userAvatar:string|null;
   notifs: ApiNotification[]; setNotifs: React.Dispatch<React.SetStateAction<ApiNotification[]>>;
-  msgUnread: number; dmRequestCount: number; isAdmin?: boolean; onLogout: () => void;
+  /** Unread DMs + pending DM requests (single navbar badge). */
+  messageBadge: number; isAdmin?: boolean; onLogout: () => void;
 }) {
   const C = useC();
   const [mob, setMob] = useState(false);
@@ -247,20 +249,11 @@ function Navbar({ page, setPage, isDark, setIsDark, loggedIn, user, userAvatar, 
                   <AdminPanelSettingsIcon style={{ fontSize: 20 }} />
                 </button>
               )}
-              <button onClick={() => go("messages")} className="flex items-center justify-center hover:bg-[#6750A4]/8 rounded-full transition-colors" style={{ padding: showLabels ? "8px 16px" : "8px", gap: showLabels ? "6px" : 0, color:C.primary, fontFamily:"Roboto", fontSize:"0.875rem", fontWeight:500 }} aria-label={`Messages${msgUnread > 0 ? ` (${msgUnread} unread)` : ""}${dmRequestCount > 0 ? `, ${dmRequestCount} requests` : ""}`}>
-                <NavIconBadge badgeContent={msgUnread}>
+              <button onClick={() => go("messages")} className="flex items-center justify-center hover:bg-[#6750A4]/8 rounded-full transition-colors" style={{ padding: showLabels ? "8px 16px" : "8px", gap: showLabels ? "6px" : 0, color:C.primary, fontFamily:"Roboto", fontSize:"0.875rem", fontWeight:500 }} aria-label={`Messages${messageBadge > 0 ? ` (${messageBadge})` : ""}`}>
+                <NavIconBadge badgeContent={messageBadge}>
                   <ChatBubbleIcon style={{ fontSize:18 }} />
                 </NavIconBadge>
-                {showLabels && (
-                  <span className="inline-flex items-center gap-1">
-                    Messages
-                    {dmRequestCount > 0 && (
-                      <span className="text-[10px] font-bold tabular-nums" style={{ color: BADGE_BG }} title="DM requests">
-                        ({dmRequestCount})
-                      </span>
-                    )}
-                  </span>
-                )}
+                {showLabels && <span>Messages</span>}
               </button>
               <button
                 ref={avatarBtnRef}
@@ -330,11 +323,11 @@ function Navbar({ page, setPage, isDark, setIsDark, loggedIn, user, userAvatar, 
               <button
                 type="button"
                 onClick={() => go("messages")}
-                aria-label={`Messages${msgUnread > 0 ? ` (${msgUnread} unread)` : ""}${dmRequestCount > 0 ? `, ${dmRequestCount} requests` : ""}`}
+                aria-label={`Messages${messageBadge > 0 ? ` (${messageBadge})` : ""}`}
                 className="w-10 h-10 rounded-full flex items-center justify-center hover:bg-black/5 transition-colors"
                 style={{ color: page === "messages" ? C.primary : C.onSurfaceVar }}
               >
-                <NavIconBadge badgeContent={msgUnread}>
+                <NavIconBadge badgeContent={messageBadge}>
                   <ChatBubbleIcon style={{ fontSize: 20 }} />
                 </NavIconBadge>
               </button>
@@ -708,10 +701,14 @@ export default function App() {
     }, 400);
   }, [loggedIn]);
 
-  const refreshDmRequests = useCallback(() => {
+  /** Efficient badge sync: unread DMs + pending DM requests (COUNT queries only). */
+  const refreshMessageBadge = useCallback(() => {
     if (!loggedIn) return;
-    api.dm.listRequests()
-      .then(r => setDmRequestCount(r.incoming.length))
+    api.messages.badgeCount()
+      .then(r => {
+        setMsgUnread(r.unreadMessages);
+        setDmRequestCount(r.pendingDMRequests);
+      })
       .catch(() => {});
   }, [loggedIn]);
 
@@ -721,8 +718,8 @@ export default function App() {
 
   useEffect(() => {
     refreshConversations();
-    refreshDmRequests();
-  }, [loggedIn, refreshConversations, refreshDmRequests]);
+    refreshMessageBadge();
+  }, [loggedIn, refreshConversations, refreshMessageBadge]);
 
   useEffect(() => {
     if (!loggedIn) return;
@@ -732,18 +729,36 @@ export default function App() {
       onRealtimeEvent("counts:update", () => {
         refreshNotifications();
         refreshConversations();
-        refreshDmRequests();
+        refreshMessageBadge();
       }),
-      onRealtimeEvent("conversation:update", () => refreshConversations()),
+      onRealtimeEvent("conversation:update", () => {
+        refreshConversations();
+        refreshMessageBadge();
+      }),
       onRealtimeEvent<{ conversationId: number }>("conversation:new", ({ conversationId }) => {
         joinConversation(conversationId);
         refreshConversations();
+        refreshMessageBadge();
       }),
-      onRealtimeEvent("dm_request:new", () => refreshDmRequests()),
-      onRealtimeEvent("dm_request:resolved", () => refreshDmRequests()),
+      // Keep messageCache warm while MessagesPage is unmounted (e.g. user on Home).
+      // Without this, openConversation trusts a stale hasNewestWindow and skips fetch.
+      onRealtimeEvent<{ conversationId: number; message: ApiMessage }>("message:new", ({ conversationId, message }) => {
+        if (!user?.id || !conversationId || !message?.id) return;
+        messageCache.upsertMessage(conversationId, toChatMsg(message, user.id));
+      }),
+      onRealtimeEvent<{ conversationId: number; message: ApiMessage }>("message:updated", ({ conversationId, message }) => {
+        if (!user?.id || !conversationId || !message?.id) return;
+        messageCache.upsertMessage(conversationId, toChatMsg(message, user.id));
+      }),
+      onRealtimeEvent<{ conversationId: number; messageId: number }>("message:deleted", ({ conversationId, messageId }) => {
+        if (!conversationId || !messageId) return;
+        messageCache.removeMessage(conversationId, messageId);
+      }),
+      onRealtimeEvent("dm_request:new", () => refreshMessageBadge()),
+      onRealtimeEvent("dm_request:resolved", () => refreshMessageBadge()),
       onRealtimeEvent<{ requestId: number; conversationId: number }>("dm_request:accepted", ({ conversationId }) => {
         joinConversation(conversationId);
-        refreshDmRequests();
+        refreshMessageBadge();
         refreshConversations();
         refreshNotifications();
       }),
@@ -760,12 +775,57 @@ export default function App() {
           return changed ? next : prev;
         });
       }),
+      onRealtimeEvent<{
+        userId: number;
+        username: string;
+        avatarUrl?: string | null;
+        bio?: string;
+        status?: string;
+      }>("profile:updated", (data) => {
+        if (!data?.userId || !data.username) return;
+        // Own session (other tab / admin edit): keep navbar + auth cache current.
+        if (user?.id === data.userId) {
+          setUser(prev => {
+            if (!prev) return prev;
+            return {
+              ...prev,
+              username: data.username,
+              avatarUrl: data.avatarUrl !== undefined ? data.avatarUrl : prev.avatarUrl,
+              bio: data.bio !== undefined ? data.bio : prev.bio,
+              status: data.status !== undefined ? data.status : prev.status,
+            };
+          });
+          if (data.avatarUrl) setUserAvatar(data.avatarUrl);
+          else if (data.avatarUrl === null) setUserAvatar(null);
+        }
+        // Patch DM list in place (no full conversations refetch).
+        setContacts(prev => {
+          let changed = false;
+          const next = prev.map(c => {
+            if (c.type !== "dm" || c.otherUserId !== data.userId) return c;
+            changed = true;
+            return {
+              ...c,
+              name: data.username,
+              avatarUrl: data.avatarUrl !== undefined ? data.avatarUrl : c.avatarUrl,
+              bio: data.bio !== undefined ? data.bio : c.bio,
+              ...(data.status !== undefined ? { status: data.status } : {}),
+            };
+          });
+          return changed ? next : prev;
+        });
+        messageCache.patchUserIdentity(
+          data.userId,
+          { username: data.username, avatarUrl: data.avatarUrl },
+          user?.id,
+        );
+      }),
     ];
     return () => {
       unsubs.forEach(u => u());
       if (convRefreshTimer.current) clearTimeout(convRefreshTimer.current);
     };
-  }, [loggedIn, refreshConversations, refreshNotifications, refreshDmRequests]);
+  }, [loggedIn, user?.id, refreshConversations, refreshNotifications, refreshMessageBadge]);
 
   useEffect(() => {
     refreshNotifications();
@@ -887,7 +947,7 @@ export default function App() {
         </div>
       ) : (
         <>
-      {!noNav.includes(page) && <Navbar page={page} setPage={go} isDark={isDark} setIsDark={toggleTheme} loggedIn={loggedIn} user={user} userAvatar={userAvatar} notifs={notifs} setNotifs={setNotifs} msgUnread={msgUnread} dmRequestCount={dmRequestCount} isAdmin={user?.isAdmin} onLogout={handleLogout} />}
+      {!noNav.includes(page) && <Navbar page={page} setPage={go} isDark={isDark} setIsDark={toggleTheme} loggedIn={loggedIn} user={user} userAvatar={userAvatar} notifs={notifs} setNotifs={setNotifs} messageBadge={msgUnread + dmRequestCount} isAdmin={user?.isAdmin} onLogout={handleLogout} />}
         {page==="home"      && <HomePage setPage={go} onGoToDownload={goToDownload} />}
         {page==="about"     && <AboutPage setPage={go} />}
         {page==="resources" && <ResourcesPage isTeamMember={user?.isTeamMember} isAdmin={user?.isAdmin} />}

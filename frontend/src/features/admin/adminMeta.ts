@@ -17,12 +17,22 @@ export type Section = "dashboard" | "users" | "notifications" | "contacts" | "ch
 export type DashboardStats = Awaited<ReturnType<typeof api.admin.stats>>;
 
 export const EMPTY_STATS: DashboardStats = {
-  totalUsers: 0, onlineUsers: 0, totalChannels: 0, totalDms: 0, pendingApplications: 0, teamMembers: 0, unreadNotifications: 0,
-  unreadContacts: 0, totalContacts: 0, repliedContacts: 0, pendingContactReplies: 0,
-  totalMessages: 0, pendingDmRequests: 0, totalResources: 0, totalDownloads: 0,
-  approvedApplications: 0, rejectedApplications: 0,
-  userDistribution: [], userGrowth: [], activityTimeline: [], downloadsByPlatform: [],
-  mostDownloadedResource: null, recentUsers: [], recentApplications: [], recentContacts: [], recentActivity: [],
+  totalUsers: 0,
+  onlineUsers: 0,
+  pendingApplications: 0,
+  unreadContacts: 0,
+  notifications: 0,
+  totalDownloads: 0,
+  totalMessages: 0,
+  userDistribution: [],
+  userGrowth: [],
+  activityTimeline: [],
+  downloadsByPlatform: [],
+  mostDownloadedResource: null,
+  recentUsers: [],
+  recentApplications: [],
+  recentContacts: [],
+  recentActivity: [],
 };
 
 export const CHART_COLORS = ["#6750A4", "#386A20", "#B3261E", "#006A6A", "#7D5260", "#625B71"];

@@ -427,6 +427,43 @@ async function formatConversation(conv: {
   return (await formatConversations([conv], userId))[0];
 }
 
+/**
+ * Lightweight navbar badge counts — unread DM messages + pending incoming DM requests.
+ * Prefer this over fetching full conversation/request lists just for a badge number.
+ */
+router.get("/messages/badge-count", requireAuth, async (req, res) => {
+  const userId = req.user!.id;
+
+  const unreadRow = await qGet<{ c: number }>(`
+    SELECT COUNT(*) as c
+    FROM messages m
+    JOIN conversations c ON c.id = m.conversation_id AND c.type = 'dm'
+    JOIN conversation_participants self
+      ON self.conversation_id = m.conversation_id AND self.user_id = ?
+    JOIN conversation_participants peer
+      ON peer.conversation_id = m.conversation_id AND peer.user_id != ?
+    JOIN users u ON u.id = peer.user_id AND COALESCE(u.is_deleted, 0) = 0
+    WHERE m.user_id != ?
+      AND (self.last_read_at IS NULL OR m.created_at > self.last_read_at)
+  `, userId, userId, userId);
+
+  const requestRow = await qGet<{ c: number }>(`
+    SELECT COUNT(*) as c
+    FROM dm_requests dr
+    LEFT JOIN users u ON u.id = dr.requester_id
+    WHERE dr.recipient_id = ? AND dr.status = 'pending'
+      AND (u.id IS NULL OR COALESCE(u.is_deleted, 0) = 0)
+  `, userId);
+
+  const unreadMessages = Number(unreadRow?.c) || 0;
+  const pendingDMRequests = Number(requestRow?.c) || 0;
+  res.json({
+    unreadMessages,
+    pendingDMRequests,
+    totalMessageBadge: unreadMessages + pendingDMRequests,
+  });
+});
+
 router.get("/conversations", requireAuth, async (req, res) => {
   const userId = req.user!.id;
   // First Messages visit: treat all existing channel history as already read (once per user).

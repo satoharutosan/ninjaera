@@ -336,6 +336,10 @@ export const api = {
       request<{ muted: boolean }>(`/conversations/${conversationId}/mute`, { method: "PUT" }),
     markRead: (conversationId: number) =>
       request<{ ok: boolean }>(`/conversations/${conversationId}/read`, { method: "POST" }),
+    badgeCount: () =>
+      request<{ unreadMessages: number; pendingDMRequests: number; totalMessageBadge: number }>(
+        "/messages/badge-count",
+      ),
     deleteContact: (contactId: number) =>
       request<{ ok: boolean }>(`/contacts/${contactId}`, { method: "DELETE" }),
     startDm: (name: string, bio?: string) =>
@@ -449,11 +453,13 @@ export const api = {
   admin: {
     check: () => request<{ isAdmin: boolean; isSuperAdmin: boolean; user: ApiUser }>("/admin/check"),
     stats: () => request<{
-      totalUsers: number; onlineUsers: number; totalChannels: number; totalDms: number;
-      pendingApplications: number; teamMembers: number; unreadNotifications: number;
-      unreadContacts: number; totalContacts: number; repliedContacts: number; pendingContactReplies: number;
-      totalMessages: number; pendingDmRequests: number; totalResources: number; totalDownloads: number;
-      approvedApplications: number; rejectedApplications: number;
+      totalUsers: number;
+      onlineUsers: number;
+      pendingApplications: number;
+      unreadContacts: number;
+      notifications: number;
+      totalDownloads: number;
+      totalMessages: number;
       userDistribution: { name: string; value: number }[];
       userGrowth: { date: string; label: string; count: number }[];
       activityTimeline: { date: string; label: string; messages: number; downloads: number; logins: number }[];

@@ -18,10 +18,12 @@ import {
   loadSignupDraft,
   saveSignupDraft,
 } from "@/features/auth/signupDraft";
+import { persistAuthSession } from "@/shared/authStorage";
+import type { ApiUser } from "@/app/api";
 
-function SignUpPage({ setPage }: {
+function SignUpPage({ setPage, onLogin }: {
   setPage: (p: Page) => void;
-  onLogin?: (user: import("@/app/api").ApiUser) => void;
+  onLogin?: (user: ApiUser) => void;
 }) {
   const C = useC();
   const draft = useRef(loadSignupDraft()).current;
@@ -93,6 +95,14 @@ function SignUpPage({ setPage }: {
     try {
       const result = await api.auth.register(email.trim(), username, pw);
       clearSignupLegalReview();
+      // Instant signup (EMAIL_VERIFICATION_REQUIRED=false): session token returned.
+      if (!result.pending && result.token && result.user) {
+        persistAuthSession(result.token, result.user, true);
+        onLogin?.(result.user);
+        setPage("home");
+        return;
+      }
+      // Legacy verification flow when EMAIL_VERIFICATION_REQUIRED=true.
       sessionStorage.setItem("pending-verify-email", result.email);
       if (result.emailStatus) sessionStorage.setItem("pending-verify-status", result.emailStatus);
       setPageInLocationWithQuery("verify-email", { email: result.email });

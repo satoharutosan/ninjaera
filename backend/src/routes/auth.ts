@@ -14,6 +14,7 @@ import {
 } from "../services/username.js";
 import {
   findPendingByEmail,
+  isEmailVerificationRequired,
   isUsernamePending,
   normalizeEmail,
   resendVerificationEmail,
@@ -75,7 +76,11 @@ router.get("/username-available", optionalAuth, async (req, res) => {
   });
 });
 
-/** Start email/password registration — sends verification email; account created only after verify. */
+/**
+ * Register with email/password.
+ * - EMAIL_VERIFICATION_REQUIRED=false (default): create account + return JWT immediately.
+ * - EMAIL_VERIFICATION_REQUIRED=true: pending registration + verification email (legacy flow).
+ */
 router.post("/register", rateLimit({
   keyFn: (req) => `register:ip:${clientIp(req)}`,
   max: 10,
@@ -95,6 +100,24 @@ router.post("/register", rateLimit({
       password: String(password),
       req,
     });
+
+    if (!result.pending) {
+      const user = await qGet<{ id: number; email: string; token_version?: number }>(
+        "SELECT * FROM users WHERE id = ?",
+        result.userId,
+      );
+      await trackLogin(req, result.userId);
+      const jwt = signTokenForUser(user!);
+      res.status(201).json({
+        pending: false,
+        email: result.email,
+        token: jwt,
+        user: await publicUser(user as never, result.userId),
+        message: "Account created successfully.",
+      });
+      return;
+    }
+
     res.status(202).json({
       pending: true,
       email: result.email,
@@ -214,29 +237,32 @@ router.post("/login", rateLimit({
     return;
   }
 
-  const pending = await findPendingByEmail(email);
-  if (pending) {
-    if (!bcrypt.compareSync(password, pending.password_hash)) {
-      logActivitySync({ req, userId: null, username: email, eventType: "login_failed", eventCategory: "authentication", description: `Failed login attempt for ${email}`, result: "failure" });
-      res.status(401).json({ error: "Invalid email or password" });
+  // Only block unverified pending registrations when verification is required.
+  if (isEmailVerificationRequired()) {
+    const pending = await findPendingByEmail(email);
+    if (pending) {
+      if (!bcrypt.compareSync(password, pending.password_hash)) {
+        logActivitySync({ req, userId: null, username: email, eventType: "login_failed", eventCategory: "authentication", description: `Failed login attempt for ${email}`, result: "failure" });
+        res.status(401).json({ error: "Invalid email or password" });
+        return;
+      }
+      logActivitySync({
+        req,
+        userId: null,
+        username: email,
+        eventType: "login_denied",
+        eventCategory: "authentication",
+        description: "Login denied: email not verified",
+        result: "failure",
+        metadata: { email },
+      });
+      res.status(403).json({
+        error: "Please verify your email address before signing in.",
+        code: "EMAIL_NOT_VERIFIED",
+        email,
+      });
       return;
     }
-    logActivitySync({
-      req,
-      userId: null,
-      username: email,
-      eventType: "login_denied",
-      eventCategory: "authentication",
-      description: "Login denied: email not verified",
-      result: "failure",
-      metadata: { email },
-    });
-    res.status(403).json({
-      error: "Please verify your email address before signing in.",
-      code: "EMAIL_NOT_VERIFIED",
-      email,
-    });
-    return;
   }
 
   const user = await qGet<{
@@ -258,7 +284,7 @@ router.post("/login", rateLimit({
     res.status(403).json({ error: "Account is disabled" });
     return;
   }
-  if (user.email_verified === 0) {
+  if (isEmailVerificationRequired() && user.email_verified === 0) {
     logActivitySync({
       req,
       userId: user.id,

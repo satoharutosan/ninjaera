@@ -133,13 +133,13 @@ export function AdminActivityLogs({
   const eventTypeOptions = useMemo(() => {
     const fallback = [
       "login", "logout", "register", "resource_download", "message_delete",
-      "database_backup", "database_restore", "activity_logs_delete", "view_terms_of_service",
+      "database_backup", "database_restore", "activity_logs_delete",
     ];
     return [...new Set([...eventTypes, ...fallback])].sort((a, b) => a.localeCompare(b));
   }, [eventTypes]);
 
   const categoryOptions = useMemo(() => {
-    const fallback = ["authentication", "messaging", "teamwork", "resources", "downloads", "administration", "legal", "security"];
+    const fallback = ["authentication", "messaging", "teamwork", "resources", "downloads", "administration", "security"];
     return [...new Set([...eventCategories, ...fallback])].sort((a, b) => a.localeCompare(b));
   }, [eventCategories]);
 

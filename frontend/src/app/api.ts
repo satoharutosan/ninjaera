@@ -179,8 +179,10 @@ export const api = {
         pending: boolean;
         email: string;
         message: string;
-        cooldownSeconds: number;
+        cooldownSeconds?: number;
         emailStatus?: "queued" | "sending" | "sent" | "failed";
+        token?: string;
+        user?: ApiUser;
       }>("/auth/register", {
         method: "POST",
         body: JSON.stringify({ email, username, password }),
@@ -543,6 +545,19 @@ export const api = {
     createGameDownload: (form: FormData) => request<{ id: number }>("/admin/game-downloads", { method: "POST", body: form }),
     updateGameDownload: (id: number, form: FormData) => request<{ ok: boolean }>(`/admin/game-downloads/${id}`, { method: "PATCH", body: form }),
     deleteGameDownload: (id: number) => request<{ ok: boolean }>(`/admin/game-downloads/${id}`, { method: "DELETE" }),
+    linkFiles: () => request<{ files: AdminLinkFile[] }>("/admin/link-files"),
+    createLinkFile: (form: FormData) => request<{ id: number }>("/admin/link-files", { method: "POST", body: form }),
+    updateLinkFile: (id: number, form: FormData) => request<{ ok: boolean }>(`/admin/link-files/${id}`, { method: "PATCH", body: form }),
+    deleteLinkFile: (id: number) => request<{ ok: boolean }>(`/admin/link-files/${id}`, { method: "DELETE" }),
+    linkFileLogs: (params: Record<string, string>) =>
+      request<{ logs: AdminLinkFileAccessLog[]; total: number; page: number; limit: number }>(
+        `/admin/link-files/logs?${new URLSearchParams(params)}`,
+      ),
+    deleteLinkFileLogs: (ids: number[]) =>
+      request<{ ok: boolean; deleted: number }>("/admin/link-files/logs/bulk-delete", {
+        method: "POST",
+        body: JSON.stringify({ ids }),
+      }),
     activityLogs: (params: Record<string, string>) => request<{ logs: ActivityLogEntry[]; total: number; page: number; limit: number }>(`/admin/activity-logs?${new URLSearchParams(params)}`),
     activityLogsMeta: () => request<{ eventTypes: string[]; eventCategories: string[] }>("/admin/activity-logs/meta"),
     exportActivityLogs: async () => {
@@ -651,10 +666,6 @@ export const api = {
         method: "DELETE",
         body: JSON.stringify({ keys }),
       }),
-  },
-
-  legal: {
-    viewTerms: () => request<{ ok: boolean }>("/legal/terms-viewed", { method: "POST" }),
   },
 };
 
@@ -801,6 +812,40 @@ export type AdminGameDownload = {
   published: boolean;
   publishedAt?: string;
   uploaderName?: string;
+};
+
+export type AdminLinkFile = {
+  id: number;
+  alias: string;
+  originalFilename: string;
+  fileUrl: string;
+  mimeType: string;
+  fileSize: number;
+  active: boolean;
+  accessCount: number;
+  lastAccessedAt: string | null;
+  lastVisitor: string | null;
+  lastVisitorUserId: number | null;
+  uploaderId: number | null;
+  uploaderName: string | null;
+  createdAt: string;
+  updatedAt: string;
+  publicPath: string;
+};
+
+export type AdminLinkFileAccessLog = {
+  id: number;
+  linkFileId: number;
+  alias: string;
+  originalFilename: string;
+  userId: number | null;
+  visitor: string;
+  ipAddress: string | null;
+  userAgent: string | null;
+  browser: string | null;
+  platform: string | null;
+  referrer: string | null;
+  createdAt: string;
 };
 
 export type ContactTicket = {

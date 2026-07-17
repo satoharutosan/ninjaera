@@ -63,7 +63,10 @@ export function createS3Storage(opts: S3StorageOptions): StorageProvider {
         Key: key,
         Body: buf,
         ContentType: contentType,
-        ContentDisposition: contentType.startsWith("image/") || contentType.startsWith("video/") || contentType.startsWith("audio/")
+        ContentDisposition: contentType.startsWith("image/")
+          || contentType.startsWith("video/")
+          || contentType.startsWith("audio/")
+          || contentType === "application/pdf"
           ? "inline"
           : "attachment",
       }));

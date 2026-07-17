@@ -55,6 +55,15 @@ function safeEqualDigest(a: string, b: string): boolean {
 const rateBuckets = new Map<string, { count: number; resetAt: number }>();
 const EMAIL_RESEND_MAX_PER_HOUR = Number(process.env.EMAIL_RESEND_MAX_PER_HOUR) || 8;
 
+/**
+ * Feature flag — set EMAIL_VERIFICATION_REQUIRED=true to restore the pending-email
+ * verification workflow. Default is off so signup creates accounts immediately.
+ */
+export function isEmailVerificationRequired(): boolean {
+  const v = (process.env.EMAIL_VERIFICATION_REQUIRED || "false").trim().toLowerCase();
+  return v === "1" || v === "true" || v === "yes" || v === "on";
+}
+
 export function checkRateLimit(key: string, limit: number, windowMs: number): boolean {
   const now = Date.now();
   const row = rateBuckets.get(key);
@@ -251,12 +260,25 @@ export async function verificationStatus(emailRaw: string): Promise<{
   };
 }
 
+export type RegistrationStartResult =
+  | {
+      pending: true;
+      email: string;
+      cooldownSeconds: number;
+      emailStatus: "queued" | "failed";
+    }
+  | {
+      pending: false;
+      email: string;
+      userId: number;
+    };
+
 export async function startEmailRegistration(input: {
   email: string;
   username: string;
   password: string;
   req?: Request;
-}): Promise<{ email: string; cooldownSeconds: number; emailStatus: "queued" | "failed" }> {
+}): Promise<RegistrationStartResult> {
   console.info("[verification] registration request received");
   await purgeExpiredPendingRegistrations();
 
@@ -293,9 +315,21 @@ export async function startEmailRegistration(input: {
     throw authError("Too many registration attempts. Please try again later.", 429, "RATE_LIMITED");
   }
 
+  const passwordHash = bcrypt.hashSync(input.password, 10);
+
+  // Instant account creation when verification is disabled (default).
+  if (!isEmailVerificationRequired()) {
+    const userId = await createUserDirectly({
+      email,
+      username,
+      passwordHash,
+      req: input.req,
+    });
+    return { pending: false, email, userId };
+  }
+
   const secrets = issueSecrets();
   console.info(`[verification] verification secret material generated email=${email}`);
-  const passwordHash = bcrypt.hashSync(input.password, 10);
 
   await qTransaction(async () => {
     await qRun("DELETE FROM pending_registrations WHERE email = ?", email);
@@ -339,7 +373,66 @@ export async function startEmailRegistration(input: {
     });
   }
 
-  return { email, cooldownSeconds: Math.ceil(EMAIL_RESEND_COOLDOWN_MS / 1000), emailStatus };
+  return {
+    pending: true,
+    email,
+    cooldownSeconds: Math.ceil(EMAIL_RESEND_COOLDOWN_MS / 1000),
+    emailStatus,
+  };
+}
+
+/** Create a verified user immediately (used when EMAIL_VERIFICATION_REQUIRED=false). */
+async function createUserDirectly(opts: {
+  email: string;
+  username: string;
+  passwordHash: string;
+  req?: Request;
+}): Promise<number> {
+  const ts = new Date().toISOString();
+  const userId = await qTransaction(async () => {
+    // Clear any leftover pending row for this email
+    await qRun("DELETE FROM pending_registrations WHERE email = ?", opts.email);
+
+    const result = await qRun(`
+      INSERT INTO users (
+        email, username, password_hash, member_since, created_at, updated_at, email_verified, email_verified_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+    `, opts.email, opts.username, opts.passwordHash, ts.slice(0, 10), ts, ts, ts);
+
+    const id = Number(result.lastInsertRowid);
+    await qRun("INSERT INTO user_settings (user_id) VALUES (?)", id);
+
+    const registrationOrder = (await qGet<{ c: number }>(`
+      SELECT COUNT(*) as c FROM users WHERE is_npc = 0 AND id <= ?
+    `, id))!.c;
+    const globalRank = 1200 + registrationOrder;
+
+    await qRun(`
+      INSERT INTO game_stats (
+        user_id, missions_complete, pvp_wins, playtime_hours, legendary_items,
+        ninjutsu, taijutsu, genjutsu, senjutsu, kenjutsu, global_rank
+      ) VALUES (?, 0, 0, 0, 0, 0, 0, 0, 0, 0, ?)
+    `, id, globalRank);
+
+    return id;
+  });
+
+  setUserOnline(userId);
+  syncPublicChannels(userId);
+
+  if (opts.req) {
+    logActivitySync({
+      req: opts.req,
+      userId,
+      username: opts.username,
+      eventType: "register",
+      eventCategory: "authentication",
+      description: `User registered: ${opts.username}`,
+      affectedObject: `user:${userId}`,
+    });
+  }
+
+  return userId;
 }
 
 export async function resendVerificationEmail(emailRaw: string, req?: Request): Promise<{

@@ -45,6 +45,7 @@ import { AdminMessagingHistory } from "@/features/admin/AdminMessagingHistory";
 import { AdminDatabaseConsole } from "@/features/admin/AdminDatabaseConsole";
 import { AdminActivityLogs } from "@/features/admin/AdminActivityLogs";
 import { AdminOurStoryEditor } from "@/features/admin/AdminOurStoryEditor";
+import { AdminLinkFileManagement } from "@/features/admin/AdminLinkFileManagement";
 import { SECTIONS, CHART_COLORS, EMPTY_STATS, type Section, type DashboardStats } from "@/features/admin/adminMeta";
 import { UserAvatar, StatCard, DashSection, ChartCard, EmptyNote, LocationCell } from "@/features/admin/components/AdminChrome";
 import { validateUsernameClient, USERNAME_TAKEN_ERROR } from "@/shared/username";
@@ -522,6 +523,10 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
           isSuperAdminUser
             ? <AdminDatabaseConsole onConfirm={setConfirm} />
             : <AdminAccessDenied message="Database Management is available only to the Super Administrator." />
+        ) : section === "link-file-management" ? (
+          isSuperAdminUser
+            ? <AdminLinkFileManagement onConfirm={setConfirm} />
+            : <AdminAccessDenied message="Link File Management is available only to the Super Administrator." />
         ) : section === "about-our-story" ? (
           <AdminOurStoryEditor />
         ) : section === "activity-logs" ? (

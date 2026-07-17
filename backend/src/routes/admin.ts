@@ -38,6 +38,7 @@ import { tombstoneSenderFields, DELETED_USER_DISPLAY_NAME } from "../services/de
 import { deleteStoredUrl } from "../storage/index.js";
 import { createMemoryUploader, createTempDiskUploader, cleanupTempFile, persistMulterFile } from "../storage/multerUpload.js";
 import { validateUpload } from "../services/uploadValidation.js";
+import adminLinkFileRoutes from "./adminLinkFiles.js";
 
 const router = Router();
 const now = () => new Date().toISOString();
@@ -98,6 +99,7 @@ function channelAvatarMiddleware(req: import("express").Request, res: import("ex
 const gameUpload = createTempDiskUploader({ limits: { fileSize: 500 * 1024 * 1024 }, prefix: "game" });
 
 router.use(requireAuth, requireAdmin);
+router.use(adminLinkFileRoutes);
 
 // ── Dashboard ────────────────────────────────────────────────────────────────
 const STATS_CACHE_TTL_MS = 5000;

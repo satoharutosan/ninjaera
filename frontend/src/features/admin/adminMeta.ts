@@ -10,9 +10,10 @@ import ContactMailIcon from "@mui/icons-material/ContactMail";
 import StorageIcon from "@mui/icons-material/Storage";
 import ForumIcon from "@mui/icons-material/Forum";
 import AutoStoriesIcon from "@mui/icons-material/AutoStories";
+import LinkIcon from "@mui/icons-material/Link";
 import { api } from "@/app/api";
 
-export type Section = "dashboard" | "users" | "notifications" | "contacts" | "channels" | "applications" | "resources" | "game-downloads" | "messaging-history" | "activity-logs" | "database" | "about-our-story";
+export type Section = "dashboard" | "users" | "notifications" | "contacts" | "channels" | "applications" | "resources" | "game-downloads" | "messaging-history" | "activity-logs" | "database" | "about-our-story" | "link-file-management";
 
 export type DashboardStats = Awaited<ReturnType<typeof api.admin.stats>>;
 
@@ -48,6 +49,7 @@ export const SECTIONS: { id: Section; label: string; Icon: typeof DashboardIcon 
   { id: "resources", label: "Resources", Icon: MenuBookIcon },
   { id: "game-downloads", label: "Game Downloads", Icon: SportsEsportsIcon },
   { id: "messaging-history", label: "Messaging History", Icon: ForumIcon },
+  { id: "link-file-management", label: "Link File Management", Icon: LinkIcon },
   { id: "activity-logs", label: "Activity Logs", Icon: HistoryIcon },
   { id: "database", label: "Database", Icon: StorageIcon },
 ];

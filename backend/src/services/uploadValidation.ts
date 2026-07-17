@@ -9,7 +9,8 @@ export type UploadKind =
   | "jobPhoto"
   | "jobCv"
   | "resourceFile"
-  | "gameFile";
+  | "gameFile"
+  | "linkFile";
 
 export type ValidatedUpload = {
   ok: true;
@@ -42,6 +43,9 @@ const IMAGE_MAGIC: Array<(buf: Buffer) => boolean> = [
 ];
 
 const PDF_MAGIC = (b: Buffer) => b.length >= 5 && b.toString("ascii", 0, 5) === "%PDF-";
+
+/** ISO BMFF / MP4 family — `ftyp` box at offset 4. */
+const MP4_MAGIC = (b: Buffer) => b.length >= 12 && b.toString("ascii", 4, 8) === "ftyp";
 
 const ZIP_MAGIC = (b: Buffer) =>
   b.length >= 4
@@ -133,6 +137,16 @@ const RULES: Record<UploadKind, Rule> = {
     exts: new Set([".zip", ".exe", ".apk", ".dmg", ".pkg", ".msi", ".7z"]),
     maxBytes: 500 * 1024 * 1024,
   },
+  linkFile: {
+    mimes: new Set([
+      "image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif",
+      "video/mp4",
+      "application/pdf",
+    ]),
+    exts: new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".mp4", ".pdf"]),
+    magic: [...IMAGE_MAGIC, PDF_MAGIC, MP4_MAGIC],
+    maxBytes: 100 * 1024 * 1024,
+  },
 };
 
 /** MIME types that must never be served inline (XSS / scriptable docs). */
@@ -168,6 +182,7 @@ function sniffMimeFromMagic(buf: Buffer): string | null {
   if (IMAGE_MAGIC[2](buf)) return "image/webp";
   if (IMAGE_MAGIC[3](buf)) return "image/gif";
   if (PDF_MAGIC(buf)) return "application/pdf";
+  if (MP4_MAGIC(buf)) return "video/mp4";
   if (ZIP_MAGIC(buf)) return "application/zip";
   return null;
 }
@@ -223,6 +238,8 @@ export function validateUpload(opts: {
         return { ok: false, error: "File content does not match declared image type" };
       } else if (!matched && opts.kind === "messageMedia" && declared.startsWith("image/")) {
         return { ok: false, error: "File content does not match declared image type" };
+      } else if (!matched && opts.kind === "linkFile") {
+        return { ok: false, error: "File content does not match the declared type" };
       }
     }
 
@@ -231,6 +248,8 @@ export function validateUpload(opts: {
       contentType = sniffed;
     } else if (sniffed === "application/pdf" && declared.includes("pdf")) {
       contentType = "application/pdf";
+    } else if (sniffed === "video/mp4" && (declared.includes("mp4") || ext === ".mp4")) {
+      contentType = "video/mp4";
     }
   }
 

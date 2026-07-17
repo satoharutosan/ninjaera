@@ -65,6 +65,7 @@ export function folderForUploadPrefix(prefix: string, contentType?: string): str
     return "contacts";
   }
   if (p === "game" || p === "games") return "resources";
+  if (p === "external" || p === "externals" || p === "linkfile" || p === "link-file") return "externals";
   if (p === "temp" || p === "tmp") return "temp";
 
   if (p === "message" || p === "messages" || p === "media") {

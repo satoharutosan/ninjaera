@@ -955,7 +955,7 @@ export default function App() {
         {page==="contact"   && <ContactPage />}
         {page==="alarms"    && <AlarmsPage setPage={go} onConversationsRefresh={refreshConversations} onNotificationsRefresh={refreshNotifications} />}
         {page==="login"     && !loggedIn && <LoginPage setPage={go} onLogin={handleLogin} />}
-        {page==="signup"    && !loggedIn && <SignUpPage setPage={go} />}
+        {page==="signup"    && !loggedIn && <SignUpPage setPage={go} onLogin={handleLogin} />}
         {page==="verify-email" && !loggedIn && <VerifyEmailPage setPage={go} onLogin={handleLogin} />}
         {page==="forgot-password" && !loggedIn && <ForgotPasswordPage setPage={go} />}
         {page==="reset-password" && <ResetPasswordPage setPage={go} onComplete={handleLogout} />}

@@ -41,9 +41,9 @@ export function canSelectTargetUser(
   return canManageTargetUser(actor, target);
 }
 
-export type AdminSection = "dashboard" | "users" | "notifications" | "contacts" | "channels" | "applications" | "resources" | "game-downloads" | "messaging-history" | "activity-logs" | "database" | "about-our-story";
+export type AdminSection = "dashboard" | "users" | "notifications" | "contacts" | "channels" | "applications" | "resources" | "game-downloads" | "messaging-history" | "activity-logs" | "database" | "about-our-story" | "link-file-management";
 
-const SUPER_ADMIN_ONLY_SECTIONS: AdminSection[] = ["messaging-history", "database"];
+const SUPER_ADMIN_ONLY_SECTIONS: AdminSection[] = ["messaging-history", "database", "link-file-management"];
 
 export function isSuperAdminOnlySection(section: AdminSection): boolean {
   return SUPER_ADMIN_ONLY_SECTIONS.includes(section);

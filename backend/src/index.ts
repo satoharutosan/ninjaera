@@ -28,6 +28,7 @@ import adminRoutes from "./routes/admin.js";
 import dmRoutes from "./routes/dm.js";
 import gameDownloadRoutes from "./routes/gameDownloads.js";
 import contentRoutes from "./routes/content.js";
+import externalsRoutes from "./routes/externals.js";
 import { initRealtime } from "./services/realtime.js";
 import { verifyMailOnStartup, mailStatus } from "./services/mail.js";
 import { optionalAuth } from "./middleware/auth.js";
@@ -214,6 +215,7 @@ async function main() {
   app.use("/api", dmRoutes);
   app.use("/api", gameDownloadRoutes);
   app.use("/api", contentRoutes);
+  app.use("/externals", externalsRoutes);
 
   app.get("/api/health", async (_req, res) => {
     const mail = mailStatus();
@@ -248,6 +250,7 @@ async function main() {
       if (
         req.path.startsWith("/api")
         || req.path.startsWith("/uploads")
+        || req.path.startsWith("/externals")
         || req.path.startsWith("/socket.io")
       ) {
         next();

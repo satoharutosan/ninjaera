@@ -161,6 +161,27 @@ function clientIp(req: Request): string | null {
   return req.socket.remoteAddress || null;
 }
 
+/** Shared client metadata for access logging (link files, downloads, etc.). */
+export function getRequestClientMeta(req: Request) {
+  const userAgent = (req.headers["user-agent"] as string) || "";
+  const { browser, os, deviceType, platform } = parseUserAgent(userAgent, req);
+  const referrerHeader = req.headers.referer || req.headers.referrer;
+  const referrer = typeof referrerHeader === "string"
+    ? referrerHeader
+    : Array.isArray(referrerHeader)
+      ? referrerHeader[0] || null
+      : null;
+  return {
+    ip: clientIp(req),
+    userAgent: userAgent || null,
+    browser,
+    os,
+    deviceType,
+    platform,
+    referrer,
+  };
+}
+
 async function resolveUserRole(userId: number | null | undefined): Promise<string> {
   if (!userId) return "guest";
   const user = await qGet<{ is_admin: number; is_team_member: number }>("SELECT is_admin, is_team_member FROM users WHERE id = ?", userId);

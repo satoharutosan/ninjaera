@@ -27,15 +27,51 @@ export function canDownloadResource(
 }
 
 router.get("/team", async (_req, res) => {
-  const members = await qAll(`
+  // Snake_case column names only — Postgres lowercases unquoted camelCase aliases,
+  // which previously dropped avatarUrl/userId on Railway and broke Meet the Team avatars.
+  const rows = await qAll<{
+    name: string;
+    role: string;
+    department: string;
+    country: string;
+    city: string;
+    status_label: string | null;
+    status_color: string | null;
+    user_id: number | null;
+    username: string | null;
+    avatar_url: string | null;
+  }>(`
     SELECT tm.name, tm.role, tm.department, tm.country, tm.city,
-           tm.status_label as statusLabel, tm.status_color as statusColor,
-           tm.user_id as userId, u.username, u.avatar_url as avatarUrl
+           tm.status_label, tm.status_color,
+           tm.user_id, u.username, u.avatar_url
     FROM team_members tm
     INNER JOIN users u ON u.id = tm.user_id AND u.is_team_member = 1 AND u.is_deleted = 0
     ORDER BY tm.sort_order
   `);
-  res.json({ team: members });
+
+  res.json({
+    team: rows.map((m) => {
+      const rawAvatar = m.avatar_url?.trim() || null;
+      // Never prefix absolute CDN URLs with a local /uploads/ base.
+      const avatarUrl = rawAvatar && (/^https?:\/\//i.test(rawAvatar) || rawAvatar.startsWith("/"))
+        ? rawAvatar
+        : rawAvatar
+          ? `/uploads/${rawAvatar.replace(/^\/+/, "")}`
+          : null;
+      return {
+        name: m.name,
+        role: m.role,
+        department: m.department,
+        country: m.country,
+        city: m.city,
+        statusLabel: m.status_label || undefined,
+        statusColor: m.status_color || undefined,
+        userId: m.user_id ?? undefined,
+        username: m.username || undefined,
+        avatarUrl,
+      };
+    }),
+  });
 });
 
 router.get("/resources", optionalAuth, async (req, res) => {

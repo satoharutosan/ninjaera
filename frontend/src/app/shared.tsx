@@ -133,6 +133,8 @@ function ChatAvatar({ name, avatarUrl, size = 40, channel = false, className = "
             alt={label}
             className="absolute inset-0 object-cover"
             style={{ width: size, height: size }}
+            loading="lazy"
+            decoding="async"
             onError={e => { e.currentTarget.style.display = "none"; }}
           />
         </div>
@@ -156,6 +158,8 @@ function ChatAvatar({ name, avatarUrl, size = 40, channel = false, className = "
           alt={label}
           className="absolute inset-0 object-cover rounded-full"
           style={{ width: size, height: size }}
+          loading="lazy"
+          decoding="async"
           onError={e => { e.currentTarget.style.display = "none"; }}
         />
       </div>

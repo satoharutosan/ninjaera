@@ -53,16 +53,26 @@ function TeamworkPage({ loggedIn, setPage, onAddDM }: { loggedIn:boolean; setPag
   const loadTeam = () => {
     api.content.team().then(r => {
       if (r.team?.length) {
-        setTeam(r.team.map(m => ({
-          name: m.name,
-          role: m.role,
-          dept: m.department,
-          country: m.country,
-          city: m.city,
-          statusLabel: m.statusLabel,
-          statusColor: m.statusColor,
-          avatarUrl: m.avatarUrl,
-        })));
+        setTeam(r.team.map(m => {
+          const raw = (m as { avatarUrl?: string | null; avatar_url?: string | null }).avatarUrl
+            ?? (m as { avatar_url?: string | null }).avatar_url
+            ?? null;
+          const avatarUrl = raw && String(raw).trim()
+            ? (/^https?:\/\//i.test(String(raw)) || String(raw).startsWith("/")
+              ? String(raw)
+              : `/uploads/${String(raw).replace(/^\/+/, "")}`)
+            : null;
+          return {
+            name: m.name || "Deleted User",
+            role: m.role,
+            dept: m.department,
+            country: m.country,
+            city: m.city,
+            statusLabel: m.statusLabel,
+            statusColor: m.statusColor,
+            avatarUrl,
+          };
+        }));
       } else {
         setTeam([]);
       }

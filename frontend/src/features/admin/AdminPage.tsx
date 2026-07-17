@@ -558,7 +558,16 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                   <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
                     <StatCard label="Total Users" value={stats.totalUsers} Icon={PeopleIcon} />
                     <StatCard label="Online Users" value={stats.onlineUsers} color="#386A20" Icon={FiberManualRecordIcon} />
-                    <StatCard label="Administrators" value={stats.userDistribution.find(d => d.name === "Administrators")?.value ?? 0} Icon={AdminPanelSettingsIcon} />
+                    <StatCard
+                      label="Administrators"
+                      value={Number(stats.userDistribution.find(d => d.name === "Administrators")?.value) || 0}
+                      Icon={AdminPanelSettingsIcon}
+                    />
+                    <StatCard
+                      label="Members"
+                      value={Number(stats.userDistribution.find(d => d.name === "Members")?.value) || 0}
+                      Icon={PeopleIcon}
+                    />
                     <StatCard label="Team Members" value={stats.teamMembers} Icon={WorkIcon} />
                     <StatCard label="Pending Applications" value={stats.pendingApplications} color="#B3261E" Icon={InboxIcon} />
                     <StatCard label="Pending DM Requests" value={stats.pendingDmRequests} color="#B3261E" Icon={ChatBubbleIcon} />

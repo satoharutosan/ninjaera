@@ -215,11 +215,12 @@ router.get("/stats", async (req, res) => {
       recentActivity,
     ] = await Promise.all([
       safeCount("totalUsers", "SELECT COUNT(*) as c FROM users WHERE is_npc = 0 AND is_deleted = 0"),
-      safeQueryOne<{ adminCount: unknown; teamCount: unknown }>(
+      safeQueryOne<{ admin_count: unknown; member_count: unknown }>(
         "roleCounts",
+        // Snake_case aliases only — Postgres lowercases unquoted camelCase (adminCount → admincount).
         `SELECT
-          COALESCE(SUM(CASE WHEN is_admin = 1 THEN 1 ELSE 0 END), 0) as adminCount,
-          COALESCE(SUM(CASE WHEN is_team_member = 1 AND is_admin != 1 THEN 1 ELSE 0 END), 0) as teamCount
+          COALESCE(SUM(CASE WHEN is_admin = 1 THEN 1 ELSE 0 END), 0) as admin_count,
+          COALESCE(SUM(CASE WHEN is_admin = 0 OR is_admin IS NULL THEN 1 ELSE 0 END), 0) as member_count
          FROM users WHERE is_npc = 0 AND is_deleted = 0`,
       ),
       safeCount("totalChannels", "SELECT COUNT(*) as c FROM conversations WHERE type = 'channel' AND archived = 0"),
@@ -289,49 +290,49 @@ router.get("/stats", async (req, res) => {
          LIMIT 1`,
       ),
       safeQueryAll<{
-        id: number; username: string; avatarUrl: string | null; createdAt: string;
-        isOnline: number; lastSeenAt: string | null;
+        id: number; username: string; avatar_url: string | null; created_at: string;
+        is_online: number; last_seen_at: string | null;
       }>(
         "recentUsers",
-        `SELECT id, username, avatar_url as avatarUrl, created_at as createdAt,
-                is_online as isOnline, last_seen_at as lastSeenAt
+        `SELECT id, username, avatar_url, created_at,
+                is_online, last_seen_at
          FROM users WHERE is_npc = 0 AND is_deleted = 0
          ORDER BY created_at DESC LIMIT 5`,
       ),
       safeQueryAll<{
-        id: number; status: string; createdAt: string; username: string | null; position: string | null;
+        id: number; status: string; created_at: string; username: string | null; position: string | null;
       }>(
         "recentApplications",
-        `SELECT ja.id, ja.status, ja.created_at as createdAt, u.username, jp.title as position
+        `SELECT ja.id, ja.status, ja.created_at, u.username, jp.title as position
          FROM job_applications ja
          LEFT JOIN users u ON u.id = ja.user_id
          LEFT JOIN job_postings jp ON jp.id = ja.job_id
          ORDER BY ja.created_at DESC LIMIT 5`,
       ),
       safeQueryAll<{
-        id: number; name: string; subject: string; isRead: number; replyStatus: string; createdAt: string;
+        id: number; name: string; subject: string; is_read: number; reply_status: string; created_at: string;
       }>(
         "recentContacts",
-        `SELECT id, name, subject, is_read as isRead, reply_status as replyStatus, created_at as createdAt
+        `SELECT id, name, subject, is_read, reply_status, created_at
          FROM contact_tickets
          ORDER BY created_at DESC LIMIT 5`,
       ),
       safeQueryAll<{
-        id: number; timestamp: string; username: string | null; eventType: string;
-        eventCategory: string; description: string; userRole: string | null; result: string;
+        id: number; timestamp: string; username: string | null; event_type: string;
+        event_category: string; description: string; user_role: string | null; result: string;
       }>(
         "recentActivity",
-        `SELECT id, timestamp, username, event_type as eventType, event_category as eventCategory,
-                description, user_role as userRole, result
+        `SELECT id, timestamp, username, event_type, event_category,
+                description, user_role, result
          FROM activity_logs
          ORDER BY timestamp DESC LIMIT 8`,
       ),
     ]);
 
     const onlineUsers = asInt(countOnlineUsers(), 0);
-    const adminCount = asInt(roleCounts?.adminCount, 0);
-    const teamCount = asInt(roleCounts?.teamCount, 0);
-    const registeredCount = Math.max(0, totalUsers - adminCount - teamCount);
+    const adminCount = asInt(roleCounts?.admin_count, 0);
+    // Members = non-admin active users (excludes deleted/NPC via WHERE).
+    const memberCount = asInt(roleCounts?.member_count, Math.max(0, totalUsers - adminCount));
 
     const registrationsByDay = Object.fromEntries(registrationRows.map((r) => [r.d, asInt(r.c)]));
     const messagesByDay = Object.fromEntries(messageDayRows.map((r) => [r.d, asInt(r.c)]));
@@ -390,8 +391,7 @@ router.get("/stats", async (req, res) => {
       rejectedApplications,
       userDistribution: [
         { name: "Administrators", value: adminCount },
-        { name: "Team Members", value: teamCount },
-        { name: "Registered Users", value: registeredCount },
+        { name: "Members", value: memberCount },
       ],
       userGrowth,
       activityTimeline,
@@ -405,18 +405,39 @@ router.get("/stats", async (req, res) => {
       recentUsers: recentUsers.map((u) => ({
         id: u.id,
         username: u.username,
-        avatarUrl: u.avatarUrl,
-        createdAt: u.createdAt,
-        isOnline: isUserOnline({ is_online: u.isOnline, last_seen_at: u.lastSeenAt }),
-        time: timeAgo(u.createdAt),
+        avatarUrl: u.avatar_url,
+        createdAt: u.created_at,
+        isOnline: isUserOnline({ is_online: u.is_online, last_seen_at: u.last_seen_at }),
+        time: timeAgo(u.created_at),
       })),
-      recentApplications: recentApplications.map((a) => ({ ...a, time: timeAgo(a.createdAt) })),
+      recentApplications: recentApplications.map((a) => ({
+        id: a.id,
+        status: a.status,
+        createdAt: a.created_at,
+        username: a.username,
+        position: a.position,
+        time: timeAgo(a.created_at),
+      })),
       recentContacts: recentContacts.map((c) => ({
-        ...c,
-        isRead: c.isRead === 1,
-        time: timeAgo(c.createdAt),
+        id: c.id,
+        name: c.name,
+        subject: c.subject,
+        isRead: Number(c.is_read) === 1,
+        replyStatus: c.reply_status,
+        createdAt: c.created_at,
+        time: timeAgo(c.created_at),
       })),
-      recentActivity: recentActivity.map((a) => ({ ...a, time: timeAgo(a.timestamp) })),
+      recentActivity: recentActivity.map((a) => ({
+        id: a.id,
+        timestamp: a.timestamp,
+        username: a.username,
+        eventType: a.event_type,
+        eventCategory: a.event_category,
+        description: a.description,
+        userRole: a.user_role,
+        result: a.result,
+        time: timeAgo(a.timestamp),
+      })),
     };
 
     statsCache = { at: Date.now(), body };
@@ -444,8 +465,7 @@ router.get("/stats", async (req, res) => {
       rejectedApplications: 0,
       userDistribution: [
         { name: "Administrators", value: 0 },
-        { name: "Team Members", value: 0 },
-        { name: "Registered Users", value: 0 },
+        { name: "Members", value: 0 },
       ],
       userGrowth: [],
       activityTimeline: [],

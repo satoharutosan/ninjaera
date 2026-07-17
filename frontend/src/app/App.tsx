@@ -129,7 +129,7 @@ function Navbar({ page, setPage, isDark, setIsDark, loggedIn, user, userAvatar, 
     { label:"Home", page:"home" as Page, Icon:HomeIcon },
     { label:"About", page:"about" as Page, Icon:InfoIcon },
     { label:"Resources", page:"resources" as Page, Icon:MenuBookIcon },
-    { label:"Teamwork", page:"teamwork" as Page, Icon:GroupsIcon },
+    { label:"Contributors", page:"teamwork" as Page, Icon:GroupsIcon },
     { label:"Contact", page:"contact" as Page, Icon:ContactSupportIcon },
   ];
   const closeOverlays = useCallback(() => {

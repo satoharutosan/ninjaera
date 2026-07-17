@@ -55,6 +55,7 @@ import {
   canManageTargetUser,
   canSelectTargetUser,
   isProtectedAccount,
+  isSuperAdminOnlySection,
   PROTECTED_ACCOUNT_TOOLTIP,
   type AdminSection,
 } from "@/shared/adminPermissions";
@@ -165,6 +166,70 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
     () => SECTIONS.filter((s) => canAccessAdminSection(adminActor, s.id as AdminSection)),
     [adminActor],
   );
+  const standardSections = useMemo(
+    () => visibleSections.filter((s) => !isSuperAdminOnlySection(s.id as AdminSection)),
+    [visibleSections],
+  );
+  const superAdminSections = useMemo(
+    () => visibleSections.filter((s) => isSuperAdminOnlySection(s.id as AdminSection)),
+    [visibleSections],
+  );
+
+  const sidebarBadge = (id: Section): number => {
+    if (id === "contacts") return stats.unreadContacts || 0;
+    if (id === "applications") return stats.pendingApplications || 0;
+    return 0;
+  };
+
+  const renderNavButton = (s: (typeof SECTIONS)[number], compact = false) => {
+    const count = sidebarBadge(s.id);
+    if (compact) {
+      return (
+        <button
+          key={s.id}
+          type="button"
+          onClick={() => setSection(s.id)}
+          className="relative px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap"
+          style={{ background: section === s.id ? C.primary : C.surfaceVar, color: section === s.id ? "white" : C.onSurfaceVar, fontFamily: "Roboto" }}
+        >
+          {s.label}
+          {count > 0 && (
+            <span
+              className="absolute -top-1 -right-1 min-w-[14px] h-3.5 px-0.5 rounded-full text-white text-[8px] font-bold flex items-center justify-center leading-none"
+              style={{ background: BADGE_BG }}
+            >
+              {count > 99 ? "99+" : count}
+            </span>
+          )}
+        </button>
+      );
+    }
+    return (
+      <button
+        key={s.id}
+        type="button"
+        onClick={() => setSection(s.id)}
+        className="w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium transition-all text-left"
+        style={{
+          background: section === s.id ? C.primaryCont : "transparent",
+          color: section === s.id ? C.primary : C.onSurfaceVar,
+          fontFamily: "Roboto",
+        }}
+      >
+        <s.Icon style={{ fontSize: 18 }} />
+        <span className="flex-1 min-w-0 truncate">{s.label}</span>
+        {count > 0 && (
+          <span
+            className="shrink-0 min-w-[18px] h-[18px] px-1 rounded-full text-white text-[10px] font-bold flex items-center justify-center leading-none"
+            style={{ background: BADGE_BG }}
+            aria-label={`${count} pending`}
+          >
+            {count > 99 ? "99+" : count}
+          </span>
+        )}
+      </button>
+    );
+  };
 
   useEffect(() => {
     if (!authorized) return;
@@ -179,12 +244,6 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
     if (!authorized) return;
     api.admin.stats().then(setStats).catch(() => {});
   }, [authorized]);
-
-  const sidebarBadge = (id: Section): number => {
-    if (id === "contacts") return stats.unreadContacts || 0;
-    if (id === "applications") return stats.pendingApplications || 0;
-    return 0;
-  };
 
   const loadSection = useCallback(async (opts?: { quiet?: boolean }) => {
     if (!authorized) return;
@@ -467,58 +526,45 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
           </h2>
         </div>
         <nav className="flex-1 p-3 space-y-1">
-          {visibleSections.map(s => {
-            const count = sidebarBadge(s.id);
-            return (
-            <button key={s.id} onClick={() => setSection(s.id)}
-              className="w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-sm font-medium transition-all text-left"
-              style={{
-                background: section === s.id ? C.primaryCont : "transparent",
-                color: section === s.id ? C.primary : C.onSurfaceVar,
-                fontFamily: "Roboto",
-              }}>
-              <s.Icon style={{ fontSize: 18 }} />
-              <span className="flex-1 min-w-0 truncate">{s.label}</span>
-              {count > 0 && (
-                <span
-                  className="shrink-0 min-w-[18px] h-[18px] px-1 rounded-full text-white text-[10px] font-bold flex items-center justify-center leading-none"
-                  style={{ background: BADGE_BG }}
-                  aria-label={`${count} pending`}
-                >
-                  {count > 99 ? "99+" : count}
-                </span>
-              )}
-            </button>
-            );
-          })}
+          {standardSections.map((s) => renderNavButton(s))}
+          {superAdminSections.length > 0 && (
+            <>
+              <div
+                className="my-3 mx-2 border-t"
+                style={{ borderColor: C.outlineVar }}
+                role="separator"
+                aria-label="Super Administrator tools"
+              />
+              <p className="px-4 pb-1 text-[10px] font-medium uppercase tracking-wide" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
+                Super Admin
+              </p>
+              {superAdminSections.map((s) => renderNavButton(s))}
+            </>
+          )}
         </nav>
       </aside>
 
       {/* Mobile section tabs */}
       <div className="md:hidden fixed top-16 left-0 right-0 z-40 overflow-x-auto border-b" style={{ background: C.surface, borderColor: C.outlineVar }}>
-        <div className="flex gap-1 p-2">
-          {visibleSections.map(s => {
-            const count = sidebarBadge(s.id);
-            return (
-            <button key={s.id} onClick={() => setSection(s.id)} className="relative px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap"
-              style={{ background: section === s.id ? C.primary : C.surfaceVar, color: section === s.id ? "white" : C.onSurfaceVar, fontFamily: "Roboto" }}>
-              {s.label}
-              {count > 0 && (
-                <span
-                  className="absolute -top-1 -right-1 min-w-[14px] h-3.5 px-0.5 rounded-full text-white text-[8px] font-bold flex items-center justify-center leading-none"
-                  style={{ background: BADGE_BG }}
-                >
-                  {count > 99 ? "99+" : count}
-                </span>
-              )}
-            </button>
-            );
-          })}
+        <div className="flex gap-1 p-2 items-center">
+          {standardSections.map((s) => renderNavButton(s, true))}
+          {superAdminSections.length > 0 && (
+            <>
+              <div className="w-px h-6 mx-1 shrink-0" style={{ background: C.outlineVar }} aria-hidden />
+              {superAdminSections.map((s) => renderNavButton(s, true))}
+            </>
+          )}
         </div>
       </div>
 
-      {/* Main content — sole vertical scroll region */}
-      <main className="flex-1 min-w-0 min-h-0 p-4 md:p-8 mt-12 md:mt-0 overflow-y-auto overscroll-contain">
+      {/* Main content — sole vertical scroll region (except fill-height Super Admin pages) */}
+      <main
+        className={`flex-1 min-w-0 min-h-0 mt-12 md:mt-0 overscroll-contain ${
+          section === "link-file-management"
+            ? "overflow-hidden p-0 flex flex-col"
+            : "overflow-y-auto p-4 md:p-8"
+        }`}
+      >
         {section === "database" ? (
           isSuperAdminUser
             ? <AdminDatabaseConsole onConfirm={setConfirm} />
@@ -526,7 +572,11 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
         ) : section === "link-file-management" ? (
           isSuperAdminUser
             ? <AdminLinkFileManagement onConfirm={setConfirm} />
-            : <AdminAccessDenied message="Link File Management is available only to the Super Administrator." />
+            : (
+              <div className="p-4 md:p-8">
+                <AdminAccessDenied message="Link File Management is available only to the Super Administrator." />
+              </div>
+            )
         ) : section === "about-our-story" ? (
           <AdminOurStoryEditor />
         ) : section === "activity-logs" ? (

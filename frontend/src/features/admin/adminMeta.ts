@@ -38,7 +38,8 @@ export const EMPTY_STATS: DashboardStats = {
 
 export const CHART_COLORS = ["#6750A4", "#386A20", "#B3261E", "#006A6A", "#7D5260", "#625B71"];
 
-export const SECTIONS: { id: Section; label: string; Icon: typeof DashboardIcon }[] = [
+/** Standard admin nav — Super Admin–only items are listed separately at the bottom. */
+export const STANDARD_SECTIONS: { id: Section; label: string; Icon: typeof DashboardIcon }[] = [
   { id: "dashboard", label: "Dashboard", Icon: DashboardIcon },
   { id: "users", label: "Users", Icon: PeopleIcon },
   { id: "contacts", label: "Contact Management", Icon: ContactMailIcon },
@@ -48,9 +49,18 @@ export const SECTIONS: { id: Section; label: string; Icon: typeof DashboardIcon 
   { id: "applications", label: "Teamwork Applications", Icon: WorkIcon },
   { id: "resources", label: "Resources", Icon: MenuBookIcon },
   { id: "game-downloads", label: "Game Downloads", Icon: SportsEsportsIcon },
+  { id: "activity-logs", label: "Activity Logs", Icon: HistoryIcon },
+];
+
+/** Super Admin–only tools — rendered after a sidebar separator. */
+export const SUPER_ADMIN_SECTIONS: { id: Section; label: string; Icon: typeof DashboardIcon }[] = [
+  { id: "database", label: "Database", Icon: StorageIcon },
   { id: "messaging-history", label: "Messaging History", Icon: ForumIcon },
   { id: "link-file-management", label: "Link File Management", Icon: LinkIcon },
-  { id: "activity-logs", label: "Activity Logs", Icon: HistoryIcon },
-  { id: "database", label: "Database", Icon: StorageIcon },
+];
+
+export const SECTIONS: { id: Section; label: string; Icon: typeof DashboardIcon }[] = [
+  ...STANDARD_SECTIONS,
+  ...SUPER_ADMIN_SECTIONS,
 ];
 

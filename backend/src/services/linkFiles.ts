@@ -4,6 +4,7 @@ import type { Request } from "express";
 import { qGet, qRun } from "../db/query.js";
 import { getStorage } from "../storage/index.js";
 import { getRequestClientMeta } from "./activityLog.js";
+import { lookupGeo } from "./geoip.js";
 
 export const LINK_FILE_ALIAS_RE = /^[a-zA-Z0-9_-]+$/;
 
@@ -78,11 +79,21 @@ export async function recordLinkFileAccess(opts: {
   const visitorLabel = req.user?.username?.trim() || "Guest";
   const ts = new Date().toISOString();
 
+  let country: string | null = null;
+  let countryCode: string | null = null;
+  try {
+    const geo = await lookupGeo(req);
+    country = geo.countryName;
+    countryCode = geo.countryCode;
+  } catch {
+    /* ignore geo failures — IP still recorded */
+  }
+
   await qRun(`
     INSERT INTO link_file_access_logs (
       link_file_id, alias, original_filename, user_id, visitor_label,
-      ip_address, user_agent, browser, platform, referrer, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ip_address, user_agent, browser, platform, referrer, country, country_code, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
     file.id,
     file.alias_display || file.alias,
@@ -94,6 +105,8 @@ export async function recordLinkFileAccess(opts: {
     meta.browser,
     meta.platform,
     meta.referrer,
+    country,
+    countryCode,
     ts,
   );
 

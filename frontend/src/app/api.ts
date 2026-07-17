@@ -844,7 +844,8 @@ export type AdminLinkFileAccessLog = {
   userAgent: string | null;
   browser: string | null;
   platform: string | null;
-  referrer: string | null;
+  country?: string | null;
+  countryCode?: string | null;
   createdAt: string;
 };
 

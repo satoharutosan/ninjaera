@@ -32,6 +32,8 @@ CREATE TABLE IF NOT EXISTS link_file_access_logs (
   browser TEXT,
   platform TEXT,
   referrer TEXT,
+  country TEXT,
+  country_code TEXT,
   created_at TEXT NOT NULL,
   FOREIGN KEY (link_file_id) REFERENCES link_files(id) ON DELETE CASCADE
 );
@@ -72,6 +74,8 @@ CREATE TABLE IF NOT EXISTS link_file_access_logs (
   browser TEXT,
   platform TEXT,
   referrer TEXT,
+  country TEXT,
+  country_code TEXT,
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_link_file_access_logs_file ON link_file_access_logs(link_file_id);

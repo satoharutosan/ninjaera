@@ -114,8 +114,8 @@ router.get("/link-files/logs", requireSuperAdmin, async (req, res) => {
 
   if (search.trim()) {
     const q = `%${search.trim()}%`;
-    where.push("(alias LIKE ? OR original_filename LIKE ? OR visitor_label LIKE ? OR ip_address LIKE ? OR browser LIKE ? OR platform LIKE ? OR referrer LIKE ?)");
-    params.push(q, q, q, q, q, q, q);
+    where.push("(alias LIKE ? OR original_filename LIKE ? OR visitor_label LIKE ? OR ip_address LIKE ? OR browser LIKE ? OR platform LIKE ? OR country LIKE ? OR country_code LIKE ?)");
+    params.push(q, q, q, q, q, q, q, q);
   }
   if (alias.trim()) {
     where.push("alias = ?");
@@ -143,10 +143,13 @@ router.get("/link-files/logs", requireSuperAdmin, async (req, res) => {
     user_agent: string | null;
     browser: string | null;
     platform: string | null;
-    referrer: string | null;
+    country: string | null;
+    country_code: string | null;
     created_at: string;
   }>(`
-    SELECT * FROM link_file_access_logs
+    SELECT id, link_file_id, alias, original_filename, user_id, visitor_label,
+           ip_address, user_agent, browser, platform, country, country_code, created_at
+    FROM link_file_access_logs
     ${whereSql}
     ORDER BY ${col} ${dir}, id ${dir}
     LIMIT ? OFFSET ?
@@ -167,7 +170,8 @@ router.get("/link-files/logs", requireSuperAdmin, async (req, res) => {
       userAgent: r.user_agent,
       browser: r.browser,
       platform: r.platform,
-      referrer: r.referrer,
+      country: r.country,
+      countryCode: r.country_code,
       createdAt: r.created_at,
     })),
   });

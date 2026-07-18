@@ -161,7 +161,7 @@ function TeamworkPage({ loggedIn, setPage, onAddDM }: { loggedIn:boolean; setPag
   };
 
   return (
-    <div style={{ background:C.bg }} className="pt-16">
+    <div style={{ background:C.bg }}>
       {/* Member info modal */}
       {memberModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onClick={() => setMemberModal(null)}>
@@ -293,10 +293,10 @@ function TeamworkPage({ loggedIn, setPage, onAddDM }: { loggedIn:boolean; setPag
           </div>
         </div>
       )}
-      <div className="relative h-[50vh] overflow-hidden">
+      <div data-nav-hero className="relative h-[50vh] min-h-[280px] overflow-hidden">
         <ImageWithFallback src={imgCouncil} alt="Team" className="w-full h-full object-cover" />
         <div className="absolute inset-0 bg-black/55" />
-        <div className="absolute inset-0 flex items-center justify-center"><h1 className="text-5xl md:text-6xl font-light text-white" style={{ fontFamily:"'Trade Winds', cursive" }}>Contributors</h1></div>
+        <div className="absolute inset-0 flex items-center justify-center pt-16"><h1 className="text-5xl md:text-6xl font-light text-white" style={{ fontFamily:"'Trade Winds', cursive" }}>Contributors</h1></div>
       </div>
       <div className="max-w-7xl mx-auto px-6 py-16">
         <div className="text-center mb-12">

@@ -217,8 +217,8 @@ function ProfilePage({ setPage, isDark, setIsDark, settings, setSettings, user, 
     { key:"publicProfile" as const, t:"Public Profile",   d:"Show gender, birth date & nationality to others" },
   ];
   return (
-    <div style={{ background:C.bg }} className="min-h-screen pt-16">
-      <div className="relative h-60 overflow-hidden">
+    <div style={{ background:C.bg }} className="min-h-screen">
+      <div data-nav-hero className="relative h-60 md:h-72 overflow-hidden">
         <ImageWithFallback src={imgHero} alt="banner" className="w-full h-full object-cover" />
         <div className="absolute inset-0 bg-black/40" />
       </div>

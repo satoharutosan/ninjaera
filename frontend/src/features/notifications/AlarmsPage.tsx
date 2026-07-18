@@ -83,11 +83,11 @@ function AlarmsPage({ setPage, onConversationsRefresh, onNotificationsRefresh }:
   };
 
   return (
-    <div style={{ background: C.bg }} className="pt-16 min-h-screen">
-      <div className="relative h-[35vh] overflow-hidden">
+    <div style={{ background: C.bg }} className="min-h-screen">
+      <div data-nav-hero className="relative h-[35vh] min-h-[200px] overflow-hidden">
         <ImageWithFallback src={imgMoonlight} alt="Alarms" className="w-full h-full object-cover" />
         <div className="absolute inset-0 bg-black/60" />
-        <div className="absolute inset-0 flex items-center justify-center">
+        <div className="absolute inset-0 flex items-center justify-center pt-16">
           <h1 className="text-5xl md:text-6xl font-light text-white" style={{ fontFamily: "'Trade Winds', cursive" }}>Notifications</h1>
         </div>
       </div>

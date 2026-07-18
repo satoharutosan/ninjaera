@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
 /**
- * Cinematic hero atmosphere: parallax bg, rising smoke, fireflies, falling petals.
+ * Cinematic hero atmosphere: parallax bg, fine rising smoke (right), fireflies.
  * Mouse tracking uses refs + rAF (no React state on mousemove).
  */
 
@@ -34,21 +34,40 @@ const STYLE = `
 }
 .ne-hero-fx__smoke {
   position: absolute;
-  inset: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 48%;
   z-index: 3;
   overflow: hidden;
+  /* Soft left edge so smoke blends into the scene */
+  -webkit-mask-image: linear-gradient(to right, transparent 0%, black 28%, black 100%);
+  mask-image: linear-gradient(to right, transparent 0%, black 28%, black 100%);
 }
 .ne-hero-fx__smoke-plume {
   position: absolute;
-  bottom: -18%;
-  width: 42%;
-  height: 78%;
-  border-radius: 50%;
-  background: radial-gradient(ellipse at center, rgba(220, 210, 230, 0.22) 0%, rgba(180, 170, 200, 0.08) 42%, transparent 72%);
-  filter: blur(28px);
-  opacity: 0.55;
-  animation: neHeroSmokeRise linear infinite;
+  bottom: -22%;
+  border-radius: 55% 45% 60% 40%;
+  background:
+    radial-gradient(ellipse 70% 55% at 50% 60%,
+      rgba(210, 205, 220, 0.28) 0%,
+      rgba(170, 165, 185, 0.1) 38%,
+      transparent 70%);
+  filter: blur(22px);
+  opacity: 0;
+  animation: neHeroSmokeRise ease-in-out infinite;
   will-change: transform, opacity;
+  transform: translate3d(0, 0, 0);
+  mix-blend-mode: screen;
+}
+.ne-hero-fx__smoke-plume--soft {
+  filter: blur(34px);
+  mix-blend-mode: soft-light;
+  background:
+    radial-gradient(ellipse 80% 60% at 45% 55%,
+      rgba(200, 198, 210, 0.2) 0%,
+      rgba(160, 158, 175, 0.07) 45%,
+      transparent 72%);
 }
 .ne-hero-fx__fireflies {
   position: absolute;
@@ -65,28 +84,25 @@ const STYLE = `
   animation: neHeroFireflyDrift ease-in-out infinite;
   will-change: transform, opacity;
 }
-.ne-hero-fx__petals {
-  position: absolute;
-  inset: 0;
-  z-index: 4;
-  overflow: hidden;
-}
-.ne-hero-fx__petal {
-  position: absolute;
-  width: 10px;
-  height: 14px;
-  border-radius: 60% 40% 60% 40%;
-  background: linear-gradient(145deg, rgba(180, 60, 110, 0.75), rgba(120, 30, 70, 0.55));
-  box-shadow: 0 0 8px rgba(160, 40, 90, 0.25);
-  animation: neHeroPetalFall linear infinite;
-  will-change: transform, opacity;
-  opacity: 0;
-}
 @keyframes neHeroSmokeRise {
-  0%   { transform: translate3d(0, 12%, 0) scale(0.85); opacity: 0; }
-  18%  { opacity: 0.5; }
-  55%  { opacity: 0.35; }
-  100% { transform: translate3d(4%, -55%, 0) scale(1.35); opacity: 0; }
+  0% {
+    transform: translate3d(0, 8%, 0) scale(0.72) rotate(0deg);
+    opacity: 0;
+  }
+  12% {
+    opacity: var(--smoke-peak, 0.42);
+  }
+  45% {
+    transform: translate3d(var(--smoke-mid-x, 3%), -28%, 0) scale(1.05) rotate(var(--smoke-rot, 4deg));
+    opacity: calc(var(--smoke-peak, 0.42) * 0.72);
+  }
+  75% {
+    opacity: calc(var(--smoke-peak, 0.42) * 0.28);
+  }
+  100% {
+    transform: translate3d(var(--smoke-end-x, -2%), -72%, 0) scale(1.45) rotate(var(--smoke-rot-end, -3deg));
+    opacity: 0;
+  }
 }
 @keyframes neHeroFireflyDrift {
   0%   { transform: translate3d(0, 0, 0) scale(0.4); opacity: 0; }
@@ -95,21 +111,25 @@ const STYLE = `
   85%  { opacity: 0.45; }
   100% { transform: translate3d(calc(var(--fx) * 1.4), calc(var(--fy) * -1.6), 0) scale(0.5); opacity: 0; }
 }
-@keyframes neHeroPetalFall {
-  0%   { transform: translate3d(0, -8%, 0) rotate(0deg); opacity: 0; }
-  8%   { opacity: 0.75; }
-  70%  { opacity: 0.55; }
-  100% { transform: translate3d(var(--px), 110vh, 0) rotate(var(--pr)); opacity: 0; }
-}
 @media (prefers-reduced-motion: reduce) {
   .ne-hero-fx__smoke-plume,
-  .ne-hero-fx__firefly,
-  .ne-hero-fx__petal {
+  .ne-hero-fx__firefly {
     animation: none !important;
     opacity: 0 !important;
   }
   .ne-hero-fx__bg {
     transform: none !important;
+  }
+}
+@media (max-width: 768px) {
+  .ne-hero-fx__smoke {
+    left: 40%;
+  }
+  .ne-hero-fx__smoke-plume {
+    filter: blur(18px);
+  }
+  .ne-hero-fx__smoke-plume--soft {
+    filter: blur(26px);
   }
 }
 `;
@@ -121,10 +141,32 @@ type Props = {
 
 type CssVars = CSSProperties & Record<`--${string}`, string>;
 
-const SMOKE = [
-  { left: "-6%", delay: "0s", duration: "18s" },
-  { left: "28%", delay: "5s", duration: "22s" },
-  { left: "58%", delay: "10s", duration: "20s" },
+type SmokePlume = {
+  left: string;
+  width: string;
+  height: string;
+  delay: string;
+  duration: string;
+  peak: string;
+  midX: string;
+  endX: string;
+  rot: string;
+  rotEnd: string;
+  soft?: boolean;
+};
+
+/** Right-side mist wisps — staggered for a continuous, organic rise. */
+const SMOKE: SmokePlume[] = [
+  { left: "8%",  width: "38%", height: "70%", delay: "0s",   duration: "16s", peak: "0.38", midX: "5%",  endX: "-3%",  rot: "5deg",  rotEnd: "-4deg" },
+  { left: "28%", width: "32%", height: "62%", delay: "2.8s", duration: "19s", peak: "0.32", midX: "-4%", endX: "6%",   rot: "-3deg", rotEnd: "5deg", soft: true },
+  { left: "48%", width: "42%", height: "78%", delay: "5.5s", duration: "17s", peak: "0.36", midX: "7%",  endX: "-5%",  rot: "6deg",  rotEnd: "-2deg" },
+  { left: "18%", width: "28%", height: "55%", delay: "8s",   duration: "21s", peak: "0.28", midX: "-6%", endX: "4%",   rot: "-5deg", rotEnd: "3deg", soft: true },
+  { left: "58%", width: "36%", height: "68%", delay: "1.4s", duration: "18s", peak: "0.34", midX: "3%",  endX: "-7%",  rot: "2deg",  rotEnd: "-6deg" },
+  { left: "38%", width: "30%", height: "58%", delay: "11s",  duration: "20s", peak: "0.26", midX: "-3%", endX: "5%",   rot: "-4deg", rotEnd: "4deg", soft: true },
+  { left: "68%", width: "34%", height: "72%", delay: "7s",   duration: "15s", peak: "0.3",  midX: "6%",  endX: "-2%",  rot: "4deg",  rotEnd: "-5deg" },
+  { left: "12%", width: "44%", height: "64%", delay: "13.5s",duration: "22s", peak: "0.24", midX: "-5%", endX: "3%",   rot: "-2deg", rotEnd: "6deg", soft: true },
+  { left: "52%", width: "26%", height: "50%", delay: "4s",   duration: "14s", peak: "0.33", midX: "4%",  endX: "-6%",  rot: "3deg",  rotEnd: "-3deg" },
+  { left: "72%", width: "40%", height: "66%", delay: "9.5s", duration: "19s", peak: "0.27", midX: "-2%", endX: "4%",   rot: "-6deg", rotEnd: "2deg", soft: true },
 ];
 
 const FIREFLIES = [
@@ -136,15 +178,6 @@ const FIREFLIES = [
   { top: "48%", left: "88%", delay: "3.4s", duration: "10.5s", fx: "-26px", fy: "38px" },
   { top: "16%", left: "48%", delay: "7.2s", duration: "11.5s", fx: "16px", fy: "44px" },
   { top: "72%", left: "55%", delay: "5.1s", duration: "8.5s", fx: "-30px", fy: "20px" },
-];
-
-const PETALS = [
-  { left: "72%", delay: "0s", duration: "14s", px: "-40px", pr: "220deg" },
-  { left: "80%", delay: "3s", duration: "16s", px: "28px", pr: "-180deg" },
-  { left: "88%", delay: "6.5s", duration: "13s", px: "-18px", pr: "260deg" },
-  { left: "76%", delay: "9s", duration: "15s", px: "36px", pr: "-200deg" },
-  { left: "92%", delay: "1.8s", duration: "17s", px: "-50px", pr: "160deg" },
-  { left: "84%", delay: "11s", duration: "14.5s", px: "22px", pr: "-240deg" },
 ];
 
 export function HeroAmbientBackground({ src, alt }: Props) {
@@ -211,7 +244,7 @@ export function HeroAmbientBackground({ src, alt }: Props) {
   }, []);
 
   const fireflies = useMemo(() => (compact ? FIREFLIES.slice(0, 4) : FIREFLIES), [compact]);
-  const petals = useMemo(() => (compact ? PETALS.slice(0, 3) : PETALS), [compact]);
+  const smoke = useMemo(() => (compact ? SMOKE.slice(0, 5) : SMOKE), [compact]);
 
   return (
     <>
@@ -229,15 +262,22 @@ export function HeroAmbientBackground({ src, alt }: Props) {
           style={{ background: "linear-gradient(to top,rgba(0,0,0,.5),transparent 40%)" }}
         />
         <div className="ne-hero-fx__smoke">
-          {SMOKE.map((s, i) => (
+          {smoke.map((s, i) => (
             <div
               key={i}
-              className="ne-hero-fx__smoke-plume"
+              className={`ne-hero-fx__smoke-plume${s.soft ? " ne-hero-fx__smoke-plume--soft" : ""}`}
               style={{
                 left: s.left,
+                width: s.width,
+                height: s.height,
                 animationDelay: s.delay,
                 animationDuration: s.duration,
-              }}
+                "--smoke-peak": s.peak,
+                "--smoke-mid-x": s.midX,
+                "--smoke-end-x": s.endX,
+                "--smoke-rot": s.rot,
+                "--smoke-rot-end": s.rotEnd,
+              } as CssVars}
             />
           ))}
         </div>
@@ -253,22 +293,6 @@ export function HeroAmbientBackground({ src, alt }: Props) {
                 animationDuration: f.duration,
                 "--fx": f.fx,
                 "--fy": f.fy,
-              } as CssVars}
-            />
-          ))}
-        </div>
-        <div className="ne-hero-fx__petals">
-          {petals.map((p, i) => (
-            <span
-              key={i}
-              className="ne-hero-fx__petal"
-              style={{
-                left: p.left,
-                top: "-4%",
-                animationDelay: p.delay,
-                animationDuration: p.duration,
-                "--px": p.px,
-                "--pr": p.pr,
               } as CssVars}
             />
           ))}

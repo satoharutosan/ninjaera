@@ -40,6 +40,7 @@ import { pageFromLocation, setPageInLocation } from "@/shared/routing";
 import { BrandLogo } from "@/shared/BrandLogo";
 import { BRAND_LOGO_SRC, BRAND_NAME } from "@/shared/branding";
 import { getCachedUser, setCachedUser, clearAuthStorage, getStoredToken } from "@/shared/authStorage";
+import { useNavHeroOverlay } from "@/shared/navHero";
 import { api, setToken, ApiError, type ApiUser, type ApiNotification, type ApiMessage } from "@/app/api";
 import { SOCIAL_LINKS, isSocialUrlConfigured, type SocialPlatform } from "@/shared/socialLinks";
 import { SECTION_IDS, scrollToSection, scrollToSectionWhenReady } from "@/shared/scrollToSection";
@@ -118,8 +119,8 @@ function Navbar({ page, setPage, isDark, setIsDark, loggedIn, user, userAvatar, 
   const [mob, setMob] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
   const [profileMenu, setProfileMenu] = useState<{ x: number; y: number } | null>(null);
-  /** True while a [data-nav-hero] section is still under the fixed navbar. */
-  const [overHero, setOverHero] = useState(false);
+  /** Driven by shared `[data-nav-hero]` detection — works for every route automatically. */
+  const overHero = useNavHeroOverlay(page);
   const avatarLongPress = useRef<ReturnType<typeof setTimeout> | null>(null);
   const notifPanelRef = useRef<HTMLDivElement>(null);
   const notifBtnRef = useRef<HTMLButtonElement>(null);
@@ -149,47 +150,6 @@ function Navbar({ page, setPage, isDark, setIsDark, loggedIn, user, userAvatar, 
     setProfileMenu(null);
     setNotifOpen(o => !o);
   };
-
-  // Adaptive navbar: observe hero markers once per page (no scroll listeners).
-  useEffect(() => {
-    let cancelled = false;
-    let observer: IntersectionObserver | null = null;
-    const NAV_H = 64;
-    // Optimistic: avoid a solid-flash on hero routes before the observer attaches.
-    const expectsHero = page === "home" || page === "about" || page === "resources";
-    setOverHero(expectsHero);
-
-    const attach = () => {
-      if (cancelled) return;
-      const heroes = document.querySelectorAll("[data-nav-hero]");
-      if (!heroes.length) {
-        setOverHero(false);
-        return;
-      }
-      observer = new IntersectionObserver(
-        (entries) => {
-          if (cancelled) return;
-          setOverHero(entries.some((e) => e.isIntersecting));
-        },
-        {
-          // Collapse the viewport from the top by the navbar height so
-          // isIntersecting flips when the hero scrolls fully under the bar.
-          root: null,
-          rootMargin: `-${NAV_H}px 0px 0px 0px`,
-          threshold: 0,
-        },
-      );
-      heroes.forEach((el) => observer!.observe(el));
-    };
-
-    // Wait a frame so the new page's hero is in the DOM.
-    const raf = requestAnimationFrame(attach);
-    return () => {
-      cancelled = true;
-      cancelAnimationFrame(raf);
-      observer?.disconnect();
-    };
-  }, [page]);
 
   useEffect(() => {
     if (!notifOpen && !profileMenu) return;

@@ -120,7 +120,10 @@ function SignUpPage({ setPage, onLogin }: {
 
   return (
     <div className="min-h-screen flex items-center justify-center px-4 py-20 relative" style={{ background: C.surfaceVar }}>
-      <div className="absolute inset-0 overflow-hidden"><ImageWithFallback src={imgGroup} alt="" className="w-full h-full object-cover opacity-20" /></div>
+      <div data-nav-hero className="absolute inset-0 overflow-hidden" aria-hidden>
+        <ImageWithFallback src={imgGroup} alt="" className="w-full h-full object-cover opacity-40" />
+        <div className="absolute inset-0 bg-black/30" />
+      </div>
       <div className="relative w-full max-w-sm">
         <div className="rounded-3xl p-8" style={{ background: C.surface, boxShadow: "0 8px 32px rgba(0,0,0,.16)" }}>
           <div className="text-center mb-8">

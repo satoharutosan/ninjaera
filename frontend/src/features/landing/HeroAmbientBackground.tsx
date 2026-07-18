@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
 /**
- * Cinematic hero atmosphere: parallax bg, fine rising smoke (right), fireflies.
+ * Cinematic hero atmosphere: looping character video (or poster), parallax,
+ * fine rising smoke (right), fireflies.
  * Mouse tracking uses refs + rAF (no React state on mousemove).
  */
 
@@ -21,11 +22,33 @@ const STYLE = `
   will-change: transform;
   transform: translate3d(0, 0, 0);
 }
-.ne-hero-fx__bg img {
+.ne-hero-fx__bg img,
+.ne-hero-fx__bg video,
+.ne-hero-fx__bg-video {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  object-position: center center;
   display: block;
+}
+.ne-hero-fx__bg-video {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.ne-hero-fx__poster {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center center;
+  transition: opacity 280ms ease;
+  z-index: 1;
+}
+.ne-hero-fx__poster--hidden {
+  opacity: 0;
+  pointer-events: none;
 }
 .ne-hero-fx__veil {
   position: absolute;
@@ -40,7 +63,6 @@ const STYLE = `
   left: 48%;
   z-index: 3;
   overflow: hidden;
-  /* Soft left edge so smoke blends into the scene */
   -webkit-mask-image: linear-gradient(to right, transparent 0%, black 28%, black 100%);
   mask-image: linear-gradient(to right, transparent 0%, black 28%, black 100%);
 }
@@ -135,8 +157,13 @@ const STYLE = `
 `;
 
 type Props = {
+  /** Static poster / fallback image (original hero artwork). */
   src: string;
   alt: string;
+  /** Preferred WebM (VP9/AV1) source for the looping character video. */
+  videoWebm?: string;
+  /** H.264 MP4 fallback for broader browser support. */
+  videoMp4?: string;
 };
 
 type CssVars = CSSProperties & Record<`--${string}`, string>;
@@ -180,13 +207,25 @@ const FIREFLIES = [
   { top: "72%", left: "55%", delay: "5.1s", duration: "8.5s", fx: "-30px", fy: "20px" },
 ];
 
-export function HeroAmbientBackground({ src, alt }: Props) {
+function prefersReducedMotion(): boolean {
+  return typeof window !== "undefined"
+    && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+export function HeroAmbientBackground({ src, alt, videoWebm, videoMp4 }: Props) {
   const bgRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
   const targetX = useRef(0);
   const currentX = useRef(0);
   const rafId = useRef(0);
   const skipParallax = useRef(false);
   const [compact, setCompact] = useState(false);
+  const hasVideoSources = !!(videoWebm || videoMp4);
+  /** False → show static poster only (no video / failed / reduced motion). */
+  const [videoEnabled, setVideoEnabled] = useState(() => hasVideoSources && !prefersReducedMotion());
+  /** True once the video has painted a frame (hide poster fade). */
+  const [videoReady, setVideoReady] = useState(false);
 
   useEffect(() => {
     const coarseMq = window.matchMedia("(pointer: coarse), (max-width: 768px)");
@@ -194,6 +233,12 @@ export function HeroAmbientBackground({ src, alt }: Props) {
     const sync = () => {
       setCompact(coarseMq.matches);
       skipParallax.current = coarseMq.matches || reduceMq.matches;
+      if (reduceMq.matches) {
+        setVideoEnabled(false);
+        setVideoReady(false);
+      } else if (hasVideoSources) {
+        setVideoEnabled(true);
+      }
       if (skipParallax.current) {
         targetX.current = 0;
         currentX.current = 0;
@@ -207,8 +252,9 @@ export function HeroAmbientBackground({ src, alt }: Props) {
       coarseMq.removeEventListener("change", sync);
       reduceMq.removeEventListener("change", sync);
     };
-  }, []);
+  }, [hasVideoSources]);
 
+  // Parallax — unchanged, applies to the whole bg layer (video + poster).
   useEffect(() => {
     const el = bgRef.current;
     if (!el) return;
@@ -243,15 +289,113 @@ export function HeroAmbientBackground({ src, alt }: Props) {
     };
   }, []);
 
+  // Autoplay + seamless loop + visibility pause/resume.
+  useEffect(() => {
+    if (!videoEnabled) return;
+    const video = videoRef.current;
+    const root = rootRef.current;
+    if (!video) return;
+
+    let cancelled = false;
+
+    const tryPlay = () => {
+      if (cancelled) return;
+      const p = video.play();
+      if (p && typeof p.then === "function") {
+        p.catch(() => {
+          if (!cancelled) {
+            setVideoEnabled(false);
+            setVideoReady(false);
+          }
+        });
+      }
+    };
+
+    const onCanPlay = () => tryPlay();
+    const onPlaying = () => {
+      if (!cancelled) setVideoReady(true);
+    };
+    const onError = () => {
+      if (!cancelled) {
+        setVideoEnabled(false);
+        setVideoReady(false);
+      }
+    };
+    // Fallback if `loop` fails to restart (rare engines).
+    const onEnded = () => {
+      video.currentTime = 0;
+      tryPlay();
+    };
+
+    video.addEventListener("canplay", onCanPlay);
+    video.addEventListener("playing", onPlaying);
+    video.addEventListener("error", onError);
+    video.addEventListener("ended", onEnded);
+
+    if (video.readyState >= 2) tryPlay();
+
+    let io: IntersectionObserver | null = null;
+    if (root && typeof IntersectionObserver !== "undefined") {
+      io = new IntersectionObserver(
+        (entries) => {
+          const visible = entries.some((e) => e.isIntersecting);
+          if (visible) tryPlay();
+          else if (!video.paused) video.pause();
+        },
+        { threshold: 0.08 },
+      );
+      io.observe(root);
+    }
+
+    return () => {
+      cancelled = true;
+      video.removeEventListener("canplay", onCanPlay);
+      video.removeEventListener("playing", onPlaying);
+      video.removeEventListener("error", onError);
+      video.removeEventListener("ended", onEnded);
+      io?.disconnect();
+      video.pause();
+    };
+  }, [videoEnabled, videoWebm, videoMp4]);
+
   const fireflies = useMemo(() => (compact ? FIREFLIES.slice(0, 4) : FIREFLIES), [compact]);
   const smoke = useMemo(() => (compact ? SMOKE.slice(0, 5) : SMOKE), [compact]);
 
   return (
     <>
       <style dangerouslySetInnerHTML={{ __html: STYLE }} />
-      <div className="ne-hero-fx" aria-hidden>
+      <div className="ne-hero-fx" ref={rootRef} aria-hidden="true">
         <div className="ne-hero-fx__bg" ref={bgRef}>
-          <img src={src} alt={alt} loading="eager" fetchPriority="high" decoding="async" />
+          {/* Poster always present to reserve layout / fallback */}
+          <img
+            src={src}
+            alt={alt}
+            loading="eager"
+            fetchPriority="high"
+            decoding="async"
+            className={`ne-hero-fx__poster${videoReady ? " ne-hero-fx__poster--hidden" : ""}`}
+            draggable={false}
+          />
+          {videoEnabled && (
+            <video
+              ref={videoRef}
+              className="ne-hero-fx__bg-video"
+              poster={src}
+              muted
+              playsInline
+              autoPlay
+              loop
+              preload="metadata"
+              disablePictureInPicture
+              disableRemotePlayback
+              controls={false}
+              tabIndex={-1}
+              aria-hidden="true"
+            >
+              {videoWebm && <source src={videoWebm} type="video/webm" />}
+              {videoMp4 && <source src={videoMp4} type="video/mp4" />}
+            </video>
+          )}
         </div>
         <div
           className="ne-hero-fx__veil"

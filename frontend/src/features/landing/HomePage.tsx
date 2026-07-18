@@ -39,6 +39,7 @@ import imgCharVyra from "@/imports/characters/vyra.webp";
 import imgCharHaejin from "@/imports/characters/haejin.webp";
 import imgCharDaigo from "@/imports/characters/daigo.webp";
 import { HeroAmbientBackground } from "@/features/landing/HeroAmbientBackground";
+import { HERO_CHARACTER_VIDEO } from "@/shared/heroVideo";
 import imgCharVorian from "@/imports/characters/vorian.webp";
 import imgCharLiria from "@/imports/characters/liria.webp";
 import imgCharAlric from "@/imports/characters/alric.webp";
@@ -251,7 +252,12 @@ function HomePage({ setPage, onGoToDownload }: { setPage:(p:Page)=>void; onGoToD
       <style dangerouslySetInnerHTML={{ __html: WIND_STYLE }} />
       {/* HERO */}
       <section data-nav-hero className="relative min-h-screen flex items-center overflow-hidden">
-        <HeroAmbientBackground src={imgGroup} alt="Ninja Era heroes" />
+        <HeroAmbientBackground
+          src={imgGroup}
+          alt="Ninja Era heroes"
+          videoWebm={HERO_CHARACTER_VIDEO.webm}
+          videoMp4={HERO_CHARACTER_VIDEO.mp4}
+        />
         <div className="relative z-10 max-w-7xl mx-auto px-6 pt-24 pb-20 w-full">
           <div className="max-w-lg">
             <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full mb-6 text-xs font-medium" style={{ background:C.primaryCont, color:C.onPrimaryCont, fontFamily:"Roboto" }}>

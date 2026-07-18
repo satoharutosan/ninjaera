@@ -250,7 +250,7 @@ function HomePage({ setPage, onGoToDownload }: { setPage:(p:Page)=>void; onGoToD
     <div style={{ background:C.bg }}>
       <style dangerouslySetInnerHTML={{ __html: WIND_STYLE }} />
       {/* HERO */}
-      <section className="relative min-h-screen flex items-center overflow-hidden">
+      <section data-nav-hero className="relative min-h-screen flex items-center overflow-hidden">
         <HeroAmbientBackground src={imgGroup} alt="Ninja Era heroes" />
         <div className="relative z-10 max-w-7xl mx-auto px-6 pt-24 pb-20 w-full">
           <div className="max-w-lg">

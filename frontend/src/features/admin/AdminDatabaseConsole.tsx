@@ -46,15 +46,45 @@ function cellPreview(value: unknown, col: DbConsoleColumn): string {
   return s.length > 120 ? `${s.slice(0, 120)}…` : s;
 }
 
+/** Display-only basename for stored media URLs (full URL remains the href). */
+function displayFilename(url: string): string {
+  const raw = url.trim();
+  if (!raw) return "—";
+  try {
+    const path = /^https?:\/\//i.test(raw) ? new URL(raw).pathname : raw.split("?")[0].split("#")[0];
+    const parts = path.replace(/\\/g, "/").split("/").filter(Boolean);
+    const name = parts[parts.length - 1] || raw;
+    return decodeURIComponent(name);
+  } catch {
+    const parts = raw.replace(/\\/g, "/").split("/").filter(Boolean);
+    return (parts[parts.length - 1] || raw).split("?")[0];
+  }
+}
+
 function isBoolCol(col: DbConsoleColumn) {
   const n = col.name.toLowerCase();
   return n.startsWith("is_") || n.endsWith("_flag") || col.type.includes("INT") && /^(enabled|published|pinned|muted|archived)$/i.test(col.name);
 }
 
 function isUrlCol(col: DbConsoleColumn, value: unknown) {
-  if (typeof value !== "string") return false;
+  if (typeof value !== "string" || !value.trim()) return false;
+  const looksLikeUrl = /^https?:\/\//i.test(value)
+    || value.startsWith("/uploads/")
+    || value.startsWith("/externals/");
+  if (!looksLikeUrl) return false;
   const n = col.name.toLowerCase();
-  return (n.includes("url") || n.includes("avatar") || n.includes("image")) && (/^https?:\/\//i.test(value) || value.startsWith("/uploads/"));
+  return n.includes("url")
+    || n.includes("avatar")
+    || n.includes("image")
+    || n.includes("photo")
+    || n.includes("file")
+    || n.includes("media")
+    || n.includes("cv");
+}
+
+function isImagePreviewUrl(url: string) {
+  return /\.(png|jpe?g|gif|webp)$/i.test(url.split("?")[0])
+    || /\/(avatar|image|photo)/i.test(url);
 }
 
 export function AdminDatabaseConsole({
@@ -527,12 +557,23 @@ export function AdminDatabaseConsole({
                               return (
                                 <td key={col.name} className="p-2 align-top max-w-[14rem]" style={{ color: C.onSurface }}>
                                   {isUrlCol(col, value) && typeof value === "string" ? (
-                                    <a href={value} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2">
-                                      {(col.name.toLowerCase().includes("avatar") || col.name.toLowerCase().includes("image") || /\.(png|jpe?g|gif|webp)$/i.test(value)) && (
-                                        <img src={value} alt="" className="w-8 h-8 rounded object-cover shrink-0" />
+                                    <span className="inline-flex items-center gap-2 min-w-0 max-w-full">
+                                      {(col.name.toLowerCase().includes("avatar") || col.name.toLowerCase().includes("image") || isImagePreviewUrl(value)) && (
+                                        <a href={value} target="_blank" rel="noopener noreferrer" title="Preview" className="shrink-0">
+                                          <img src={value} alt="" className="w-8 h-8 rounded object-cover" />
+                                        </a>
                                       )}
-                                      <span className="truncate text-xs underline" style={{ color: C.primary }}>{cellPreview(value, col)}</span>
-                                    </a>
+                                      <a
+                                        href={value}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="min-w-0 truncate text-xs underline"
+                                        style={{ color: C.primary }}
+                                        title={displayFilename(value)}
+                                      >
+                                        {displayFilename(value)}
+                                      </a>
+                                    </span>
                                   ) : isBoolCol(col) && (value === 0 || value === 1 || value === true || value === false) ? (
                                     <span className="text-xs font-medium px-2 py-0.5 rounded-full" style={{ background: value ? C.primaryCont : C.surfaceVar, color: value ? C.primary : C.onSurfaceVar }}>
                                       {value ? "Yes" : "No"}

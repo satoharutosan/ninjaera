@@ -76,9 +76,9 @@ function AboutPage({ setPage }: { setPage: (p: Page) => void }) {
   const storyImage = story.imageUrl || imgCouncil;
 
   return (
-    <div style={{ background: C.bg }} className="pt-16">
-      {/* Hero — full-bleed brand composition */}
-      <section className="relative min-h-[70vh] flex items-end overflow-hidden">
+    <div style={{ background: C.bg }}>
+      {/* Hero — full-bleed under navbar */}
+      <section data-nav-hero className="relative min-h-[70vh] flex items-end overflow-hidden">
         <ImageWithFallback
           src={imgGroup}
           alt="Plantend warriors"

@@ -118,6 +118,8 @@ function Navbar({ page, setPage, isDark, setIsDark, loggedIn, user, userAvatar, 
   const [mob, setMob] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
   const [profileMenu, setProfileMenu] = useState<{ x: number; y: number } | null>(null);
+  /** True while a [data-nav-hero] section is still under the fixed navbar. */
+  const [overHero, setOverHero] = useState(false);
   const avatarLongPress = useRef<ReturnType<typeof setTimeout> | null>(null);
   const notifPanelRef = useRef<HTMLDivElement>(null);
   const notifBtnRef = useRef<HTMLButtonElement>(null);
@@ -148,6 +150,47 @@ function Navbar({ page, setPage, isDark, setIsDark, loggedIn, user, userAvatar, 
     setNotifOpen(o => !o);
   };
 
+  // Adaptive navbar: observe hero markers once per page (no scroll listeners).
+  useEffect(() => {
+    let cancelled = false;
+    let observer: IntersectionObserver | null = null;
+    const NAV_H = 64;
+    // Optimistic: avoid a solid-flash on hero routes before the observer attaches.
+    const expectsHero = page === "home" || page === "about" || page === "resources";
+    setOverHero(expectsHero);
+
+    const attach = () => {
+      if (cancelled) return;
+      const heroes = document.querySelectorAll("[data-nav-hero]");
+      if (!heroes.length) {
+        setOverHero(false);
+        return;
+      }
+      observer = new IntersectionObserver(
+        (entries) => {
+          if (cancelled) return;
+          setOverHero(entries.some((e) => e.isIntersecting));
+        },
+        {
+          // Collapse the viewport from the top by the navbar height so
+          // isIntersecting flips when the hero scrolls fully under the bar.
+          root: null,
+          rootMargin: `-${NAV_H}px 0px 0px 0px`,
+          threshold: 0,
+        },
+      );
+      heroes.forEach((el) => observer!.observe(el));
+    };
+
+    // Wait a frame so the new page's hero is in the DOM.
+    const raf = requestAnimationFrame(attach);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf);
+      observer?.disconnect();
+    };
+  }, [page]);
+
   useEffect(() => {
     if (!notifOpen && !profileMenu) return;
     const onPointerDown = (e: MouseEvent | TouchEvent) => {
@@ -174,24 +217,48 @@ function Navbar({ page, setPage, isDark, setIsDark, loggedIn, user, userAvatar, 
     };
   }, [notifOpen, profileMenu, closeOverlays]);
 
+  // Solid chrome while mobile drawer is open; otherwise translucent over heroes.
+  const translucent = overHero && !mob;
+  const navFg = translucent ? "#FFFFFF" : C.onSurface;
+  const navMuted = translucent ? "rgba(255,255,255,0.88)" : C.onSurfaceVar;
+  const iconHover = translucent ? "hover:bg-white/15" : "hover:bg-black/5";
+  const textShadow = translucent ? "0 1px 2px rgba(0,0,0,0.55)" : undefined;
+
   return (
-    <nav className="fixed top-0 left-0 right-0 z-50" style={{ background:C.surface, boxShadow:SH2 }} onClick={closeOverlays}>
+    <nav
+      className="fixed top-0 left-0 right-0 z-50"
+      style={{
+        background: translucent
+          ? (isDark ? "rgba(20, 18, 24, 0.28)" : "rgba(255, 255, 255, 0.22)")
+          : C.surface,
+        backdropFilter: translucent ? "blur(14px) saturate(1.2)" : undefined,
+        WebkitBackdropFilter: translucent ? "blur(14px) saturate(1.2)" : undefined,
+        boxShadow: translucent ? "0 1px 0 rgba(255,255,255,0.08)" : SH2,
+        transition: "background-color 250ms ease, box-shadow 250ms ease, backdrop-filter 250ms ease",
+      }}
+      onClick={closeOverlays}
+    >
       <div className="max-w-7xl mx-auto px-4 flex items-center justify-between h-16">
         <button onClick={() => go("home")} className="flex items-center gap-2.5" aria-label={`${BRAND_NAME} home`}>
           <BrandLogo size={32} priority />
-          <span className="font-medium text-lg" style={{ color:C.onSurface, fontFamily:"'Trade Winds', cursive" }}>{BRAND_NAME}</span>
+          <span className="font-medium text-lg" style={{ color: navFg, fontFamily: "'Trade Winds', cursive", textShadow }}>{BRAND_NAME}</span>
         </button>
         <div className="hidden md:flex items-center gap-0.5">
           {links.map(l => (
             <button key={l.page} onClick={() => go(l.page)}
               className="flex items-center gap-1.5 px-4 py-2 rounded-full text-sm font-medium transition-all"
-              style={{ background:page===l.page?C.primary:"transparent", color:page===l.page?"white":C.onSurfaceVar, fontFamily:"Roboto" }}>
+              style={{
+                background: page === l.page ? C.primary : "transparent",
+                color: page === l.page ? "white" : navMuted,
+                fontFamily: "Roboto",
+                textShadow: page === l.page ? undefined : textShadow,
+              }}>
               {showLabels ? <><l.Icon style={{ fontSize:16 }} />{l.label}</> : l.label}
             </button>
           ))}
         </div>
         <div className="hidden md:flex items-center gap-1">
-          <button onClick={() => setIsDark(!isDark)} className="w-10 h-10 rounded-full flex items-center justify-center hover:bg-black/5 transition-colors" style={{ color:C.onSurfaceVar }}>
+          <button onClick={() => setIsDark(!isDark)} className={`w-10 h-10 rounded-full flex items-center justify-center ${iconHover} transition-colors`} style={{ color: navMuted }}>
             {isDark ? <LightModeIcon style={{ fontSize:20 }} /> : <DarkModeIcon style={{ fontSize:20 }} />}
           </button>
           <div className="relative" onClick={e => e.stopPropagation()}>
@@ -202,8 +269,8 @@ function Navbar({ page, setPage, isDark, setIsDark, loggedIn, user, userAvatar, 
               aria-haspopup="true"
               aria-expanded={notifOpen}
               aria-label={`Notifications${unreadCount > 0 ? ` (${unreadCount} unread)` : ""}`}
-              className="w-10 h-10 rounded-full flex items-center justify-center hover:bg-black/5 transition-colors"
-              style={{ color: notifOpen ? C.primary : C.onSurfaceVar }}
+              className={`w-10 h-10 rounded-full flex items-center justify-center ${iconHover} transition-colors`}
+              style={{ color: notifOpen ? C.primary : navMuted }}
             >
               <NavIconBadge badgeContent={unreadCount}>
                 <NotificationsIcon style={{ fontSize:20 }} />
@@ -245,11 +312,11 @@ function Navbar({ page, setPage, isDark, setIsDark, loggedIn, user, userAvatar, 
           {loggedIn ? (
             <>
               {isAdmin && (
-                <button onClick={() => go("admin")} title="Administration" className="w-10 h-10 rounded-full flex items-center justify-center hover:bg-black/5 transition-colors" style={{ color: page === "admin" ? C.primary : C.onSurfaceVar }}>
+                <button onClick={() => go("admin")} title="Administration" className={`w-10 h-10 rounded-full flex items-center justify-center ${iconHover} transition-colors`} style={{ color: page === "admin" ? C.primary : navMuted }}>
                   <AdminPanelSettingsIcon style={{ fontSize: 20 }} />
                 </button>
               )}
-              <button onClick={() => go("messages")} className="flex items-center justify-center hover:bg-[#6750A4]/8 rounded-full transition-colors" style={{ padding: showLabels ? "8px 16px" : "8px", gap: showLabels ? "6px" : 0, color:C.primary, fontFamily:"Roboto", fontSize:"0.875rem", fontWeight:500 }} aria-label={`Messages${messageBadge > 0 ? ` (${messageBadge})` : ""}`}>
+              <button onClick={() => go("messages")} className={`flex items-center justify-center ${iconHover} rounded-full transition-colors`} style={{ padding: showLabels ? "8px 16px" : "8px", gap: showLabels ? "6px" : 0, color: translucent ? "#FFFFFF" : C.primary, fontFamily:"Roboto", fontSize:"0.875rem", fontWeight:500, textShadow }} aria-label={`Messages${messageBadge > 0 ? ` (${messageBadge})` : ""}`}>
                 <NavIconBadge badgeContent={messageBadge}>
                   <ChatBubbleIcon style={{ fontSize:18 }} />
                 </NavIconBadge>
@@ -298,7 +365,7 @@ function Navbar({ page, setPage, isDark, setIsDark, loggedIn, user, userAvatar, 
                 </>
               ) : (
                 <>
-                  <button onClick={() => go("login")} title="Login" className="w-9 h-9 rounded-full flex items-center justify-center border transition-colors hover:bg-black/5" style={{ borderColor:C.outline, color:C.primary }}><LoginIcon style={{ fontSize:18 }} /></button>
+                  <button onClick={() => go("login")} title="Login" className={`w-9 h-9 rounded-full flex items-center justify-center border transition-colors ${iconHover}`} style={{ borderColor: translucent ? "rgba(255,255,255,0.55)" : C.outline, color: translucent ? "#FFFFFF" : C.primary }}><LoginIcon style={{ fontSize:18 }} /></button>
                   <button onClick={() => go("signup")} title="Sign Up" className="w-9 h-9 rounded-full flex items-center justify-center text-white transition-colors hover:opacity-90" style={{ background:C.primary }}><PersonAddIcon style={{ fontSize:18 }} /></button>
                 </>
               )}
@@ -313,8 +380,8 @@ function Navbar({ page, setPage, isDark, setIsDark, loggedIn, user, userAvatar, 
                 type="button"
                 onClick={() => go("alarms")}
                 aria-label={`Notifications${unreadCount > 0 ? ` (${unreadCount} unread)` : ""}`}
-                className="w-10 h-10 rounded-full flex items-center justify-center hover:bg-black/5 transition-colors"
-                style={{ color: page === "alarms" ? C.primary : C.onSurfaceVar }}
+                className={`w-10 h-10 rounded-full flex items-center justify-center ${iconHover} transition-colors`}
+                style={{ color: page === "alarms" ? C.primary : navMuted }}
               >
                 <NavIconBadge badgeContent={unreadCount}>
                   <NotificationsIcon style={{ fontSize: 20 }} />
@@ -324,8 +391,8 @@ function Navbar({ page, setPage, isDark, setIsDark, loggedIn, user, userAvatar, 
                 type="button"
                 onClick={() => go("messages")}
                 aria-label={`Messages${messageBadge > 0 ? ` (${messageBadge})` : ""}`}
-                className="w-10 h-10 rounded-full flex items-center justify-center hover:bg-black/5 transition-colors"
-                style={{ color: page === "messages" ? C.primary : C.onSurfaceVar }}
+                className={`w-10 h-10 rounded-full flex items-center justify-center ${iconHover} transition-colors`}
+                style={{ color: page === "messages" ? C.primary : navMuted }}
               >
                 <NavIconBadge badgeContent={messageBadge}>
                   <ChatBubbleIcon style={{ fontSize: 20 }} />
@@ -335,11 +402,11 @@ function Navbar({ page, setPage, isDark, setIsDark, loggedIn, user, userAvatar, 
           )}
           <button
             type="button"
-            className="w-10 h-10 flex items-center justify-center rounded-full hover:bg-black/5"
+            className={`w-10 h-10 flex items-center justify-center rounded-full ${iconHover}`}
             onClick={() => setMob(!mob)}
             aria-label={mob ? "Close menu" : "Open menu"}
             aria-expanded={mob}
-            style={{ color: C.onSurface }}
+            style={{ color: navFg }}
           >
             {mob ? <CloseIcon /> : <MenuIcon />}
           </button>

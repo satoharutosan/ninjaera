@@ -90,11 +90,11 @@ function ResourcesPage({
   };
 
   return (
-    <div style={{ background: C.bg }} className="pt-16">
-      <div className="relative h-[50vh] overflow-hidden">
+    <div style={{ background: C.bg }}>
+      <div data-nav-hero className="relative h-[50vh] min-h-[280px] overflow-hidden">
         <ImageWithFallback src={imgGarden} alt="Resources" className="w-full h-full object-cover" />
         <div className="absolute inset-0 bg-black/55" />
-        <div className="absolute inset-0 flex items-center justify-center"><h1 className="text-5xl md:text-6xl font-light text-white" style={{ fontFamily: "'Trade Winds', cursive" }}>Resources</h1></div>
+        <div className="absolute inset-0 flex items-center justify-center pt-16"><h1 className="text-5xl md:text-6xl font-light text-white" style={{ fontFamily: "'Trade Winds', cursive" }}>Resources</h1></div>
       </div>
       <div className="max-w-7xl mx-auto px-6 py-14">
         <div className="flex flex-wrap gap-2 mb-10">

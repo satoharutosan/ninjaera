@@ -44,10 +44,18 @@ function createPlaceholderVideoTrack(): { track: MediaStreamTrack; dispose: () =
 }
 
 /**
- * Single audio + single video transceiver.
- * Screen share: replaceTrack on the video sender, then always renegotiate so
- * both offerer and answerer transmit the new source (replaceTrack alone is not
- * enough on many browser/role combinations).
+ * Single audio + single video transceiver, both negotiated sendrecv at call
+ * start. Screen share is a pure RTCRtpSender.replaceTrack() on the existing
+ * video m-line — per spec this needs NO renegotiation when the replacement
+ * track is the same kind (video). Camera/mic device switching already relies
+ * on this and works both directions; screen share must follow the same
+ * pattern instead of forcing an SDP offer/answer cycle.
+ *
+ * Renegotiating on every share start/stop was the actual regression: it made
+ * the caller (impolite/offerer) and callee (polite/answerer) take asymmetric
+ * codepaths through offer-collision handling, so only the direction whose
+ * renegotiation offer didn't collide would ever show frames — and any timing
+ * change could break that one working direction too.
  */
 export class CallPeer {
   pc: RTCPeerConnection;
@@ -58,7 +66,6 @@ export class CallPeer {
   private makingOffer = false;
   private polite: boolean;
   private closed = false;
-  private negotiateChain: Promise<void> = Promise.resolve();
 
   private audioTransceiver: RTCRtpTransceiver;
   private videoTransceiver: RTCRtpTransceiver;
@@ -168,52 +175,23 @@ export class CallPeer {
     }
   }
 
-  private async waitForStable(timeoutMs = 2500) {
-    if (this.pc.signalingState === "stable") return true;
-    return new Promise<boolean>((resolve) => {
-      const done = (ok: boolean) => {
-        this.pc.removeEventListener("signalingstatechange", onChange);
-        window.clearTimeout(timer);
-        resolve(ok);
-      };
-      const onChange = () => {
-        if (this.pc.signalingState === "stable") done(true);
-      };
-      const timer = window.setTimeout(() => done(this.pc.signalingState === "stable"), timeoutMs);
-      this.pc.addEventListener("signalingstatechange", onChange);
-    });
-  }
-
-  /**
-   * Always renegotiate after camera↔screen swap so RTP actually switches
-   * for both caller and callee (replaceTrack alone is insufficient in practice).
-   */
-  private renegotiate(reason: string): Promise<void> {
-    this.negotiateChain = this.negotiateChain
-      .then(async () => {
-        if (this.closed) return;
-        webrtcLog("Renegotiation started", reason, {
-          signalingState: this.pc.signalingState,
-          direction: this.videoTransceiver.direction,
-          currentDirection: this.videoTransceiver.currentDirection,
-          polite: this.polite,
-        });
-        try {
-          this.videoTransceiver.direction = "sendrecv";
-        } catch { /* */ }
-
-        const stable = await this.waitForStable();
-        if (!stable || this.closed) {
-          webrtcLog("Renegotiation aborted — not stable");
-          return;
+  /** Verifies RTP is actually flowing on the video sender after replaceTrack. */
+  private async verifySenderFrames(label: string, expectTrackId: string) {
+    if (this.closed) return;
+    try {
+      await new Promise(r => window.setTimeout(r, 700));
+      const stats = await this.pc.getStats();
+      stats.forEach((r) => {
+        if (r.type === "outbound-rtp" && (r as { kind?: string }).kind === "video") {
+          const o = r as unknown as { framesSent?: number; bytesSent?: number };
+          webrtcLog(`[frames sending] ${label}`, {
+            trackId: expectTrackId.slice(0, 12),
+            framesSent: o.framesSent,
+            bytesSent: o.bytesSent,
+          });
         }
-        await this.createOffer();
-        webrtcLog("Renegotiation offer sent", reason);
-      })
-      .catch((err) => {
-        webrtcLog("Renegotiation failed", reason, err);
       });
-    return this.negotiateChain;
+    } catch { /* */ }
   }
 
   private async logVideoStats(label: string) {
@@ -516,9 +494,8 @@ export class CallPeer {
       throw new Error("Screen track was not attached to the video sender.");
     }
     webrtcLog("SUCCESS — video sender now carries screen track");
-
-    // Renegotiate so both sides refresh RTP after replaceTrack.
-    await this.renegotiate("screen-share-start");
+    // No renegotiation: the video m-line is already sendrecv on both sides.
+    void this.verifySenderFrames("post-screen-share-start", track.id);
 
     track.onended = () => {
       screenLog("Track ended (browser UI stop)");
@@ -565,7 +542,7 @@ export class CallPeer {
         webrtcLog("Before restore replaceTrack:", sender.track?.id);
         await sender.replaceTrack(restore);
         webrtcLog("After restore replaceTrack:", sender.track?.id);
-        await this.renegotiate("screen-share-stop");
+        void this.verifySenderFrames("post-screen-share-stop", restore.id);
       } catch (e) {
         webrtcLog("restore camera failed", e);
       }

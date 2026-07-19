@@ -605,10 +605,16 @@ export function CallProvider({ children }: { children: ReactNode }) {
               remoteTrackId: peerRef.current?.getRemoteVideoTrackId(),
             });
           }
-          // replaceTrack keeps the same receiver track id — refresh wrappers only.
-          // Do NOT force-clear <video>.srcObject (autoplay would fail on A+V streams).
+          // No renegotiation happens for screen share anymore (pure replaceTrack),
+          // but frames can arrive slightly after the media-state signal — poll a
+          // few times so the <video> forced-rebind (bindKey) reliably repaints.
           refreshRemotePreview();
-          window.setTimeout(() => refreshRemotePreview(), 400);
+          window.setTimeout(() => refreshRemotePreview(), 200);
+          window.setTimeout(() => {
+            refreshRemotePreview();
+            setRemoteBindEpoch(e => e + 1);
+          }, 600);
+          window.setTimeout(() => refreshRemotePreview(), 1200);
         }
       }),
       onRealtimeEvent<{ error: string; code?: string; callId?: string }>("call:error", ({ error, code }) => {

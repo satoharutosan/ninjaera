@@ -9,6 +9,8 @@ import CloseIcon from "@mui/icons-material/Close";
 import CheckIcon from "@mui/icons-material/Check";
 import DeleteIcon from "@mui/icons-material/Delete";
 import EditIcon from "@mui/icons-material/Edit";
+import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
+import ArrowDownwardIcon from "@mui/icons-material/ArrowDownward";
 import PushPinIcon from "@mui/icons-material/PushPin";
 import BlockIcon from "@mui/icons-material/Block";
 import SportsEsportsIcon from "@mui/icons-material/SportsEsports";
@@ -1018,9 +1020,52 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                     setEditChannel({ name: "", bio: "", visibility: "public", archived: false, avatarUrl: null });
                   }}>Create Channel</FilledBtn>
                 </div>
+                <p className="text-xs mb-4" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
+                  Use the arrows to set the order shown in Messages. Order is saved for all users.
+                </p>
                 <div className="space-y-3">
-                  {channels.map(ch => (
+                  {channels.map((ch, index) => (
                     <div key={ch.id} className="rounded-2xl p-4 flex items-center gap-4" style={{ background: C.surface, boxShadow: SH1 }}>
+                      <div className="flex flex-col gap-0.5 shrink-0">
+                        <button
+                          type="button"
+                          title="Move up"
+                          disabled={index === 0}
+                          onClick={() => {
+                            if (index === 0) return;
+                            const next = [...channels];
+                            [next[index - 1], next[index]] = [next[index], next[index - 1]];
+                            setChannels(next);
+                            void handleUserAction(
+                              () => api.admin.reorderChannels(next.map(c => c.id)),
+                              "Channel order saved",
+                            );
+                          }}
+                          className="p-1 rounded-full hover:bg-black/5 disabled:opacity-30"
+                          style={{ color: C.onSurfaceVar }}
+                        >
+                          <ArrowUpwardIcon style={{ fontSize: 16 }} />
+                        </button>
+                        <button
+                          type="button"
+                          title="Move down"
+                          disabled={index === channels.length - 1}
+                          onClick={() => {
+                            if (index >= channels.length - 1) return;
+                            const next = [...channels];
+                            [next[index], next[index + 1]] = [next[index + 1], next[index]];
+                            setChannels(next);
+                            void handleUserAction(
+                              () => api.admin.reorderChannels(next.map(c => c.id)),
+                              "Channel order saved",
+                            );
+                          }}
+                          className="p-1 rounded-full hover:bg-black/5 disabled:opacity-30"
+                          style={{ color: C.onSurfaceVar }}
+                        >
+                          <ArrowDownwardIcon style={{ fontSize: 16 }} />
+                        </button>
+                      </div>
                       <ChatAvatar name={ch.name} avatarUrl={ch.avatarUrl} size={40} channel />
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">

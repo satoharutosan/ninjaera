@@ -174,7 +174,7 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
     firstItemIndex, firstItemIndexRef,
     showJumpBtn, setShowJumpBtn,
     unreadBelow, setUnreadBelow,
-    isNearBottomRef, pinToBottomRef, visibleStartDataIndexRef,
+    isNearBottomRef, pinToBottomRef, visibleStartDataIndexRef, suppressMarkReadUntilRef,
     loadOlderMessages, loadNewerMessages,
     applyNewMessage, applyUpdatedMessage, applyDeletedMessage, applyReaction,
     jumpToLatest, appendLocal, replaceOptimistic, markLocalFailed, updateLocal,
@@ -376,6 +376,7 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
       }),
       onRealtimeEvent("dm_request:new", () => loadDmRequests()),
       onRealtimeEvent("dm_request:resolved", () => loadDmRequests()),
+      onRealtimeEvent("channels:reorder", () => refreshContacts()),
       onRealtimeEvent<{
         requestId: number;
         conversationId: number;
@@ -965,13 +966,33 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
         return c.name.toLowerCase().includes(q) || c.msg.toLowerCase().includes(q);
       }
       return true;
-    })
-    // Telegram-style unified inbox: sort by most recent activity across channels + DMs.
-    .sort((a, b) => {
-      const ta = a.lastActivityAt ? Date.parse(a.lastActivityAt) : 0;
-      const tb = b.lastActivityAt ? Date.parse(b.lastActivityAt) : 0;
-      return tb - ta;
     });
+
+  const sortByActivityDesc = (a: Contact, b: Contact) => {
+    const ta = a.lastActivityAt ? Date.parse(a.lastActivityAt) : 0;
+    const tb = b.lastActivityAt ? Date.parse(b.lastActivityAt) : 0;
+    return tb - ta;
+  };
+
+  /** Admin-defined channel order (sortOrder), then id. Never by last activity. */
+  const sortChannelsByAdminOrder = (a: Contact, b: Contact) => {
+    const sa = a.sortOrder ?? a.id;
+    const sb = b.sortOrder ?? b.id;
+    if (sa !== sb) return sa - sb;
+    return a.id - b.id;
+  };
+
+  const channelContacts = filteredContacts
+    .filter(c => c.type === "channel")
+    .sort(sortChannelsByAdminOrder);
+  const dmContacts = filteredContacts
+    .filter(c => c.type === "dm")
+    .sort(sortByActivityDesc);
+  const orderedContacts = listFilter === "channel"
+    ? channelContacts
+    : listFilter === "dm"
+      ? dmContacts
+      : null; // "all" renders two sections
 
   const sendDmRequest = async () => {
     const username = newDmUsername.trim();
@@ -1285,9 +1306,70 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
                   <p className="text-xs px-4 py-6 text-center" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
                     {searchQuery.trim() ? "No conversations match your search." : "No conversations yet."}
                   </p>
+                ) : listFilter === "all" ? (
+                  <div>
+                    {channelContacts.length > 0 && (
+                      <div className="mb-1">
+                        <div className="px-4 pt-2 pb-1">
+                          <span className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>Channels</span>
+                        </div>
+                        {channelContacts.map(m => (
+                          <button key={m.id} onClick={() => selectConversation(m)}
+                            onContextMenu={e => { e.preventDefault(); setCtxMenu({ x: e.clientX, y: e.clientY, contact: m }); }}
+                            className="w-full flex items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-[#6750A4]/6" style={{ background: sel.id === m.id ? C.primaryCont : "transparent" }}>
+                            <div className="relative shrink-0">
+                              <ChatAvatar name={m.name} avatarUrl={m.avatarUrl} size={40} channel />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex justify-between items-center gap-2">
+                                <span className="text-sm font-medium truncate" style={{ color: C.onSurface, fontFamily: "Roboto" }}>{m.name}</span>
+                                {m.muted && <VolumeOffIcon style={{ fontSize: 14, color: C.onSurfaceVar }} titleAccess="Muted" />}
+                              </div>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    {dmContacts.length > 0 && (
+                      <div>
+                        <div className="px-4 pt-3 pb-1">
+                          <span className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>Direct Messages</span>
+                        </div>
+                        {dmContacts.map(m => (
+                          <button key={m.id} onClick={() => selectConversation(m)}
+                            onContextMenu={e => { e.preventDefault(); setCtxMenu({ x: e.clientX, y: e.clientY, contact: m }); }}
+                            className="w-full flex items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-[#6750A4]/6" style={{ background: sel.id === m.id ? C.primaryCont : "transparent" }}>
+                            <div className="relative shrink-0">
+                              <ChatAvatar name={m.name} avatarUrl={m.avatarUrl} size={40} deleted={!!m.isDeleted} />
+                              <FiberManualRecordIcon style={{ fontSize: 12, color: presenceColor(m), position: "absolute", bottom: -1, right: -1 }} />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex justify-between items-center gap-2">
+                                <span className="text-sm font-medium truncate" style={{ color: C.onSurface, fontFamily: "Roboto" }}>{m.name}</span>
+                                {m.muted && <VolumeOffIcon style={{ fontSize: 14, color: C.onSurfaceVar }} titleAccess="Muted" />}
+                              </div>
+                              <p className="text-xs truncate" style={{ color: C.onSurfaceVar }}>
+                                <MediaPreviewLine
+                                  text={m.msg}
+                                  previewKind={m.previewKind}
+                                  fileName={m.previewFileName}
+                                  color={C.onSurfaceVar}
+                                  iconSize={13}
+                                />
+                              </p>
+                            </div>
+                            <div className="w-5 h-5 shrink-0 flex items-center justify-center">
+                              {m.unread > 0 && (
+                                <div className="unread-badge rounded-full flex items-center justify-center text-white text-[10px] font-bold" style={{ background: BADGE_BG }}>{m.unread > 9 ? "9+" : m.unread}</div>
+                              )}
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 ) : (
-                  // Telegram-style unified chronological inbox (channels + DMs together).
-                  filteredContacts.map(m => (
+                  (orderedContacts ?? []).map(m => (
                     <button key={m.id} onClick={() => selectConversation(m)}
                       onContextMenu={e => { e.preventDefault(); setCtxMenu({ x:e.clientX, y:e.clientY, contact:m }); }}
                       className="w-full flex items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-[#6750A4]/6" style={{ background:sel.id===m.id?C.primaryCont:"transparent" }}>
@@ -1304,7 +1386,6 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
                           <span className="text-sm font-medium truncate" style={{ color:C.onSurface, fontFamily:"Roboto" }}>{m.name}</span>
                           {m.muted && <VolumeOffIcon style={{ fontSize:14, color:C.onSurfaceVar }} titleAccess="Muted" />}
                         </div>
-                        {/* Channels omit last-message preview for performance; DMs keep it. */}
                         {m.type === "dm" && (
                           <p className="text-xs truncate" style={{ color:C.onSurfaceVar }}>
                             <MediaPreviewLine
@@ -1469,23 +1550,34 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
                     clearTimeout(unpinGraceTimer.current);
                     unpinGraceTimer.current = null;
                   }
-                  pinToBottomRef.current = true;
-                  setShowJumpBtn(false);
-                  setUnreadBelow(0);
-                  if (sel.id && msgsRef.current.length && !hasMoreNewer) {
-                    const newest = [...msgsRef.current].reverse().find(m => m.id > 0)?.id
-                      ?? msgsRef.current[msgsRef.current.length - 1].id;
-                    setLastReadMessageId(newest);
-                    scheduleMarkRead(sel.id);
-                    if (currentUserId) {
-                      saveConversationReadState(currentUserId, sel.id, {
-                        anchorMessageId: newest,
-                        atBottom: true,
-                        lastReadMessageId: newest,
-                        lastOpenedAt: Date.now(),
-                      });
+                  const applyCaughtUp = () => {
+                    if (!isNearBottomRef.current) return;
+                    pinToBottomRef.current = true;
+                    setShowJumpBtn(false);
+                    setUnreadBelow(0);
+                    if (sel.id && msgsRef.current.length && !hasMoreNewer) {
+                      const newest = [...msgsRef.current].reverse().find(m => m.id > 0)?.id
+                        ?? msgsRef.current[msgsRef.current.length - 1].id;
+                      setLastReadMessageId(newest);
+                      scheduleMarkRead(sel.id);
+                      if (currentUserId) {
+                        saveConversationReadState(currentUserId, sel.id, {
+                          anchorMessageId: newest,
+                          atBottom: true,
+                          lastReadMessageId: newest,
+                          lastOpenedAt: Date.now(),
+                        });
+                      }
                     }
+                  };
+                  // Defer mark-read after open-at-unread so Virtuoso's first at-bottom
+                  // pulse does not clear the NEW separator before layout settles.
+                  const suppressUntil = suppressMarkReadUntilRef.current;
+                  if (Date.now() < suppressUntil) {
+                    window.setTimeout(applyCaughtUp, suppressUntil - Date.now() + 16);
+                    return;
                   }
+                  applyCaughtUp();
                 } else {
                   // Defer unpin: new rows briefly report not-at-bottom before followOutput catches up.
                   if (unpinGraceTimer.current) clearTimeout(unpinGraceTimer.current);

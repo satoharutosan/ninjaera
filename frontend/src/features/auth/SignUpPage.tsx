@@ -20,6 +20,10 @@ import {
 } from "@/features/auth/signupDraft";
 import { persistAuthSession } from "@/shared/authStorage";
 import type { ApiUser } from "@/app/api";
+import {
+  isTrustedRegistrationEmail,
+  UNTRUSTED_EMAIL_PROVIDER_MESSAGE,
+} from "@/shared/trustedEmailProviders";
 
 function SignUpPage({ setPage, onLogin }: {
   setPage: (p: Page) => void;
@@ -81,6 +85,10 @@ function SignUpPage({ setPage, onLogin }: {
     if (!agreed) { setError("Please accept the Terms of Service and Privacy Policy"); return; }
     if (pw !== confirmPw) { setError("Passwords do not match"); return; }
     if (pw.length < 6) { setError("Password must be at least 6 characters"); return; }
+    if (!isTrustedRegistrationEmail(email)) {
+      setError(UNTRUSTED_EMAIL_PROVIDER_MESSAGE);
+      return;
+    }
     const usernameErr = await usernameField.validateBeforeSubmit();
     if (usernameErr) {
       setError(usernameErr);

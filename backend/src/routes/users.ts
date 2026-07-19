@@ -15,6 +15,8 @@ import { createMemoryUploader, persistMulterFile } from "../storage/multerUpload
 import { validateUpload } from "../services/uploadValidation.js";
 import { rateLimit } from "../middleware/rateLimit.js";
 import { emitProfileUpdated, syncTeamMemberDisplayName } from "../services/profileBroadcast.js";
+import { normalizeEmail } from "../services/emailVerification.js";
+import { assertTrustedRegistrationEmail } from "../config/trustedEmailProviders.js";
 
 const router = Router();
 const now = () => new Date().toISOString();
@@ -41,7 +43,7 @@ router.get("/me", requireAuth, async (req, res) => {
 });
 
 router.patch("/me", requireAuth, async (req, res) => {
-  const { username, gender, dateOfBirth, country, city, status, bio, village, clan } = req.body;
+  const { username, email, gender, dateOfBirth, country, city, status, bio, village, clan } = req.body;
   const fields: string[] = [];
   const values: unknown[] = [];
   let nextUsername: string | undefined;
@@ -55,6 +57,29 @@ router.patch("/me", requireAuth, async (req, res) => {
     nextUsername = check.username;
     fields.push("username = ?");
     values.push(check.username);
+  }
+  if (email !== undefined) {
+    const nextEmail = normalizeEmail(String(email));
+    if (!nextEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(nextEmail)) {
+      res.status(400).json({ error: "Enter a valid email address" });
+      return;
+    }
+    const trust = assertTrustedRegistrationEmail(nextEmail);
+    if (!trust.ok) {
+      res.status(400).json({ error: trust.error, code: trust.code });
+      return;
+    }
+    if (nextEmail !== req.user!.email) {
+      const taken = await qGet("SELECT id FROM users WHERE email = ? AND id != ? AND is_npc = 0", nextEmail, req.user!.id);
+      if (taken) {
+        res.status(409).json({ error: "Another account already uses this email" });
+        return;
+      }
+      fields.push("email = ?");
+      values.push(nextEmail);
+      fields.push("email_verified = ?");
+      values.push(1);
+    }
   }
   if (gender !== undefined) { fields.push("gender = ?"); values.push(gender); }
   if (dateOfBirth !== undefined) { fields.push("date_of_birth = ?"); values.push(dateOfBirth); }

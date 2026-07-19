@@ -14,13 +14,24 @@ import { sortChatMessages, toChatMsg, type ChatMsg } from "./types";
 
 export type ThreadOpenMode = "newest" | "around";
 
+export type InitialScrollIndex =
+  | number
+  | { index: number; align: "start" | "center" | "end" };
+
 export type UseMessageThreadOptions = {
   conversationId: number;
   currentUserId: number;
-  /** Sidebar unread count — triggers a soft newest-window refresh after cache boot. */
+  /** Sidebar unread count — helps decide open-at-unread vs open-at-bottom. */
   expectedUnread?: number;
   onContactsRefresh?: () => void;
 };
+
+/** First message after the read cursor (single NEW boundary target). */
+function findFirstUnreadId(list: ChatMsg[], lastReadId: number | null): number | null {
+  if (lastReadId == null || lastReadId <= 0) return null;
+  const found = list.find(m => m.id > 0 && m.id > lastReadId);
+  return found?.id ?? null;
+}
 
 export function useMessageThread({
   conversationId,
@@ -35,7 +46,7 @@ export function useMessageThread({
   const [loadingNewer, setLoadingNewer] = useState(false);
   const [threadReady, setThreadReady] = useState(false);
   const [threadBootId, setThreadBootId] = useState(0);
-  const [initialScrollIndex, setInitialScrollIndex] = useState<number | null>(null);
+  const [initialScrollIndex, setInitialScrollIndex] = useState<InitialScrollIndex | null>(null);
   const [lastReadMessageId, setLastReadMessageId] = useState<number | null>(null);
   const [firstItemIndex, setFirstItemIndex] = useState(VIRTUOSO_START_INDEX);
   const [showJumpBtn, setShowJumpBtn] = useState(false);
@@ -53,6 +64,8 @@ export function useMessageThread({
   const visibleStartDataIndexRef = useRef(0);
   const conversationIdRef = useRef(conversationId);
   const expectedUnreadRef = useRef(expectedUnread);
+  /** Ignore spurious at-bottom marks right after opening at the unread boundary. */
+  const suppressMarkReadUntilRef = useRef(0);
 
   useEffect(() => {
     conversationIdRef.current = conversationId;
@@ -78,6 +91,8 @@ export function useMessageThread({
     flags: { hasMoreOlder: boolean; hasMoreNewer: boolean },
     opts: {
       scrollToId?: number | null;
+      /** Align first unread near the top so the NEW separator is visible. */
+      scrollAlign?: "start" | "center" | "end";
       pinBottom: boolean;
       lastReadId?: number | null;
       showJump?: boolean;
@@ -94,12 +109,14 @@ export function useMessageThread({
       const found = list.findIndex(m => m.id === opts.scrollToId);
       if (found >= 0) idx = found;
     }
-    setInitialScrollIndex(idx);
+    const align = opts.scrollAlign ?? (opts.pinBottom ? "end" : "start");
+    setInitialScrollIndex(opts.pinBottom ? idx : { index: idx, align });
     pinToBottomRef.current = opts.pinBottom;
     isNearBottomRef.current = opts.pinBottom;
     setShowJumpBtn(!!opts.showJump || !opts.pinBottom);
     setUnreadBelow(0);
     if (opts.lastReadId !== undefined) setLastReadMessageId(opts.lastReadId);
+    suppressMarkReadUntilRef.current = opts.pinBottom ? 0 : Date.now() + 500;
     setThreadBootId(id => id + 1);
     setThreadReady(true);
   }, [applyFlags]);
@@ -112,107 +129,128 @@ export function useMessageThread({
     markConversationOpened(currentUserId, conversationId);
 
     const saved = getConversationReadState(currentUserId, conversationId);
-    const shouldRestore = !!(saved && !saved.atBottom && saved.anchorMessageId);
     setThreadReady(false);
     setLastReadMessageId(saved?.lastReadMessageId ?? null);
 
-    const softRefreshNewest = async () => {
+    const finalizeOpen = (
+      list: ChatMsg[],
+      flags: { hasMoreOlder: boolean; hasMoreNewer: boolean },
+      source: "cache" | "network",
+    ) => {
+      if (gen !== loadGenRef.current) return;
+
+      const newestId = list.filter(m => m.id > 0).at(-1)?.id
+        ?? list[list.length - 1]?.id
+        ?? null;
+      ensureFirstOpenReadBaseline(currentUserId, conversationId, newestId);
+      const afterBaseline = getConversationReadState(currentUserId, conversationId);
+      const lastReadId = afterBaseline?.lastReadMessageId ?? null;
+      const firstUnreadId = findFirstUnreadId(list, lastReadId);
+      const hasUnread = firstUnreadId != null
+        || (expectedUnreadRef.current > 0 && lastReadId != null && newestId != null && newestId > lastReadId);
+
+      if (hasUnread && firstUnreadId != null) {
+        // Open at the unread boundary — keep lastRead so a single NEW separator stays.
+        saveConversationReadState(currentUserId, conversationId, {
+          anchorMessageId: firstUnreadId,
+          atBottom: false,
+          lastReadMessageId: lastReadId,
+          lastOpenedAt: Date.now(),
+        });
+        bootThread(list, flags, {
+          scrollToId: firstUnreadId,
+          scrollAlign: "start",
+          pinBottom: false,
+          lastReadId,
+          showJump: true,
+        });
+      } else {
+        // Fully caught up — pin to bottom, clear NEW, mark server read.
+        if (newestId != null) {
+          saveConversationReadState(currentUserId, conversationId, {
+            anchorMessageId: newestId,
+            atBottom: true,
+            lastReadMessageId: newestId,
+            lastOpenedAt: Date.now(),
+          });
+        }
+        bootThread(list, flags, {
+          pinBottom: true,
+          lastReadId: newestId,
+        });
+        api.messages.markRead(conversationId).then(() => onContactsRefresh?.()).catch(() => {});
+        requestAnimationFrame(() => {
+          pinToBottomRef.current = true;
+          isNearBottomRef.current = true;
+        });
+      }
+      msgPerf.markOpenReady(conversationId, source);
+      onContactsRefresh?.();
+    };
+
+    // When sidebar reports unread but the newest window has no boundary yet, load around lastRead.
+    const loadAroundUnread = async (lastReadId: number): Promise<boolean> => {
       try {
-        const r = await api.messages.getMessages(conversationId, { limit: MESSAGE_PAGE_SIZE });
-        if (gen !== loadGenRef.current) return;
+        const t0 = performance.now();
+        const r = await api.messages.getMessages(conversationId, {
+          limit: MESSAGE_PAGE_SIZE,
+          around: lastReadId,
+        });
+        msgPerf.markFetch(performance.now() - t0, { conversationId, mode: "around" });
+        if (gen !== loadGenRef.current) return true;
         const mapped = r.messages.map(m => toChatMsg(m, currentUserId));
         const flags = {
           hasMoreOlder: r.hasMoreOlder ?? r.hasMore,
           hasMoreNewer: r.hasMoreNewer ?? false,
         };
         messageCache.setWindow(conversationId, mapped, flags, "merge");
-        const cached = messageCache.get(conversationId);
-        const list = cached?.messages ?? mapped;
-        const newestId = list.filter(m => m.id > 0).at(-1)?.id ?? null;
-        if (newestId != null) {
-          saveConversationReadState(currentUserId, conversationId, {
-            anchorMessageId: newestId,
-            atBottom: true,
-            lastReadMessageId: newestId,
-            lastOpenedAt: Date.now(),
-          });
-          setLastReadMessageId(newestId);
-        }
-        // Merge into live UI without tearing down Virtuoso when possible
-        setMsgs(prev => {
-          const map = new Map<number, ChatMsg>();
-          for (const m of prev) map.set(m.id, m);
-          for (const m of list) map.set(m.id, m);
-          const next = sortChatMessages([...map.values()]);
-          msgsRef.current = next;
-          return next;
-        });
-        applyFlags(flags.hasMoreOlder, flags.hasMoreNewer);
-        onContactsRefresh?.();
+        finalizeOpen(mapped, flags, "network");
+        return true;
       } catch {
-        /* keep cache boot */
+        return false;
       }
     };
 
-    // Cache-first: newest window or around-anchor already present
+    // Cache-first boot
     const cached = messageCache.get(conversationId);
-    if (cached?.messages.length) {
-      if (shouldRestore && saved!.anchorMessageId && messageCache.hasMessage(conversationId, saved!.anchorMessageId)) {
-        msgPerf.cacheHit(conversationId);
-        if (gen !== loadGenRef.current) return;
-        bootThread(cached.messages, cached, {
-          scrollToId: saved!.anchorMessageId,
-          pinBottom: false,
-          lastReadId: saved?.lastReadMessageId ?? null,
-          showJump: true,
-        });
-        msgPerf.markOpenReady(conversationId, "cache");
-        onContactsRefresh?.();
-        return;
+    if (cached?.messages.length && messageCache.hasNewestWindow(conversationId)) {
+      msgPerf.cacheHit(conversationId);
+      const newestId = cached.messages.filter(m => m.id > 0).at(-1)?.id ?? null;
+      ensureFirstOpenReadBaseline(currentUserId, conversationId, newestId);
+      const lastReadId = getConversationReadState(currentUserId, conversationId)?.lastReadMessageId ?? null;
+      const firstUnreadId = findFirstUnreadId(cached.messages, lastReadId);
+      // Unread exists server-side but boundary isn't in the newest window — refetch around cursor.
+      if (
+        expectedUnreadRef.current > 0
+        && lastReadId != null
+        && firstUnreadId == null
+        && newestId != null
+        && newestId > lastReadId
+      ) {
+        const ok = await loadAroundUnread(lastReadId);
+        if (ok) return;
       }
-      if (!shouldRestore && messageCache.hasNewestWindow(conversationId)) {
-        msgPerf.cacheHit(conversationId);
-        if (gen !== loadGenRef.current) return;
-        const newestId = cached.messages.filter(m => m.id > 0).at(-1)?.id
-          ?? cached.messages[cached.messages.length - 1]?.id
-          ?? null;
-        ensureFirstOpenReadBaseline(currentUserId, conversationId, newestId);
-        // Opening pinned to newest = messages are read; clear stale "New" divider.
-        if (newestId != null) {
-          saveConversationReadState(currentUserId, conversationId, {
-            anchorMessageId: newestId,
-            atBottom: true,
-            lastReadMessageId: newestId,
-            lastOpenedAt: Date.now(),
-          });
-        }
-        bootThread(cached.messages, cached, {
-          pinBottom: true,
-          lastReadId: newestId,
-        });
-        msgPerf.markOpenReady(conversationId, "cache");
-        // Still mark read on server without waiting
-        api.messages.markRead(conversationId).then(() => onContactsRefresh?.()).catch(() => {});
-        // If sidebar still shows unread, soft-refresh to catch any WS gap without blanking UI.
-        if (expectedUnreadRef.current > 0) {
-          void softRefreshNewest();
-        }
-        return;
-      }
+      finalizeOpen(cached.messages, cached, "cache");
+      return;
     }
 
     msgPerf.cacheMiss(conversationId);
     try {
+      const priorLastRead = saved?.lastReadMessageId ?? null;
+      const preferAround = !!(
+        priorLastRead
+        && expectedUnreadRef.current > 0
+      );
       const t0 = performance.now();
-      const r = shouldRestore && saved!.anchorMessageId
+      const r = preferAround
         ? await api.messages.getMessages(conversationId, {
             limit: MESSAGE_PAGE_SIZE,
-            around: saved!.anchorMessageId,
+            around: priorLastRead!,
           })
         : await api.messages.getMessages(conversationId, { limit: MESSAGE_PAGE_SIZE });
       msgPerf.markFetch(performance.now() - t0, {
         conversationId,
-        mode: shouldRestore ? "around" : "newest",
+        mode: preferAround ? "around" : "newest",
       });
       if (gen !== loadGenRef.current) return;
 
@@ -223,47 +261,32 @@ export function useMessageThread({
       };
       messageCache.setWindow(conversationId, mapped, flags, "merge");
 
-      const newestId = mapped.filter(m => m.id > 0).at(-1)?.id ?? mapped[mapped.length - 1]?.id ?? null;
-      if (!shouldRestore) {
-        ensureFirstOpenReadBaseline(currentUserId, conversationId, newestId);
+      // Prefer-around miss: fall back to newest window once.
+      if (preferAround) {
+        const lastReadId = priorLastRead;
+        const firstUnreadId = findFirstUnreadId(mapped, lastReadId);
+        if (firstUnreadId == null && !flags.hasMoreNewer) {
+          // Around window had no unread after cursor — treat as caught up via newest.
+          const newest = await api.messages.getMessages(conversationId, { limit: MESSAGE_PAGE_SIZE });
+          if (gen !== loadGenRef.current) return;
+          const newestMapped = newest.messages.map(m => toChatMsg(m, currentUserId));
+          const newestFlags = {
+            hasMoreOlder: newest.hasMoreOlder ?? newest.hasMore,
+            hasMoreNewer: newest.hasMoreNewer ?? false,
+          };
+          messageCache.setWindow(conversationId, newestMapped, newestFlags, "merge");
+          finalizeOpen(newestMapped, newestFlags, "network");
+          return;
+        }
       }
 
-      const anchorId = shouldRestore ? saved!.anchorMessageId : null;
-      const found = anchorId != null && mapped.some(m => m.id === anchorId);
-      const pinBottom = !found;
-      // When landing on the live edge, treat the window as read so "New" clears immediately.
-      const effectiveLastRead = shouldRestore
-        ? (saved?.lastReadMessageId ?? null)
-        : newestId;
-      if (pinBottom && newestId != null) {
-        saveConversationReadState(currentUserId, conversationId, {
-          anchorMessageId: newestId,
-          atBottom: true,
-          lastReadMessageId: newestId,
-          lastOpenedAt: Date.now(),
-        });
-      }
-      bootThread(mapped, flags, {
-        scrollToId: found ? anchorId : null,
-        pinBottom,
-        lastReadId: effectiveLastRead,
-        showJump: found,
-      });
-      msgPerf.markOpenReady(conversationId, "network");
-      onContactsRefresh?.();
-      if (!found) {
-        // Ensure first paint lands on newest even if Virtuoso mounts mid-paint
-        requestAnimationFrame(() => {
-          pinToBottomRef.current = true;
-          isNearBottomRef.current = true;
-        });
-      }
+      finalizeOpen(mapped, flags, "network");
     } catch {
       if (gen !== loadGenRef.current) return;
       bootThread([], { hasMoreOlder: false, hasMoreNewer: false }, { pinBottom: true });
       msgPerf.markOpenReady(conversationId, "network");
     }
-  }, [conversationId, currentUserId, bootThread, onContactsRefresh, applyFlags]);
+  }, [conversationId, currentUserId, bootThread, onContactsRefresh]);
 
   useEffect(() => {
     void openConversation();
@@ -538,6 +561,7 @@ export function useMessageThread({
     isNearBottomRef,
     pinToBottomRef,
     visibleStartDataIndexRef,
+    suppressMarkReadUntilRef,
     loadOlderMessages,
     loadNewerMessages,
     applyNewMessage,

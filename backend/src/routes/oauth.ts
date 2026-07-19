@@ -17,6 +17,7 @@ import {
   frontendUrl,
   createOAuthLoginCode,
 } from "../services/oauth.js";
+import { assertTrustedRegistrationEmail } from "../config/trustedEmailProviders.js";
 
 const router = Router();
 const now = () => new Date().toISOString();
@@ -199,6 +200,19 @@ async function completeOAuthLogin(
       }
       user = byEmail;
     } else {
+      const trust = assertTrustedRegistrationEmail(profile.email);
+      if (!trust.ok) {
+        logActivitySync({
+          req,
+          eventType: "register_denied",
+          eventCategory: "security",
+          description: `OAuth ${profile.provider} registration blocked: untrusted email provider`,
+          result: "failure",
+          metadata: { provider: profile.provider },
+        });
+        redirectWithError(res, trust.error);
+        return;
+      }
       await createOAuthUser(profile);
       isNewUser = true;
       user = await findUserByEmail(profile.email);

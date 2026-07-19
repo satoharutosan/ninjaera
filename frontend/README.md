@@ -9,3 +9,5 @@
 
   Run `npm run dev` to start the development server.
   
+frontend/public/videos/hero-characters.webm
+frontend/public/videos/hero-characters.mp4

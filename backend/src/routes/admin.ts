@@ -12,6 +12,7 @@ import { requireAuth, publicUser, timeAgo, formatTime, bumpTokenVersion } from "
 import { requireAdmin, requireSuperAdmin } from "../middleware/admin.js";
 import { canManageTargetUser, canSelectTargetUser, isSuperAdmin } from "../services/adminPermissions.js";
 import { normalizeEmail } from "../services/emailVerification.js";
+import { assertTrustedRegistrationEmail } from "../config/trustedEmailProviders.js";
 import {
   isUsernameConstraintError,
   validateUsernameForWrite,
@@ -612,6 +613,11 @@ router.patch("/users/:id", async (req, res) => {
       res.status(400).json({ error: "Enter a valid email address" });
       return;
     }
+    const trust = assertTrustedRegistrationEmail(nextEmail);
+    if (!trust.ok) {
+      res.status(400).json({ error: trust.error, code: trust.code });
+      return;
+    }
     const taken = await qGet("SELECT id FROM users WHERE email = ? AND id != ? AND is_npc = 0", nextEmail, id);
     if (taken) {
       res.status(409).json({ error: "Another account already uses this email" });
@@ -932,8 +938,10 @@ router.put("/content/about-our-story", storyImageMiddleware, async (req, res) =>
 // ── Channels ─────────────────────────────────────────────────────────────────
 router.get("/channels", async (_req, res) => {
   const channels = await qAll<Record<string, unknown>>(`
-    SELECT c.*, (SELECT COUNT(*) FROM conversation_participants cp WHERE cp.conversation_id = c.id) as memberCount
-    FROM conversations c WHERE c.type = 'channel' ORDER BY c.archived, c.id
+    SELECT c.*, (SELECT COUNT(*) FROM conversation_participants cp WHERE cp.conversation_id = c.id) as member_count
+    FROM conversations c
+    WHERE c.type = 'channel'
+    ORDER BY c.archived, COALESCE(c.sort_order, c.id), c.id
   `);
   res.json({
     channels: channels.map(c => ({
@@ -943,11 +951,34 @@ router.get("/channels", async (_req, res) => {
       archived: c.archived === 1,
       visibility: c.visibility || "public",
       moderatorIds: JSON.parse((c.moderator_ids as string) || "[]"),
-      memberCount: c.memberCount,
+      memberCount: c.member_count,
       avatarUrl: (c.avatar_url as string | null) || null,
+      sortOrder: Number(c.sort_order ?? c.id),
       createdAt: c.created_at,
     })),
   });
+});
+
+/** Persist admin-defined channel order for all clients. */
+router.put("/channels/reorder", async (req, res) => {
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids.map((n: unknown) => Number(n)).filter((n: number) => Number.isFinite(n) && n > 0) : [];
+  if (!ids.length) {
+    res.status(400).json({ error: "ids array is required" });
+    return;
+  }
+  const existing = await qAll<{ id: number }>(
+    `SELECT id FROM conversations WHERE type = 'channel' AND id IN (${ids.map(() => "?").join(",")})`,
+    ...ids,
+  );
+  if (existing.length !== ids.length) {
+    res.status(400).json({ error: "One or more channel ids are invalid" });
+    return;
+  }
+  for (let i = 0; i < ids.length; i++) {
+    await qRun("UPDATE conversations SET sort_order = ? WHERE id = ? AND type = 'channel'", i + 1, ids[i]);
+  }
+  broadcast("channels:reorder", { ids });
+  res.json({ ok: true, ids });
 });
 
 router.post("/channels", channelAvatarMiddleware, async (req, res) => {
@@ -965,10 +996,14 @@ router.post("/channels", channelAvatarMiddleware, async (req, res) => {
     })).url
     : null;
   try {
+    const maxOrder = await qGet<{ m: number | null }>(
+      "SELECT MAX(sort_order) as m FROM conversations WHERE type = 'channel'",
+    );
+    const sortOrder = (Number(maxOrder?.m) || 0) + 1;
     const result = await qRun(`
-      INSERT INTO conversations (type, name, bio, visibility, avatar_url, created_at)
-      VALUES ('channel', ?, ?, ?, ?, ?)
-    `, name, bio, visibility, avatarUrl, ts);
+      INSERT INTO conversations (type, name, bio, visibility, avatar_url, sort_order, created_at)
+      VALUES ('channel', ?, ?, ?, ?, ?, ?)
+    `, name, bio, visibility, avatarUrl, sortOrder, ts);
     const convId = result.lastInsertRowid as number;
     await qRun("INSERT INTO conversation_participants (conversation_id, user_id, joined_at, last_read_at) VALUES (?, ?, ?, ?)", convId, req.user!.id, ts, ts);
     if (visibility === "public") {

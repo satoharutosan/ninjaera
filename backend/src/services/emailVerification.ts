@@ -15,6 +15,7 @@ import { validateNewPassword } from "./passwordReset.js";
 import { setUserOnline } from "./presence.js";
 import { syncPublicChannels } from "./channels.js";
 import { logActivitySync } from "./activityLog.js";
+import { assertTrustedRegistrationEmail } from "../config/trustedEmailProviders.js";
 import type { Request } from "express";
 
 export type PendingRegistration = {
@@ -285,6 +286,11 @@ export async function startEmailRegistration(input: {
   const email = normalizeEmail(input.email);
   if (!isEmailFormatValid(email)) {
     throw authError("Please enter a valid email address", 400, "INVALID_EMAIL");
+  }
+
+  const trust = assertTrustedRegistrationEmail(email);
+  if (!trust.ok) {
+    throw authError(trust.error, 400, trust.code);
   }
 
   const usernameCheck = await validateUsernameForWrite(input.username);

@@ -53,8 +53,11 @@ router.get("/user-search", requireAuth, async (req, res) => {
     return;
   }
 
-  const user = await qGet<{ id: number; username: string; avatarUrl: string | null; status: string; bio: string }>(`
-    SELECT id, username, avatar_url as avatarUrl, status, bio, country, city
+  const user = await qGet<{
+    id: number; username: string; avatar_url: string | null; status: string; bio: string;
+    country: string | null; city: string | null;
+  }>(`
+    SELECT id, username, avatar_url, status, bio, country, city
     FROM users
     WHERE LOWER(username) = LOWER(?) AND is_npc = 0 AND is_deleted = 0 AND is_disabled = 0
   `, username);
@@ -73,7 +76,17 @@ router.get("/user-search", requireAuth, async (req, res) => {
     return;
   }
 
-  res.json({ user });
+  res.json({
+    user: {
+      id: user.id,
+      username: user.username,
+      avatarUrl: user.avatar_url,
+      status: user.status,
+      bio: user.bio,
+      country: user.country,
+      city: user.city,
+    },
+  });
 });
 
 // Create DM request
@@ -177,41 +190,52 @@ router.post("/dm-requests", requireAuth, rateLimit({
 });
 
 // List pending requests (incoming for current user)
+// Snake_case aliases only — Postgres lowercases unquoted camelCase aliases.
 router.get("/dm-requests", requireAuth, async (req, res) => {
   const incoming = await qAll<Record<string, unknown>>(`
-    SELECT dr.*, u.username as requesterName, u.avatar_url as requesterAvatar, u.bio as requesterBio,
-           u.is_deleted as requesterDeleted
+    SELECT dr.id, dr.requester_id, dr.recipient_id, dr.status, dr.created_at, dr.updated_at,
+           u.username AS requester_name,
+           u.avatar_url AS requester_avatar,
+           u.bio AS requester_bio,
+           u.is_deleted AS requester_deleted
     FROM dm_requests dr
     LEFT JOIN users u ON u.id = dr.requester_id
     WHERE dr.recipient_id = ? AND dr.status = 'pending'
-      AND (u.id IS NULL OR u.is_deleted = 0)
+      AND (u.id IS NULL OR COALESCE(u.is_deleted, 0) = 0)
     ORDER BY dr.created_at DESC
   `, req.user!.id);
 
   const outgoing = await qAll<Record<string, unknown>>(`
-    SELECT dr.*, u.username as recipientName, u.is_deleted as recipientDeleted
+    SELECT dr.id, dr.requester_id, dr.recipient_id, dr.status, dr.created_at, dr.updated_at,
+           u.username AS recipient_name,
+           u.avatar_url AS recipient_avatar,
+           u.is_deleted AS recipient_deleted
     FROM dm_requests dr
     LEFT JOIN users u ON u.id = dr.recipient_id
     WHERE dr.requester_id = ? AND dr.status = 'pending'
-      AND (u.id IS NULL OR u.is_deleted = 0)
+      AND (u.id IS NULL OR COALESCE(u.is_deleted, 0) = 0)
     ORDER BY dr.created_at DESC
   `, req.user!.id);
 
   res.json({
-    incoming: incoming.map(r => ({
-      id: r.id,
-      requesterId: r.requester_id,
-      requesterName: r.requesterName,
-      requesterAvatar: r.requesterAvatar,
-      requesterDisplayName: r.requesterBio ? String(r.requesterName) : r.requesterName,
-      status: r.status,
-      createdAt: r.created_at,
-      time: timeAgo(r.created_at as string),
-    })),
+    incoming: incoming.map(r => {
+      const name = String(r.requester_name || "");
+      return {
+        id: r.id,
+        requesterId: r.requester_id,
+        requesterName: name,
+        requesterAvatar: (r.requester_avatar as string | null) || null,
+        requesterDisplayName: name,
+        status: r.status,
+        createdAt: r.created_at,
+        time: timeAgo(r.created_at as string),
+      };
+    }),
     outgoing: outgoing.map(r => ({
       id: r.id,
       recipientId: r.recipient_id,
-      recipientName: r.recipientName,
+      recipientName: r.recipient_name,
+      recipientAvatar: (r.recipient_avatar as string | null) || null,
       status: r.status,
       createdAt: r.created_at,
       time: timeAgo(r.created_at as string),
@@ -251,15 +275,29 @@ router.post("/dm-requests/:id/reject", requireAuth, async (req, res) => {
 
 // DM contacts list
 router.get("/dm-contacts", requireAuth, async (req, res) => {
-  const contacts = await qAll(`
-    SELECT u.id, u.username, u.avatar_url as avatarUrl, u.status, u.bio, u.country, u.city, dc.created_at as addedAt
+  const contacts = await qAll<{
+    id: number; username: string; avatar_url: string | null; status: string; bio: string;
+    country: string | null; city: string | null; added_at: string;
+  }>(`
+    SELECT u.id, u.username, u.avatar_url, u.status, u.bio, u.country, u.city, dc.created_at AS added_at
     FROM dm_contacts dc
     JOIN users u ON u.id = dc.contact_user_id
-    WHERE dc.user_id = ? AND u.is_deleted = 0
+    WHERE dc.user_id = ? AND COALESCE(u.is_deleted, 0) = 0
     ORDER BY dc.created_at DESC
   `, req.user!.id);
 
-  res.json({ contacts });
+  res.json({
+    contacts: contacts.map(c => ({
+      id: c.id,
+      username: c.username,
+      avatarUrl: c.avatar_url,
+      status: c.status,
+      bio: c.bio,
+      country: c.country,
+      city: c.city,
+      addedAt: c.added_at,
+    })),
+  });
 });
 
 // Get or create conversation with contact (requires existing contact / accepted request)

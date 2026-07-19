@@ -532,6 +532,11 @@ export const api = {
       if (avatarFile) form.append("avatar", avatarFile);
       return request<{ ok: boolean; avatarUrl?: string | null }>(`/admin/channels/${id}`, { method: "PATCH", body: form });
     },
+    reorderChannels: (ids: number[]) =>
+      request<{ ok: boolean; ids: number[] }>("/admin/channels/reorder", {
+        method: "PUT",
+        body: JSON.stringify({ ids }),
+      }),
     deleteChannel: (id: number) => request<{ ok: boolean }>(`/admin/channels/${id}`, { method: "DELETE" }),
     applications: () => request<{ applications: TeamApplication[] }>("/admin/applications"),
     approveApplication: (id: number) => request<{ ok: boolean }>(`/admin/applications/${id}/approve`, { method: "POST" }),
@@ -752,6 +757,7 @@ export type AdminChannel = {
   moderatorIds: number[];
   memberCount: number;
   avatarUrl?: string | null;
+  sortOrder?: number;
   createdAt?: string;
 };
 

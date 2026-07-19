@@ -292,6 +292,7 @@ async function formatConversations(
     id: number; type: string; name: string; bio: string;
     avatar_url?: string | null; created_at?: string | null;
     last_message_at?: string | null; last_message_preview?: string | null;
+    sort_order?: number | null;
   }[],
   userId: number,
 ) {
@@ -395,6 +396,7 @@ async function formatConversations(
       previewFileName,
       time: msgTime,
       lastActivityAt: conv.last_message_at || conv.created_at || null,
+      sortOrder: isDm ? null : Number(conv.sort_order ?? conv.id),
       unread: isDm ? (unreadByConv.get(conv.id) || 0) : 0,
       online: otherOnline && presenceStatus !== "Offline",
       status: isDm ? presenceStatus : undefined,
@@ -423,6 +425,7 @@ async function formatConversation(conv: {
   id: number; type: string; name: string; bio: string;
   avatar_url?: string | null; created_at?: string | null;
   last_message_at?: string | null; last_message_preview?: string | null;
+  sort_order?: number | null;
 }, userId: number) {
   return (await formatConversations([conv], userId))[0];
 }
@@ -473,11 +476,15 @@ router.get("/conversations", requireAuth, async (req, res) => {
     id: number; type: string; name: string; bio: string; visibility?: string;
     created_at?: string | null;
     last_message_at?: string | null; last_message_preview?: string | null;
+    sort_order?: number | null;
   }>(`
     SELECT c.* FROM conversations c
     JOIN conversation_participants cp ON cp.conversation_id = c.id
     WHERE cp.user_id = ? AND (c.archived IS NULL OR c.archived = 0)
-    ORDER BY COALESCE(c.last_message_at, c.created_at) DESC
+    ORDER BY
+      CASE WHEN c.type = 'channel' THEN 0 ELSE 1 END,
+      CASE WHEN c.type = 'channel' THEN COALESCE(c.sort_order, c.id) ELSE 0 END,
+      COALESCE(c.last_message_at, c.created_at) DESC
   `, userId);
 
   const accessFlags = await Promise.all(convs.map(c => c.type !== "channel" ? Promise.resolve(true) : userCanAccessChannel(userId, c.id)));
@@ -627,8 +634,8 @@ router.get("/conversations/:id/messages", requireAuth, async (req, res) => {
     hasMoreOlder = rows.length > limit;
     page = (hasMoreOlder ? rows.slice(0, limit) : rows).reverse();
     hasMoreNewer = false;
-    await markConversationRead(convId, req.user!.id);
-    emitToUser(req.user!.id, "conversation:update", { conversationId: convId });
+    // Do not auto-mark read on fetch — client marks when the user reaches the live bottom
+    // (or jumps to latest). This preserves unread badges / "NEW" while opening at the boundary.
   }
 
   res.json({

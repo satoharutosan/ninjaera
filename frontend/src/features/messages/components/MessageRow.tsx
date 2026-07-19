@@ -62,11 +62,14 @@ export const MessageRow = memo(function MessageRow({
   const [hovered, setHovered] = useState(false);
   const [reactionOpen, setReactionOpen] = useState(false);
   const showHeader = !prev || prev.user !== m.user || prev.time !== m.time;
+  // Exactly one "NEW" boundary: first message after lastReadMessageId.
+  // Do not re-open the divider after self messages (that caused duplicates).
   const showUnreadDivider = !!(
     lastReadMessageId
-    && !m.self
+    && lastReadMessageId > 0
+    && m.id > 0
     && m.id > lastReadMessageId
-    && (!prev || prev.id <= lastReadMessageId || prev.self)
+    && (!prev || prev.id <= lastReadMessageId)
   );
 
   // System call timeline — centered, not a user bubble

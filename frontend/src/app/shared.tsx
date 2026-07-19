@@ -282,6 +282,8 @@ export type Contact = {
   previewKind?: string | null;
   previewFileName?: string | null;
   lastActivityAt?: string | null;
+  /** Admin-defined channel order (channels only). */
+  sortOrder?: number | null;
 };
 
 export {

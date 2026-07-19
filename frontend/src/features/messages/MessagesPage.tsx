@@ -49,6 +49,8 @@ import {
   getActiveConversation,
   setActiveConversation,
   clearActiveConversation,
+  getStoredListFilter,
+  setStoredListFilter,
   getConversationDraft,
   setConversationDraft,
   clearConversationDraft,
@@ -67,7 +69,7 @@ const EmojiGifPicker = lazy(() =>
   import("@/features/messages/EmojiGifPicker").then((m) => ({ default: m.EmojiGifPicker })),
 );
 
-function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setContacts, onUnreadChange, onConversationsRefresh, currentUserId, currentUser, onUserUpdate, initialConversationId, focusInput, onFocusHandled, onInitialConversationHandled, onActiveConversationChange, isActive = true }: {
+function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setContacts, onUnreadChange, onConversationsRefresh, currentUserId, currentUser, onUserUpdate, initialConversationId, focusInput, onFocusHandled, onInitialConversationHandled, isActive = true }: {
   settings: AppSettings;
   showEmailToast: (title:string, body:string, page:Page)=>void;
   showPushNotif: (title:string, body:string, page:Page)=>void;
@@ -83,8 +85,6 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
   focusInput?: boolean;
   onFocusHandled?: () => void;
   onInitialConversationHandled?: () => void;
-  /** Sync last-selected conversation ID to App-level state. */
-  onActiveConversationChange?: (conversationId: number | null) => void;
   /** False while Messages is keep-alive-hidden on another route — pause read receipts. */
   isActive?: boolean;
 }) {
@@ -125,12 +125,16 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
   const [ctxMenu, setCtxMenu] = useState<{x:number;y:number;contact:Contact}|null>(null);
   const [confirm, setConfirm] = useState<{title:string;body:string;onOk:()=>void}|null>(null);
   const [lightbox, setLightbox] = useState<string|null>(null);
-  const [listFilter, setListFilter] = useState<ListFilter>(() => storedActive?.listFilter ?? "all");
+  const [listFilter, setListFilter] = useState<ListFilter>(
+    () => getStoredListFilter(currentUserId) ?? "all",
+  );
   const [searchQuery, setSearchQuery] = useState("");
   const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const composerTextRef = useRef(input);
   const replyingToRef = useRef(replyingTo);
   const isActiveRef = useRef(isActive);
+  /** External jump (addDM) applied once — never re-forces the sidebar filter afterward. */
+  const handledJumpIdRef = useRef<number | null>(null);
   composerTextRef.current = input;
   replyingToRef.current = replyingTo;
   isActiveRef.current = isActive;
@@ -353,30 +357,46 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
     }
   }, [currentUserId]);
 
-  const rememberActiveConversation = useCallback((contact: Contact, filter: ListFilter = listFilter) => {
+  /** Persist conversation ID only — never touches sidebar filter state. */
+  const rememberActiveConversation = useCallback((contact: Contact) => {
     if (!currentUserId || contact.id <= 0) return;
     setActiveConversation(currentUserId, {
       conversationId: contact.id,
       type: contact.type,
-      listFilter: filter,
     });
-    onActiveConversationChange?.(contact.id);
-  }, [currentUserId, listFilter, onActiveConversationChange]);
+  }, [currentUserId]);
 
+  const selectListFilter = useCallback((next: ListFilter) => {
+    setListFilter(next);
+    if (currentUserId) setStoredListFilter(currentUserId, next);
+  }, [currentUserId]);
+
+  // External navigation into a conversation (e.g. Teamwork → Message). One-shot only.
   useEffect(() => {
-    if (!initialConversationId) return;
+    if (!initialConversationId) {
+      handledJumpIdRef.current = null;
+      return;
+    }
+    if (handledJumpIdRef.current === initialConversationId) {
+      onInitialConversationHandled?.();
+      return;
+    }
     const target = contacts.find(c => c.id === initialConversationId);
     if (!target) return;
+
+    handledJumpIdRef.current = initialConversationId;
     if (sel.id !== target.id) {
       persistComposerDraft(sel.id);
       setSel(target);
       loadComposerDraft(target.id);
+      rememberActiveConversation(target);
     }
-    setListFilter(target.type === "dm" ? "dm" : "all");
-    rememberActiveConversation(target, target.type === "dm" ? "dm" : "all");
+    // Prefer showing the conversation's section for intentional external jumps only.
+    const jumpFilter: ListFilter = target.type === "dm" ? "dm" : "all";
+    selectListFilter(jumpFilter);
     if (isMobile) setShowSidebar(false);
     onInitialConversationHandled?.();
-  }, [initialConversationId, contacts, onInitialConversationHandled, isMobile, sel.id, persistComposerDraft, loadComposerDraft, rememberActiveConversation]);
+  }, [initialConversationId, contacts, onInitialConversationHandled, isMobile, sel.id, persistComposerDraft, loadComposerDraft, rememberActiveConversation, selectListFilter]);
 
   useEffect(() => {
     if (focusInput) {
@@ -423,7 +443,7 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
     setSel(fallback);
     loadComposerDraft(fallback.id);
     rememberActiveConversation(fallback);
-  }, [contacts, sel.id, sel.avatarUrl, sel.name, sel.bio, sel.msg, sel.unread, sel.muted, sel.sortOrder, currentUserId, initialConversationId, loadComposerDraft, rememberActiveConversation, onActiveConversationChange]);
+  }, [contacts, sel.id, sel.avatarUrl, sel.name, sel.bio, sel.msg, sel.unread, sel.muted, sel.sortOrder, currentUserId, initialConversationId, loadComposerDraft, rememberActiveConversation]);
 
   // Persist composer draft while typing (debounced).
   useEffect(() => {
@@ -438,10 +458,10 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
     };
   }, [input, replyingTo, sel.id, currentUserId, persistComposerDraft]);
 
-  // Persist selection whenever the active conversation or filter changes.
+  // Persist conversation ID when selection changes (filter is persisted separately).
   useEffect(() => {
-    if (sel.id > 0) rememberActiveConversation(sel, listFilter);
-  }, [sel, listFilter, rememberActiveConversation]);
+    if (sel.id > 0) rememberActiveConversation(sel);
+  }, [sel, rememberActiveConversation]);
 
   // Returning to Messages after keep-alive: if unread arrived while away, jump to the NEW boundary.
   useEffect(() => {
@@ -472,8 +492,8 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
   useEffect(() => { loadDmRequests(); }, []);
 
   useEffect(() => {
-    if (dmRequests.length === 0 && listFilter === "dm-requests") setListFilter("all");
-  }, [dmRequests.length, listFilter]);
+    if (dmRequests.length === 0 && listFilter === "dm-requests") selectListFilter("all");
+  }, [dmRequests.length, listFilter, selectListFilter]);
 
   useEffect(() => {
     const unsubs = [
@@ -1219,7 +1239,7 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
         const conv = convs.conversations.find(c => c.id === result.conversationId);
         if (conv) {
           setSel(conv as Contact);
-          setListFilter("dm");
+          selectListFilter("dm");
           if (isMobile) setShowSidebar(false);
         }
       } catch {
@@ -1394,7 +1414,7 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
             {sidebarFilters.map(({ Icon, l, id, badge }) => {
               const active = listFilter === id;
               return (
-                <button key={l} title={l} onClick={() => setListFilter(id)} aria-pressed={active}
+                <button key={l} title={l} onClick={() => selectListFilter(id)} aria-pressed={active}
                   className="relative w-12 h-12 rounded-full flex items-center justify-center transition-all hover:scale-110 focus:outline-none focus-visible:ring-2"
                   style={{
                     background: active ? C.primaryCont : C.surface,

@@ -1028,7 +1028,6 @@ export default function App() {
               focusInput={focusMessageInput}
               onFocusHandled={clearFocusMessageInput}
               onInitialConversationHandled={clearSelectedConversation}
-              onActiveConversationChange={setSelectedConversationId}
               isActive={page === "messages"}
             />
           </div>

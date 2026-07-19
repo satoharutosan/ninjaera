@@ -411,21 +411,42 @@ export function CallProvider({ children }: { children: ReactNode }) {
       setLocalView("screen");
       localViewRef.current = "screen";
       refreshLocalPreview();
+      // Notify peer so their UI shows "Screen" even before first remote frame.
       syncMediaState(callIdRef.current, { screenSharing: true });
       toast.success("Sharing screen");
     } catch (e) {
       setScreenSharing(false);
+      setLocalView("camera");
+      localViewRef.current = "camera";
       refreshLocalPreview();
+      syncMediaState(callIdRef.current, { screenSharing: false });
       const name = e instanceof Error ? e.name : "";
-      if (name === "NotAllowedError") toast.message("Screen share cancelled");
-      else toast.error(e instanceof Error ? e.message : "Screen share unavailable");
+      const msg = e instanceof Error ? e.message : "Screen share unavailable";
+      if (import.meta.env.DEV) {
+        console.error("[WebRTC] screen share failed", {
+          callId: callIdRef.current,
+          name,
+          msg,
+          connectionState: peer.pc.connectionState,
+          signalingState: peer.pc.signalingState,
+        });
+      }
+      if (name === "NotAllowedError" || name === "AbortError") {
+        toast.message("Screen sharing was canceled.");
+      } else if (name === "NotSupportedError" || /not supported/i.test(msg)) {
+        toast.error("Screen sharing is not supported in this browser.");
+      } else {
+        toast.error(msg || "Could not start screen sharing.");
+      }
     }
   }, [refreshLocalPreview]);
 
   const stopScreenShare = useCallback(async () => {
     try {
       await peerRef.current?.stopScreenShare();
-    } catch { /* */ }
+    } catch (e) {
+      if (import.meta.env.DEV) console.error("[WebRTC] stop screen share failed", e);
+    }
     setScreenSharing(false);
     setLocalView("camera");
     localViewRef.current = "camera";
@@ -554,7 +575,11 @@ export function CallProvider({ children }: { children: ReactNode }) {
         if (callIdRef.current && callIdRef.current !== id) return;
         try {
           await peerRef.current?.handleSignal(signal);
-        } catch { /* glare */ }
+          // Renegotiation (e.g. peer screen share) may attach/unmute video — refresh tile.
+          refreshRemotePreview();
+        } catch (e) {
+          if (import.meta.env.DEV) console.warn("[WebRTC] signal error", e);
+        }
       }),
       onRealtimeEvent<{
         callId: string;
@@ -568,9 +593,13 @@ export function CallProvider({ children }: { children: ReactNode }) {
         if (typeof data.screenSharing === "boolean") {
           peerAnnouncedScreenRef.current = data.screenSharing;
           setPeerScreenSharing(data.screenSharing);
-          // Pull latest receiver tracks after their renegotiation completes.
+          if (import.meta.env.DEV) {
+            console.log("[WebRTC] peer media-state screenSharing=", data.screenSharing);
+          }
+          // Peer renegotiates after replaceTrack — refresh as answers settle.
           window.setTimeout(() => refreshRemotePreview(), 50);
-          window.setTimeout(() => refreshRemotePreview(), 300);
+          window.setTimeout(() => refreshRemotePreview(), 250);
+          window.setTimeout(() => refreshRemotePreview(), 800);
         }
       }),
       onRealtimeEvent<{ error: string; code?: string; callId?: string }>("call:error", ({ error, code }) => {

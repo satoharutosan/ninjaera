@@ -40,7 +40,7 @@ import { formatCountryDisplay, maskIp } from "@/shared/countryIso";
 import {
   api, ApiError, type AdminUser, type AdminNotification, type AdminChannel,
   type TeamApplication, type AdminResource, type AdminGameDownload, type ActivityLogEntry,
-  type ContactTicket,
+  type ContactTicket, type UploadProgress,
 } from "@/app/api";
 import { onRealtimeEvent } from "@/app/realtime";
 import { AdminMessagingHistory } from "@/features/admin/AdminMessagingHistory";
@@ -50,6 +50,10 @@ import { AdminOurStoryEditor } from "@/features/admin/AdminOurStoryEditor";
 import { AdminLinkFileManagement } from "@/features/admin/AdminLinkFileManagement";
 import { SECTIONS, CHART_COLORS, EMPTY_STATS, type Section, type DashboardStats } from "@/features/admin/adminMeta";
 import { UserAvatar, StatCard, DashSection, ChartCard, EmptyNote, LocationCell } from "@/features/admin/components/AdminChrome";
+import {
+  AdminUploadProgress,
+  type AdminUploadProgressState,
+} from "@/features/admin/components/AdminUploadProgress";
 import { validateUsernameClient, USERNAME_TAKEN_ERROR } from "@/shared/username";
 import { RESOURCE_CATEGORIES } from "@/shared/resourceCategories";
 import {
@@ -141,10 +145,16 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
   const [resources, setResources] = useState<AdminResource[]>([]);
   const [editResource, setEditResource] = useState<Partial<AdminResource> | null>(null);
   const [resourceFile, setResourceFile] = useState<File | null>(null);
+  const [resourceUploading, setResourceUploading] = useState(false);
+  const [resourceUploadProgress, setResourceUploadProgress] = useState<AdminUploadProgressState | null>(null);
+  const [resourceUploadBytes, setResourceUploadBytes] = useState<{ loaded: number; total: number } | null>(null);
 
   const [gameBuilds, setGameBuilds] = useState<AdminGameDownload[]>([]);
   const [editGameBuild, setEditGameBuild] = useState<Partial<AdminGameDownload> & { platform?: string } | null>(null);
   const [gameBuildFile, setGameBuildFile] = useState<File | null>(null);
+  const [gameUploading, setGameUploading] = useState(false);
+  const [gameUploadProgress, setGameUploadProgress] = useState<AdminUploadProgressState | null>(null);
+  const [gameUploadBytes, setGameUploadBytes] = useState<{ loaded: number; total: number } | null>(null);
 
   const [selectedLog, setSelectedLog] = useState<ActivityLogEntry | null>(null);
 
@@ -428,6 +438,111 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
       if (e instanceof ApiError && (e.status === 400 || e.status === 409) && /username/i.test(msg)) {
         setEditUsernameError(msg);
       }
+    }
+  };
+
+  const trackUploadProgress = (
+    filename: string,
+    setProgress: (s: AdminUploadProgressState | null) => void,
+    setBytes: (b: { loaded: number; total: number } | null) => void,
+  ) => (p: UploadProgress) => {
+    if (p.total > 0) setBytes({ loaded: p.loaded, total: p.total });
+    if (p.transferComplete || p.percent >= 100) {
+      setProgress({ filename, percent: 100, phase: "processing" });
+      return;
+    }
+    setProgress({
+      filename,
+      percent: p.percent,
+      phase: "uploading",
+    });
+  };
+
+  const saveResourceUpload = async () => {
+    if (!editResource || resourceUploading) return;
+    if (!editResource.title?.trim()) {
+      toast.error("Title is required");
+      return;
+    }
+    const filename = resourceFile?.name || (editResource.id ? "resource" : "file");
+    setResourceUploading(true);
+    setResourceUploadBytes(null);
+    setResourceUploadProgress(
+      resourceFile
+        ? { filename, percent: 0, phase: "uploading" }
+        : { filename, percent: 100, phase: "processing" },
+    );
+    try {
+      const form = new FormData();
+      form.append("title", editResource.title || "");
+      form.append("category", editResource.category || "App");
+      form.append("description", editResource.description || "");
+      if (editResource.version) form.append("version", editResource.version);
+      form.append("enabled", String(editResource.enabled !== false));
+      form.append("visibility", editResource.visibility === "PRIVATE" ? "PRIVATE" : "PUBLIC");
+      if (resourceFile) form.append("file", resourceFile);
+      const onUploadProgress = trackUploadProgress(filename, setResourceUploadProgress, setResourceUploadBytes);
+      if (editResource.id) {
+        await api.admin.updateResource(editResource.id, form, { onUploadProgress });
+      } else {
+        await api.admin.createResource(form, { onUploadProgress });
+      }
+      toast.success(editResource.id ? "Updated" : "Uploaded");
+      setEditResource(null);
+      setResourceFile(null);
+      setResourceUploadProgress(null);
+      setResourceUploadBytes(null);
+      loadSection();
+      api.admin.stats().then(setStats).catch(() => {});
+    } catch (e) {
+      setResourceUploadProgress(null);
+      setResourceUploadBytes(null);
+      toast.error(e instanceof ApiError ? e.message : "Upload failed");
+    } finally {
+      setResourceUploading(false);
+    }
+  };
+
+  const saveGameUpload = async () => {
+    if (!editGameBuild || gameUploading) return;
+    if (!editGameBuild.version?.trim()) {
+      toast.error("Version is required");
+      return;
+    }
+    const filename = gameBuildFile?.name || (editGameBuild.id ? "game build" : "file");
+    setGameUploading(true);
+    setGameUploadBytes(null);
+    setGameUploadProgress(
+      gameBuildFile
+        ? { filename, percent: 0, phase: "uploading" }
+        : { filename, percent: 100, phase: "processing" },
+    );
+    try {
+      const form = new FormData();
+      form.append("platform", editGameBuild.platform || "windows");
+      form.append("version", editGameBuild.version || "");
+      form.append("releaseNotes", editGameBuild.releaseNotes || "");
+      form.append("published", String(!!editGameBuild.published));
+      if (gameBuildFile) form.append("file", gameBuildFile);
+      const onUploadProgress = trackUploadProgress(filename, setGameUploadProgress, setGameUploadBytes);
+      if (editGameBuild.id) {
+        await api.admin.updateGameDownload(editGameBuild.id, form, { onUploadProgress });
+      } else {
+        await api.admin.createGameDownload(form, { onUploadProgress });
+      }
+      toast.success(editGameBuild.id ? "Updated" : "Uploaded");
+      setEditGameBuild(null);
+      setGameBuildFile(null);
+      setGameUploadProgress(null);
+      setGameUploadBytes(null);
+      loadSection();
+      api.admin.stats().then(setStats).catch(() => {});
+    } catch (e) {
+      setGameUploadProgress(null);
+      setGameUploadBytes(null);
+      toast.error(e instanceof ApiError ? e.message : "Upload failed");
+    } finally {
+      setGameUploading(false);
     }
   };
 
@@ -1135,7 +1250,12 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
               <div>
                 <div className="flex items-center justify-between mb-6">
                   <h1 className="text-2xl font-medium" style={{ color: C.onSurface, fontFamily: "Roboto" }}>Resources</h1>
-                  <FilledBtn onClick={() => { setEditResource({ title: "", category: "App", description: "", enabled: true, visibility: "PUBLIC" }); setResourceFile(null); }}>Upload Resource</FilledBtn>
+                  <FilledBtn onClick={() => {
+                    setEditResource({ title: "", category: "App", description: "", enabled: true, visibility: "PUBLIC" });
+                    setResourceFile(null);
+                    setResourceUploadProgress(null);
+                    setResourceUploadBytes(null);
+                  }}>Upload Resource</FilledBtn>
                 </div>
                 <div className="space-y-3">
                   {resources.map(r => (
@@ -1175,7 +1295,12 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
               <div>
                 <div className="flex items-center justify-between mb-6">
                   <h1 className="text-2xl font-medium" style={{ color: C.onSurface, fontFamily: "Roboto" }}>Game Downloads</h1>
-                  <FilledBtn onClick={() => { setEditGameBuild({ platform: "windows", version: "", releaseNotes: "", published: false }); setGameBuildFile(null); }}>Upload Build</FilledBtn>
+                  <FilledBtn onClick={() => {
+                    setEditGameBuild({ platform: "windows", version: "", releaseNotes: "", published: false });
+                    setGameBuildFile(null);
+                    setGameUploadProgress(null);
+                    setGameUploadBytes(null);
+                  }}>Upload Build</FilledBtn>
                 </div>
                 <div className="space-y-3">
                   {gameBuilds.map(g => (
@@ -1435,14 +1560,22 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
 
       {/* Edit Resource Modal */}
       {editResource && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setEditResource(null)}>
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={() => { if (!resourceUploading) setEditResource(null); }}
+        >
           <div className="rounded-3xl p-6 w-full max-w-md" style={{ background: C.surface }} onClick={e => e.stopPropagation()}>
             <h3 className="font-medium mb-4" style={{ color: C.onSurface, fontFamily: "Roboto" }}>{editResource.id ? "Edit" : "Upload"} Resource</h3>
             <div className="space-y-3">
               <Field label="Title" value={editResource.title || ""} onChange={v => setEditResource({ ...editResource, title: v })} />
               <div className="relative mt-1">
-                <select value={editResource.category || "App"} onChange={e => setEditResource({ ...editResource, category: e.target.value })}
-                  className="w-full px-4 py-3.5 rounded-[4px] border text-sm" style={{ borderColor: C.outline, color: C.onSurface, background: C.surface, fontFamily: "Roboto" }}>
+                <select
+                  value={editResource.category || "App"}
+                  onChange={e => setEditResource({ ...editResource, category: e.target.value })}
+                  disabled={resourceUploading}
+                  className="w-full px-4 py-3.5 rounded-[4px] border text-sm"
+                  style={{ borderColor: C.outline, color: C.onSurface, background: C.surface, fontFamily: "Roboto" }}
+                >
                   {RESOURCE_CATEGORIES.map(o => <option key={o}>{o}</option>)}
                 </select>
                 <span className="absolute left-3 -top-2 px-1 text-xs" style={{ color: C.primary, background: C.surface }}>Category</span>
@@ -1453,6 +1586,7 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                 <select
                   value={editResource.visibility === "PRIVATE" ? "PRIVATE" : "PUBLIC"}
                   onChange={e => setEditResource({ ...editResource, visibility: e.target.value as "PUBLIC" | "PRIVATE" })}
+                  disabled={resourceUploading}
                   className="w-full px-4 py-3.5 rounded-[4px] border text-sm"
                   style={{ borderColor: C.outline, color: C.onSurface, background: C.surface, fontFamily: "Roboto" }}
                   aria-label="Resource visibility"
@@ -1464,37 +1598,60 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
               </div>
               <div>
                 <label className="text-xs" style={{ color: C.primary, fontFamily: "Roboto" }}>File {editResource.id ? "(replace)" : ""}</label>
-                <input type="file" onChange={e => setResourceFile(e.target.files?.[0] || null)} className="mt-1 text-sm w-full" style={{ color: C.onSurface }} />
+                <input
+                  type="file"
+                  disabled={resourceUploading}
+                  onChange={e => setResourceFile(e.target.files?.[0] || null)}
+                  className="mt-1 text-sm w-full disabled:opacity-50"
+                  style={{ color: C.onSurface }}
+                />
+                {resourceFile && (
+                  <p className="text-xs mt-1" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
+                    {resourceFile.name}
+                  </p>
+                )}
               </div>
               <label className="flex items-center gap-2 text-sm" style={{ color: C.onSurface, fontFamily: "Roboto" }}>
-                <input type="checkbox" checked={editResource.enabled !== false} onChange={e => setEditResource({ ...editResource, enabled: e.target.checked })} /> Enabled
+                <input
+                  type="checkbox"
+                  disabled={resourceUploading}
+                  checked={editResource.enabled !== false}
+                  onChange={e => setEditResource({ ...editResource, enabled: e.target.checked })}
+                /> Enabled
               </label>
-              <FilledBtn onClick={() => {
-                const form = new FormData();
-                form.append("title", editResource.title || "");
-                form.append("category", editResource.category || "App");
-                form.append("description", editResource.description || "");
-                if (editResource.version) form.append("version", editResource.version);
-                form.append("enabled", String(editResource.enabled !== false));
-                form.append("visibility", editResource.visibility === "PRIVATE" ? "PRIVATE" : "PUBLIC");
-                if (resourceFile) form.append("file", resourceFile);
-                handleUserAction(() => editResource.id
-                  ? api.admin.updateResource(editResource.id, form)
-                  : api.admin.createResource(form), editResource.id ? "Updated" : "Uploaded");
-              }}>Save</FilledBtn>
+              {resourceUploadProgress && (
+                <AdminUploadProgress
+                  state={resourceUploadProgress}
+                  loaded={resourceUploadBytes?.loaded}
+                  total={resourceUploadBytes?.total}
+                />
+              )}
+              <FilledBtn onClick={() => void saveResourceUpload()} disabled={resourceUploading}>
+                {resourceUploading
+                  ? (resourceUploadProgress?.phase === "processing" ? "Processing…" : "Uploading…")
+                  : "Save"}
+              </FilledBtn>
             </div>
           </div>
         </div>
       )}
 
       {editGameBuild && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setEditGameBuild(null)}>
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={() => { if (!gameUploading) setEditGameBuild(null); }}
+        >
           <div className="rounded-3xl p-6 w-full max-w-md" style={{ background: C.surface }} onClick={e => e.stopPropagation()}>
             <h3 className="font-medium mb-4" style={{ color: C.onSurface, fontFamily: "Roboto" }}>{editGameBuild.id ? "Edit" : "Upload"} Game Build</h3>
             <div className="space-y-3">
               <div className="relative mt-1">
-                <select value={editGameBuild.platform || "windows"} onChange={e => setEditGameBuild({ ...editGameBuild, platform: e.target.value })} disabled={!!editGameBuild.id}
-                  className="w-full px-4 py-3.5 rounded-[4px] border text-sm" style={{ borderColor: C.outline, color: C.onSurface, background: C.surface, fontFamily: "Roboto" }}>
+                <select
+                  value={editGameBuild.platform || "windows"}
+                  onChange={e => setEditGameBuild({ ...editGameBuild, platform: e.target.value })}
+                  disabled={!!editGameBuild.id || gameUploading}
+                  className="w-full px-4 py-3.5 rounded-[4px] border text-sm"
+                  style={{ borderColor: C.outline, color: C.onSurface, background: C.surface, fontFamily: "Roboto" }}
+                >
                   {["windows", "android", "ios"].map(o => <option key={o} value={o}>{o}</option>)}
                 </select>
                 <span className="absolute left-3 -top-2 px-1 text-xs" style={{ color: C.primary, background: C.surface }}>Platform</span>
@@ -1503,22 +1660,39 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
               <Field label="Release Notes" value={editGameBuild.releaseNotes || ""} onChange={v => setEditGameBuild({ ...editGameBuild, releaseNotes: v })} rows={3} />
               <div>
                 <label className="text-xs" style={{ color: C.primary, fontFamily: "Roboto" }}>Build file {editGameBuild.id ? "(replace)" : ""}</label>
-                <input type="file" onChange={e => setGameBuildFile(e.target.files?.[0] || null)} className="mt-1 text-sm w-full" style={{ color: C.onSurface }} />
+                <input
+                  type="file"
+                  disabled={gameUploading}
+                  onChange={e => setGameBuildFile(e.target.files?.[0] || null)}
+                  className="mt-1 text-sm w-full disabled:opacity-50"
+                  style={{ color: C.onSurface }}
+                />
+                {gameBuildFile && (
+                  <p className="text-xs mt-1" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
+                    {gameBuildFile.name}
+                  </p>
+                )}
               </div>
               <label className="flex items-center gap-2 text-sm" style={{ color: C.onSurface, fontFamily: "Roboto" }}>
-                <input type="checkbox" checked={!!editGameBuild.published} onChange={e => setEditGameBuild({ ...editGameBuild, published: e.target.checked })} /> Published
+                <input
+                  type="checkbox"
+                  disabled={gameUploading}
+                  checked={!!editGameBuild.published}
+                  onChange={e => setEditGameBuild({ ...editGameBuild, published: e.target.checked })}
+                /> Published
               </label>
-              <FilledBtn onClick={() => {
-                const form = new FormData();
-                form.append("platform", editGameBuild.platform || "windows");
-                form.append("version", editGameBuild.version || "");
-                form.append("releaseNotes", editGameBuild.releaseNotes || "");
-                form.append("published", String(!!editGameBuild.published));
-                if (gameBuildFile) form.append("file", gameBuildFile);
-                handleUserAction(() => editGameBuild.id
-                  ? api.admin.updateGameDownload(editGameBuild.id, form)
-                  : api.admin.createGameDownload(form), editGameBuild.id ? "Updated" : "Uploaded").then(() => setEditGameBuild(null));
-              }}>Save</FilledBtn>
+              {gameUploadProgress && (
+                <AdminUploadProgress
+                  state={gameUploadProgress}
+                  loaded={gameUploadBytes?.loaded}
+                  total={gameUploadBytes?.total}
+                />
+              )}
+              <FilledBtn onClick={() => void saveGameUpload()} disabled={gameUploading}>
+                {gameUploading
+                  ? (gameUploadProgress?.phase === "processing" ? "Processing…" : "Uploading…")
+                  : "Save"}
+              </FilledBtn>
             </div>
           </div>
         </div>

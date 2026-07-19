@@ -978,6 +978,19 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
 
   const askConfirm = (title:string, body:string, onOk:()=>void) => setConfirm({ title, body, onOk });
 
+  useEffect(() => {
+    if (!confirm && !(desktopMode && settingsOpen) && !(desktopMode && newDmOpen)) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      if (confirm) setConfirm(null);
+      else if (desktopMode && newDmOpen) setNewDmOpen(false);
+      else if (desktopMode && settingsOpen) setSettingsOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [confirm, desktopMode, settingsOpen, newDmOpen]);
+
   const sendPendingPaste = async () => {
     const staged = pendingPasteRef.current;
     if (!staged || !sel.id || uploadingPaste) return;
@@ -1589,9 +1602,23 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
         </div>
       )}
       {confirm && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onClick={() => setConfirm(null)}>
-          <div className="rounded-3xl p-6 w-full max-w-xs shadow-2xl" style={{ background:C.surface }} onClick={e => e.stopPropagation()}>
-            <h3 className="font-medium text-base mb-2" style={{ color:C.onSurface, fontFamily:"Roboto" }}>{confirm.title}</h3>
+        <div
+          className={`fixed inset-0 z-[60] flex items-center justify-center p-4${desktopMode ? "" : " bg-black/50 backdrop-blur-sm"}`}
+          style={desktopMode ? { background: "rgba(0,0,0,0.5)" } : undefined}
+          onClick={() => setConfirm(null)}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="msg-confirm-title"
+        >
+          <div
+            className={`rounded-3xl p-6 w-full max-w-xs${desktopMode ? "" : " shadow-2xl"}`}
+            style={{
+              background: C.surface,
+              ...(desktopMode ? { boxShadow: "0 8px 32px rgba(0,0,0,.24)" } : null),
+            }}
+            onClick={e => e.stopPropagation()}
+          >
+            <h3 id="msg-confirm-title" className="font-medium text-base mb-2" style={{ color:C.onSurface, fontFamily:"Roboto" }}>{confirm.title}</h3>
             <p className="text-sm mb-6" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>{confirm.body}</p>
             <div className="flex gap-3 justify-end">
               <button onClick={() => setConfirm(null)} className="px-4 py-2 rounded-full text-sm font-medium border transition-colors hover:bg-black/5" style={{ borderColor:C.outline, color:C.onSurface, fontFamily:"Roboto" }}>Cancel</button>

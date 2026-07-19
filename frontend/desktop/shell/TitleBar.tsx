@@ -20,6 +20,10 @@ function focusSidebarSearch() {
   el?.select();
 }
 
+/**
+ * Shared frameless Electron title bar — used on the login window and the
+ * main messaging window so height, chrome, and window controls stay identical.
+ */
 export function TitleBar({
   isDark,
   onToggleTheme,

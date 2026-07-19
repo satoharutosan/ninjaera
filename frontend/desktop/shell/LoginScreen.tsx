@@ -107,103 +107,101 @@ export function LoginScreen({ onLogin, signupUrl }: { onLogin: (u: ApiUser) => v
     setAuthPersistent(next);
   };
 
+  // Title bar is owned by DesktopApp so login and messaging share one chrome.
   return (
-    <div className="ninja-desktop-root" style={{ background: C.surfaceVar }}>
-      <header className="ninja-titlebar shrink-0" style={{ height: 36 }} />
-      <div className="flex-1 min-h-0 flex items-center justify-center px-4 relative overflow-hidden">
-        <div className="absolute inset-0 overflow-hidden" aria-hidden>
-          <ImageWithFallback src={imgHero} alt="" className="w-full h-full object-cover opacity-40" />
-          <div className="absolute inset-0 bg-black/30" />
-        </div>
-        <div className="relative w-full max-w-sm ninja-no-drag">
-          <div className="rounded-3xl p-8" style={{ background: C.surface, boxShadow: "0 8px 32px rgba(0,0,0,.16)" }}>
-            <div className="text-center mb-8">
-              <BrandLogo size={56} elevated className="mx-auto mb-4" priority />
-              <h1 className="text-2xl font-light mb-1" style={{ color: C.onSurface, fontFamily: "'Trade Winds', cursive" }}>
-                Welcome <span className="font-medium">Back</span>
-              </h1>
-              <p className="text-sm" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
-                Sign in to continue your journey
-              </p>
-            </div>
-            {error && (
-              <p className="text-sm mb-3 text-center" style={{ color: C.error, fontFamily: "Roboto" }} role="alert">
-                {error}
-              </p>
-            )}
-            <div
-              className="space-y-5 mb-6"
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !loading) void handleLogin();
-              }}
-            >
-              <Field label="Email" type="email" placeholder="ninja@example.com" value={email} onChange={setEmail} />
-              <Field
-                label="Password"
-                type={showPw ? "text" : "password"}
-                placeholder="••••••••"
-                value={password}
-                onChange={setPassword}
-                suffix={
-                  <button type="button" aria-label={showPw ? "Hide password" : "Show password"} onClick={() => setShowPw(!showPw)} style={{ color: C.onSurfaceVar }}>
-                    {showPw ? <VisibilityOffIcon style={{ fontSize: 20 }} /> : <VisibilityIcon style={{ fontSize: 20 }} />}
-                  </button>
-                }
-              />
-              <div className="flex items-center justify-between gap-3">
-                <button type="button" role="checkbox" aria-checked={staySignedIn} onClick={toggleStay} className="flex items-center gap-2 text-left">
-                  <span
-                    className="w-4 h-4 rounded border-2 flex items-center justify-center shrink-0"
-                    style={{ borderColor: C.primary, background: staySignedIn ? C.primary : "transparent" }}
-                  >
-                    {staySignedIn && <CheckIcon style={{ fontSize: 10, color: "white" }} />}
-                  </span>
-                  <span className="text-sm" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>Stay signed in</span>
-                </button>
-                <button type="button" onClick={() => openExternal(signupUrl.replace(/#\/signup$/, "#/forgot-password"))} className="text-sm font-medium shrink-0" style={{ color: C.primary, fontFamily: "Roboto" }}>
-                  Forgot password?
-                </button>
-              </div>
-            </div>
-            <FilledBtn onClick={handleLogin} cls="w-full justify-center mb-4" disabled={loading}>
-              <LoginIcon style={{ fontSize: 16 }} />
-              {loading ? "Signing in..." : "Sign In"}
-            </FilledBtn>
-            <div className="flex items-center gap-3 mb-4">
-              <div className="flex-1 h-px" style={{ background: C.outlineVar }} />
-              <span className="text-xs" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>or continue with</span>
-              <div className="flex-1 h-px" style={{ background: C.outlineVar }} />
-            </div>
-            <div className="grid grid-cols-3 gap-3 mb-6">
-              {PROVIDERS.map((p) => {
-                const Icon = p.icon;
-                const isPending = pendingProvider === p.id;
-                return (
-                  <button
-                    key={p.id}
-                    type="button"
-                    disabled={!!pendingProvider || loading}
-                    onClick={() => handleOAuth(p.id)}
-                    className="flex items-center justify-center gap-1.5 py-2.5 h-[42px] rounded-full border text-xs font-medium transition-colors hover:bg-[#6750A4]/4 disabled:opacity-50"
-                    style={{ borderColor: C.outlineVar, fontFamily: "Roboto", color: C.onSurfaceVar }}
-                  >
-                    {isPending ? (
-                      <span className="w-4 h-4 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: C.outlineVar, borderTopColor: C.primary }} />
-                    ) : (
-                      <Icon size={18} />
-                    )}
-                    <span>{p.label}</span>
-                  </button>
-                );
-              })}
-            </div>
-            <p className="text-center text-sm" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
-              {"Don't have an account? "}
-              <button type="button" onClick={() => openExternal(signupUrl)} className="font-medium" style={{ color: C.primary }}>
-                Create Account
-              </button>
+    <div className="flex-1 min-h-0 flex items-center justify-center px-4 relative overflow-hidden" style={{ background: C.surfaceVar }}>
+      <div className="absolute inset-0 overflow-hidden" aria-hidden>
+        <ImageWithFallback src={imgHero} alt="" className="w-full h-full object-cover opacity-40" />
+        <div className="absolute inset-0 bg-black/30" />
+      </div>
+      <div className="relative w-full max-w-sm ninja-no-drag">
+        <div className="rounded-3xl p-8" style={{ background: C.surface, boxShadow: "0 8px 32px rgba(0,0,0,.16)" }}>
+          <div className="text-center mb-8">
+            <BrandLogo size={56} elevated className="mx-auto mb-4" priority />
+            <h1 className="text-2xl font-light mb-1" style={{ color: C.onSurface, fontFamily: "'Trade Winds', cursive" }}>
+              Welcome <span className="font-medium">Back</span>
+            </h1>
+            <p className="text-sm" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
+              Sign in to continue your journey
             </p>
           </div>
+          {error && (
+            <p className="text-sm mb-3 text-center" style={{ color: C.error, fontFamily: "Roboto" }} role="alert">
+              {error}
+            </p>
+          )}
+          <div
+            className="space-y-5 mb-6"
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !loading) void handleLogin();
+            }}
+          >
+            <Field label="Email" type="email" placeholder="ninja@example.com" value={email} onChange={setEmail} />
+            <Field
+              label="Password"
+              type={showPw ? "text" : "password"}
+              placeholder="••••••••"
+              value={password}
+              onChange={setPassword}
+              suffix={
+                <button type="button" aria-label={showPw ? "Hide password" : "Show password"} onClick={() => setShowPw(!showPw)} style={{ color: C.onSurfaceVar }}>
+                  {showPw ? <VisibilityOffIcon style={{ fontSize: 20 }} /> : <VisibilityIcon style={{ fontSize: 20 }} />}
+                </button>
+              }
+            />
+            <div className="flex items-center justify-between gap-3">
+              <button type="button" role="checkbox" aria-checked={staySignedIn} onClick={toggleStay} className="flex items-center gap-2 text-left">
+                <span
+                  className="w-4 h-4 rounded border-2 flex items-center justify-center shrink-0"
+                  style={{ borderColor: C.primary, background: staySignedIn ? C.primary : "transparent" }}
+                >
+                  {staySignedIn && <CheckIcon style={{ fontSize: 10, color: "white" }} />}
+                </span>
+                <span className="text-sm" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>Stay signed in</span>
+              </button>
+              <button type="button" onClick={() => openExternal(signupUrl.replace(/#\/signup$/, "#/forgot-password"))} className="text-sm font-medium shrink-0" style={{ color: C.primary, fontFamily: "Roboto" }}>
+                Forgot password?
+              </button>
+            </div>
+          </div>
+          <FilledBtn onClick={handleLogin} cls="w-full justify-center mb-4" disabled={loading}>
+            <LoginIcon style={{ fontSize: 16 }} />
+            {loading ? "Signing in..." : "Sign In"}
+          </FilledBtn>
+          <div className="flex items-center gap-3 mb-4">
+            <div className="flex-1 h-px" style={{ background: C.outlineVar }} />
+            <span className="text-xs" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>or continue with</span>
+            <div className="flex-1 h-px" style={{ background: C.outlineVar }} />
+          </div>
+          <div className="grid grid-cols-3 gap-3 mb-6">
+            {PROVIDERS.map((p) => {
+              const Icon = p.icon;
+              const isPending = pendingProvider === p.id;
+              return (
+                <button
+                  key={p.id}
+                  type="button"
+                  disabled={!!pendingProvider || loading}
+                  onClick={() => handleOAuth(p.id)}
+                  className="flex items-center justify-center gap-1.5 py-2.5 h-[42px] rounded-full border text-xs font-medium transition-colors hover:bg-[#6750A4]/4 disabled:opacity-50"
+                  style={{ borderColor: C.outlineVar, fontFamily: "Roboto", color: C.onSurfaceVar }}
+                >
+                  {isPending ? (
+                    <span className="w-4 h-4 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: C.outlineVar, borderTopColor: C.primary }} />
+                  ) : (
+                    <Icon size={18} />
+                  )}
+                  <span>{p.label}</span>
+                </button>
+              );
+            })}
+          </div>
+          <p className="text-center text-sm" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
+            {"Don't have an account? "}
+            <button type="button" onClick={() => openExternal(signupUrl)} className="font-medium" style={{ color: C.primary }}>
+              Create Account
+            </button>
+          </p>
         </div>
       </div>
     </div>

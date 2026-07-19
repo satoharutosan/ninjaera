@@ -504,14 +504,23 @@ export default function DesktopApp() {
   const noopToast = useCallback(() => {}, []);
   const noopPush = useCallback(() => {}, []);
 
+  const titleBar = (
+    <TitleBar
+      isDark={isDark}
+      onToggleTheme={() => patchSettings({ general: { theme: isDark ? "light" : "dark" } })}
+      onOpenSettings={() => setSettingsOpen(true)}
+    />
+  );
+
   return (
     <ThemeCtx.Provider value={theme}>
       <CallProvider>
         <Toaster position="top-right" richColors />
         <CallOverlays />
-        {!authReady ? (
-          <div className="ninja-desktop-root items-center justify-center" style={{ background: theme.bg }}>
-            <div className="flex flex-1 flex-col items-center justify-center gap-3">
+        <div className="ninja-desktop-root" style={{ background: theme.bg }}>
+          {titleBar}
+          {!authReady ? (
+            <div className="flex flex-1 flex-col items-center justify-center gap-3 min-h-0">
               <BrandLogo size={48} priority />
               <div
                 className="w-10 h-10 rounded-full border-2 border-t-transparent animate-spin"
@@ -521,18 +530,9 @@ export default function DesktopApp() {
                 Restoring session…
               </p>
             </div>
-          </div>
-        ) : !loggedIn ? (
-          <div className="ninja-desktop-root" style={{ background: theme.bg }}>
+          ) : !loggedIn ? (
             <LoginScreen onLogin={handleLogin} signupUrl={signupUrl} />
-          </div>
-        ) : (
-          <div className="ninja-desktop-root" style={{ background: theme.bg }}>
-            <TitleBar
-              isDark={isDark}
-              onToggleTheme={() => patchSettings({ general: { theme: isDark ? "light" : "dark" } })}
-              onOpenSettings={() => setSettingsOpen(true)}
-            />
+          ) : (
             <div className="ninja-desktop-body">
               <div className="ninja-desktop-messages ninja-scroll">
                 <MessagesPage
@@ -559,8 +559,8 @@ export default function DesktopApp() {
                 />
               </div>
             </div>
-          </div>
-        )}
+          )}
+        </div>
         {settingsOpen && (
           <SettingsDialog
             settings={settings}

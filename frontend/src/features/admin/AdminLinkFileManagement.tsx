@@ -18,7 +18,12 @@ import {
   ApiError,
   type AdminLinkFile,
   type AdminLinkFileAccessLog,
+  type UploadProgress,
 } from "@/app/api";
+import {
+  AdminUploadProgress,
+  type AdminUploadProgressState,
+} from "@/features/admin/components/AdminUploadProgress";
 
 type ConfirmState = { title: string; body: string; onOk: () => void };
 type PageTab = "files" | "logs";
@@ -132,6 +137,8 @@ export function AdminLinkFileManagement({
   const [alias, setAlias] = useState("");
   const [active, setActive] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<AdminUploadProgressState | null>(null);
+  const [uploadBytes, setUploadBytes] = useState<{ loaded: number; total: number } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [logs, setLogs] = useState<AdminLinkFileAccessLog[]>([]);
@@ -254,6 +261,8 @@ export function AdminLinkFileManagement({
     setEditFile(null);
     setAlias("");
     setActive(true);
+    setUploadProgress(null);
+    setUploadBytes(null);
   };
 
   const openEdit = (f: AdminLinkFile) => {
@@ -261,10 +270,12 @@ export function AdminLinkFileManagement({
     setEditFile(null);
     setAlias(f.alias);
     setActive(f.active);
+    setUploadProgress(null);
+    setUploadBytes(null);
   };
 
   const save = async () => {
-    if (!edit) return;
+    if (!edit || saving) return;
     const isNew = !edit.id;
     if (isNew && !editFile) {
       toast.error("Choose a file to upload");
@@ -274,23 +285,42 @@ export function AdminLinkFileManagement({
       toast.error("Public path is required");
       return;
     }
+    const filename = editFile?.name || edit.originalFilename || "file";
     setSaving(true);
+    setUploadBytes(null);
+    setUploadProgress(
+      editFile
+        ? { filename, percent: 0, phase: "uploading" }
+        : { filename, percent: 100, phase: "processing" },
+    );
     try {
       const form = new FormData();
       form.append("alias", alias.trim());
       form.append("active", active ? "true" : "false");
       if (editFile) form.append("file", editFile);
+      const onUploadProgress = (p: UploadProgress) => {
+        if (p.total > 0) setUploadBytes({ loaded: p.loaded, total: p.total });
+        if (p.transferComplete || p.percent >= 100) {
+          setUploadProgress({ filename, percent: 100, phase: "processing" });
+          return;
+        }
+        setUploadProgress({ filename, percent: p.percent, phase: "uploading" });
+      };
       if (isNew) {
-        await api.admin.createLinkFile(form);
+        await api.admin.createLinkFile(form, { onUploadProgress });
         toast.success("Link file uploaded");
       } else {
-        await api.admin.updateLinkFile(edit.id!, form);
+        await api.admin.updateLinkFile(edit.id!, form, { onUploadProgress });
         toast.success("Link file updated");
       }
       setEdit(null);
       setEditFile(null);
+      setUploadProgress(null);
+      setUploadBytes(null);
       await loadFiles();
     } catch (e) {
+      setUploadProgress(null);
+      setUploadBytes(null);
       toast.error(e instanceof ApiError ? e.message : "Save failed");
     } finally {
       setSaving(false);
@@ -665,8 +695,9 @@ export function AdminLinkFileManagement({
                 ref={fileInputRef}
                 type="file"
                 accept={ALLOWED_ACCEPT}
+                disabled={saving}
                 onChange={(e) => setEditFile(e.target.files?.[0] || null)}
-                className="block w-full text-sm"
+                className="block w-full text-sm disabled:opacity-50"
                 style={{ color: C.onSurface, fontFamily: "Roboto" }}
               />
               {editFile && (
@@ -677,12 +708,34 @@ export function AdminLinkFileManagement({
               )}
             </div>
             <label className="flex items-center gap-2 text-sm" style={{ color: C.onSurface, fontFamily: "Roboto" }}>
-              <input type="checkbox" checked={active} onChange={(e) => setActive(e.target.checked)} />
+              <input type="checkbox" checked={active} disabled={saving} onChange={(e) => setActive(e.target.checked)} />
               Active (publicly accessible)
             </label>
+            {uploadProgress && (
+              <AdminUploadProgress
+                state={uploadProgress}
+                loaded={uploadBytes?.loaded}
+                total={uploadBytes?.total}
+              />
+            )}
             <div className="flex justify-end gap-2 pt-2">
-              <OutlinedBtn onClick={() => { setEdit(null); setEditFile(null); }} disabled={saving}>Cancel</OutlinedBtn>
-              <FilledBtn onClick={() => void save()} disabled={saving}>{saving ? "Saving…" : "Save"}</FilledBtn>
+              <OutlinedBtn
+                onClick={() => {
+                  if (saving) return;
+                  setEdit(null);
+                  setEditFile(null);
+                  setUploadProgress(null);
+                  setUploadBytes(null);
+                }}
+                disabled={saving}
+              >
+                Cancel
+              </OutlinedBtn>
+              <FilledBtn onClick={() => void save()} disabled={saving}>
+                {saving
+                  ? (uploadProgress?.phase === "processing" ? "Processing…" : "Uploading…")
+                  : "Save"}
+              </FilledBtn>
             </div>
           </div>
         </div>

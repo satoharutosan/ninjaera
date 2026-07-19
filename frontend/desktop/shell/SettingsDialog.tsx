@@ -51,6 +51,17 @@ export function SettingsDialog({
   useEffect(() => setCat(initialCategory), [initialCategory]);
 
   useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  useEffect(() => {
     navigator.mediaDevices
       ?.enumerateDevices()
       .then(setDevices)

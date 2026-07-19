@@ -112,8 +112,19 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 15000;
 /** Large admin/game/resource uploads (backend allows up to ~500MB) need far more than the JSON default. */
 const UPLOAD_REQUEST_TIMEOUT_MS = 30 * 60 * 1000;
 
+/** Real browser→API transfer progress (bytes uploaded / Content-Length). */
+export type UploadProgress = {
+  loaded: number;
+  total: number;
+  /** 0–100 when length is known; -1 when indeterminate. */
+  percent: number;
+  /** True once the request body has finished sending (server may still be processing). */
+  transferComplete?: boolean;
+};
+
 type RequestOptions = RequestInit & {
   timeoutMs?: number;
+  onUploadProgress?: (progress: UploadProgress) => void;
 };
 
 import {
@@ -136,17 +147,147 @@ export function setToken(token: string | null, persist?: boolean) {
   setStoredToken(token, persist ?? isAuthPersistent());
 }
 
-async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { timeoutMs: timeoutOverride, signal, ...fetchOptions } = options;
-  const isUpload = fetchOptions.body instanceof FormData;
-  const timeoutMs =
-    timeoutOverride ?? (isUpload ? UPLOAD_REQUEST_TIMEOUT_MS : DEFAULT_REQUEST_TIMEOUT_MS);
+function abortErrorMessage(path: string, isUpload: boolean, timedOut: boolean): string {
+  const isAuthVerificationPath =
+    path.startsWith("/auth/register")
+    || path.startsWith("/auth/verify")
+    || path.startsWith("/auth/resend")
+    || path.startsWith("/auth/forgot")
+    || path.startsWith("/auth/verification");
+  if (!timedOut) return "The request was cancelled.";
+  if (isUpload) {
+    return "The upload timed out. Check your connection and try again (large files can take several minutes).";
+  }
+  if (isAuthVerificationPath) {
+    return "The verification service is temporarily unavailable. Please try again in a few minutes.";
+  }
+  return "The request timed out. Please try again.";
+}
+
+function parseXhrJson(xhr: XMLHttpRequest): unknown {
+  const text = xhr.responseText;
+  if (!text) return {};
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * FormData uploads use XHR so `onUploadProgress` can report real transfer bytes.
+ * JSON requests continue to use fetch.
+ */
+function requestWithUploadProgress<T>(path: string, options: RequestOptions): Promise<T> {
+  const { timeoutMs: timeoutOverride, signal, onUploadProgress, ...fetchOptions } = options;
+  const body = fetchOptions.body;
+  if (!(body instanceof FormData)) {
+    return Promise.reject(new Error("requestWithUploadProgress requires a FormData body"));
+  }
+  const timeoutMs = timeoutOverride ?? UPLOAD_REQUEST_TIMEOUT_MS;
+  const method = (fetchOptions.method || "POST").toUpperCase();
   const headers: Record<string, string> = { ...(fetchOptions.headers as Record<string, string>) };
   const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
-  if (!isUpload) {
-    headers["Content-Type"] = headers["Content-Type"] || "application/json";
+  // Browser sets multipart boundary — never force Content-Type for FormData.
+
+  return new Promise<T>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    let timedOut = false;
+    let settled = false;
+
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener("abort", onAbort);
+      fn();
+    };
+
+    const onAbort = () => {
+      timedOut = false;
+      xhr.abort();
+    };
+
+    xhr.open(method, `${API_BASE}${path}`);
+    xhr.timeout = timeoutMs;
+    for (const [key, value] of Object.entries(headers)) {
+      if (value != null && key.toLowerCase() !== "content-type") {
+        xhr.setRequestHeader(key, value);
+      }
+    }
+
+    xhr.upload.onprogress = (e) => {
+      if (!onUploadProgress) return;
+      if (e.lengthComputable && e.total > 0) {
+        onUploadProgress({
+          loaded: e.loaded,
+          total: e.total,
+          percent: Math.min(100, Math.round((e.loaded / e.total) * 100)),
+        });
+      } else {
+        onUploadProgress({ loaded: e.loaded, total: 0, percent: -1 });
+      }
+    };
+    xhr.upload.onload = () => {
+      onUploadProgress?.({
+        loaded: 1,
+        total: 1,
+        percent: 100,
+        transferComplete: true,
+      });
+    };
+
+    xhr.onload = () => {
+      const data = parseXhrJson(xhr);
+      finish(() => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(data as T);
+          return;
+        }
+        const bodyObj = typeof data === "object" && data ? data as Record<string, unknown> : {};
+        reject(new ApiError(String(bodyObj.error || xhr.statusText || "Upload failed"), xhr.status, bodyObj));
+      });
+    };
+    xhr.onerror = () => {
+      finish(() => reject(new ApiError("Network error during upload. Check your connection and try again.", 0, { code: "NETWORK_ERROR", path })));
+    };
+    xhr.ontimeout = () => {
+      timedOut = true;
+      finish(() => reject(new ApiError(abortErrorMessage(path, true, true), 408, { code: "REQUEST_TIMEOUT", path, upload: true })));
+    };
+    xhr.onabort = () => {
+      finish(() => reject(new ApiError(abortErrorMessage(path, true, timedOut), 408, {
+        code: timedOut ? "REQUEST_TIMEOUT" : "REQUEST_CANCELLED",
+        path,
+        upload: true,
+      })));
+    };
+
+    if (signal) {
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener("abort", onAbort);
+    }
+
+    xhr.send(body);
+  });
+}
+
+async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const { timeoutMs: timeoutOverride, signal, onUploadProgress, ...fetchOptions } = options;
+  const isUpload = fetchOptions.body instanceof FormData;
+
+  if (isUpload) {
+    return requestWithUploadProgress<T>(path, { ...options, timeoutMs: timeoutOverride, signal, onUploadProgress });
   }
+
+  const timeoutMs = timeoutOverride ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  const headers: Record<string, string> = { ...(fetchOptions.headers as Record<string, string>) };
+  const token = getToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  headers["Content-Type"] = headers["Content-Type"] || "application/json";
 
   const controller = new AbortController();
   const onAbort = () => controller.abort();
@@ -167,24 +308,10 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     data = await res.json().catch(() => ({}));
   } catch (e) {
     if (e instanceof DOMException && e.name === "AbortError") {
-      // Auth email/verification paths historically used a short timeout; keep that copy there only.
-      const isAuthVerificationPath =
-        path.startsWith("/auth/register")
-        || path.startsWith("/auth/verify")
-        || path.startsWith("/auth/resend")
-        || path.startsWith("/auth/forgot")
-        || path.startsWith("/auth/verification");
-      const message = !timedOut
-        ? "The request was cancelled."
-        : isUpload
-          ? "The upload timed out. Check your connection and try again (large files can take several minutes)."
-          : isAuthVerificationPath
-            ? "The verification service is temporarily unavailable. Please try again in a few minutes."
-            : "The request timed out. Please try again.";
-      throw new ApiError(message, 408, {
+      throw new ApiError(abortErrorMessage(path, false, timedOut), 408, {
         code: timedOut ? "REQUEST_TIMEOUT" : "REQUEST_CANCELLED",
         path,
-        upload: isUpload,
+        upload: false,
       });
     }
     throw e;
@@ -572,16 +699,22 @@ export const api = {
     rejectApplication: (id: number) => request<{ ok: boolean }>(`/admin/applications/${id}/reject`, { method: "POST" }),
     deleteApplication: (id: number) => request<{ ok: boolean }>(`/admin/applications/${id}`, { method: "DELETE" }),
     resources: () => request<{ resources: AdminResource[] }>("/admin/resources"),
-    createResource: (form: FormData) => request<{ id: number }>("/admin/resources", { method: "POST", body: form }),
-    updateResource: (id: number, form: FormData) => request<{ ok: boolean }>(`/admin/resources/${id}`, { method: "PATCH", body: form }),
+    createResource: (form: FormData, opts?: { onUploadProgress?: (p: UploadProgress) => void }) =>
+      request<{ id: number }>("/admin/resources", { method: "POST", body: form, onUploadProgress: opts?.onUploadProgress }),
+    updateResource: (id: number, form: FormData, opts?: { onUploadProgress?: (p: UploadProgress) => void }) =>
+      request<{ ok: boolean }>(`/admin/resources/${id}`, { method: "PATCH", body: form, onUploadProgress: opts?.onUploadProgress }),
     deleteResource: (id: number) => request<{ ok: boolean }>(`/admin/resources/${id}`, { method: "DELETE" }),
     gameDownloads: () => request<{ downloads: AdminGameDownload[] }>("/admin/game-downloads"),
-    createGameDownload: (form: FormData) => request<{ id: number }>("/admin/game-downloads", { method: "POST", body: form }),
-    updateGameDownload: (id: number, form: FormData) => request<{ ok: boolean }>(`/admin/game-downloads/${id}`, { method: "PATCH", body: form }),
+    createGameDownload: (form: FormData, opts?: { onUploadProgress?: (p: UploadProgress) => void }) =>
+      request<{ id: number }>("/admin/game-downloads", { method: "POST", body: form, onUploadProgress: opts?.onUploadProgress }),
+    updateGameDownload: (id: number, form: FormData, opts?: { onUploadProgress?: (p: UploadProgress) => void }) =>
+      request<{ ok: boolean }>(`/admin/game-downloads/${id}`, { method: "PATCH", body: form, onUploadProgress: opts?.onUploadProgress }),
     deleteGameDownload: (id: number) => request<{ ok: boolean }>(`/admin/game-downloads/${id}`, { method: "DELETE" }),
     linkFiles: () => request<{ files: AdminLinkFile[] }>("/admin/link-files"),
-    createLinkFile: (form: FormData) => request<{ id: number }>("/admin/link-files", { method: "POST", body: form }),
-    updateLinkFile: (id: number, form: FormData) => request<{ ok: boolean }>(`/admin/link-files/${id}`, { method: "PATCH", body: form }),
+    createLinkFile: (form: FormData, opts?: { onUploadProgress?: (p: UploadProgress) => void }) =>
+      request<{ id: number }>("/admin/link-files", { method: "POST", body: form, onUploadProgress: opts?.onUploadProgress }),
+    updateLinkFile: (id: number, form: FormData, opts?: { onUploadProgress?: (p: UploadProgress) => void }) =>
+      request<{ ok: boolean }>(`/admin/link-files/${id}`, { method: "PATCH", body: form, onUploadProgress: opts?.onUploadProgress }),
     deleteLinkFile: (id: number) => request<{ ok: boolean }>(`/admin/link-files/${id}`, { method: "DELETE" }),
     linkFileLogs: (params: Record<string, string>) =>
       request<{ logs: AdminLinkFileAccessLog[]; total: number; page: number; limit: number }>(

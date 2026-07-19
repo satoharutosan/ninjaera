@@ -153,12 +153,9 @@ export function CallProvider({ children }: { children: ReactNode }) {
   const refreshRemotePreview = useCallback(() => {
     const peer = peerRef.current;
     if (!peer) return;
-    // media-state drives whether we show the remote screen m-line vs camera.
-    let prefer = remoteViewRef.current;
-    if (prefer === "auto") {
-      prefer = peerAnnouncedScreenRef.current ? "screen" : "camera";
-    }
-    setRemoteStream(peer.buildRemoteViewStream(prefer));
+    // Screen share uses replaceTrack on the same video m-line — always bind
+    // the remote video receiver; media-state only updates labels.
+    setRemoteStream(peer.buildRemoteViewStream("auto"));
   }, []);
 
   const stopRingTimer = useCallback(() => {
@@ -593,17 +590,13 @@ export function CallProvider({ children }: { children: ReactNode }) {
         if (typeof data.screenSharing === "boolean") {
           peerAnnouncedScreenRef.current = data.screenSharing;
           setPeerScreenSharing(data.screenSharing);
-          if (!data.screenSharing) {
-            remoteViewRef.current = "auto";
-            setRemoteView("auto");
-          }
           if (import.meta.env.DEV) {
-            console.log("[WebRTC] peer screenSharing=", data.screenSharing);
+            console.log("[ScreenShare] peer status", data.screenSharing);
           }
-          // replaceTrack updates frames in-place; switch which m-line we display.
+          // Same remote video track — refresh binding so the element paints new frames.
           refreshRemotePreview();
-          window.setTimeout(() => refreshRemotePreview(), 100);
-          window.setTimeout(() => refreshRemotePreview(), 400);
+          window.setTimeout(() => refreshRemotePreview(), 150);
+          window.setTimeout(() => refreshRemotePreview(), 500);
         }
       }),
       onRealtimeEvent<{ error: string; code?: string; callId?: string }>("call:error", ({ error, code }) => {

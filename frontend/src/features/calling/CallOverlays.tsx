@@ -67,28 +67,46 @@ function VideoTile({
   muted,
   label,
   sinkId,
+  /** Bump when remote media source changes (e.g. screen share) to force rebind. */
+  bindKey,
 }: {
   stream: MediaStream | null;
   muted?: boolean;
   label: string;
   sinkId?: string;
+  bindKey?: string | number;
 }) {
   const ref = useRef<HTMLVideoElement>(null);
+  const videoTracks = stream?.getVideoTracks() ?? [];
+  const hasLiveVideo = videoTracks.some(t => t.enabled && t.readyState === "live");
+  const trackSig = videoTracks.map(t => `${t.id}:${t.readyState}:${t.muted}`).join("|");
+
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    el.srcObject = stream;
-  }, [stream]);
+    // Always reassign — replaceTrack updates frames on the same track, but
+    // switching MediaStream instances or remounting needs an explicit bind.
+    if (el.srcObject !== stream) {
+      el.srcObject = stream;
+      if (import.meta.env.DEV) {
+        console.log("[Video] stream attached", {
+          local: !!muted,
+          tracks: stream?.getTracks().map(t => ({ kind: t.kind, id: t.id.slice(0, 8), live: t.readyState })),
+        });
+      }
+    }
+    if (stream && el.paused) {
+      void el.play().catch(() => {});
+    }
+  }, [stream, bindKey, trackSig, muted]);
 
   useEffect(() => {
     const el = ref.current as HTMLVideoElement & { setSinkId?: (id: string) => Promise<void> } | null;
     if (!el || !sinkId || muted || typeof el.setSinkId !== "function") return;
     void el.setSinkId(sinkId).catch(() => {});
-  }, [sinkId, muted, stream]);
+  }, [sinkId, muted, stream, bindKey]);
 
-  const hasVideo = !!stream?.getVideoTracks().some(t => t.enabled && t.readyState === "live");
-
-  if (!stream || (!hasVideo && muted)) {
+  if (!stream || (!hasLiveVideo && muted)) {
     return (
       <div className="w-full h-full flex items-center justify-center bg-black/40 text-white/70 text-sm" style={{ fontFamily: "Roboto" }}>
         {label}
@@ -98,11 +116,12 @@ function VideoTile({
 
   return (
     <video
+      key={bindKey != null ? `v-${bindKey}` : undefined}
       ref={ref}
       autoPlay
       playsInline
       muted={muted}
-      className={`w-full h-full ${hasVideo ? "object-contain bg-black" : "object-cover"}`}
+      className={`w-full h-full ${hasLiveVideo ? "object-contain bg-black" : "object-cover"}`}
     />
   );
 }
@@ -305,7 +324,6 @@ export function CallOverlays() {
   const conversationId = call.invite?.conversationId ?? 0;
   const chatActive = call.phase === "active" && !!conversationId;
   const showLocalSwitch = call.screenSharing;
-  const showRemoteSwitch = call.peerScreenSharing;
   const peerName = call.invite?.callerName || "Peer";
 
   const viewBtn = (active: boolean) => ({
@@ -330,24 +348,11 @@ export function CallOverlays() {
               !call.peerCamOn && !call.peerScreenSharing ? "Cam off" : "",
               call.peerScreenSharing ? "is sharing their screen" : "",
             ].filter(Boolean).join(" · ")}
-            topLeft={showRemoteSwitch ? (
-              <>
-                <button type="button" onClick={() => call.setRemoteView("camera")}
-                  className="text-[10px] px-2 py-1 rounded-full hover:opacity-90"
-                  style={viewBtn(call.remoteView === "camera")}>
-                  Camera
-                </button>
-                <button type="button" onClick={() => call.setRemoteView("screen")}
-                  className="text-[10px] px-2 py-1 rounded-full hover:opacity-90"
-                  style={viewBtn(call.remoteView === "screen" || call.remoteView === "auto")}>
-                  Screen
-                </button>
-              </>
-            ) : undefined}
           >
             <VideoTile
               stream={call.remoteStream}
               sinkId={call.selectedOutputId || undefined}
+              bindKey={call.peerScreenSharing ? "remote-screen" : "remote-camera"}
               label={
                 call.phase === "connecting"
                   ? "Connecting…"
@@ -385,6 +390,7 @@ export function CallOverlays() {
             <VideoTile
               stream={call.localStream}
               muted
+              bindKey={call.screenSharing ? "local-screen" : "local-camera"}
               label={
                 call.screenSharing
                   ? "You are sharing your screen"

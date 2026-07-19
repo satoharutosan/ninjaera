@@ -69,6 +69,8 @@ type CallContextValue = {
   setAudioOutput: (deviceId: string) => Promise<void>;
   shareScreen: () => Promise<void>;
   stopScreenShare: () => Promise<void>;
+  /** Live WebRTC stats for the active peer (dev diagnostics). */
+  getPeerStats: () => Promise<RTCStatsReport> | undefined;
   setLocalView: (mode: VideoViewMode) => void;
   setRemoteView: (mode: VideoViewMode) => void;
 };
@@ -473,6 +475,8 @@ export function CallProvider({ children }: { children: ReactNode }) {
     refreshRemotePreview();
   }, [refreshRemotePreview]);
 
+  const getPeerStats = useCallback(() => peerRef.current?.pc.getStats(), []);
+
   useEffect(() => {
     const unsubs = [
       onRealtimeEvent<CallInvite>("call:incoming", (data) => {
@@ -653,7 +657,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
     acceptIncoming: () => { void acceptIncoming(); },
     declineIncoming, ignoreIncoming, hangup,
     toggleMic, toggleCam, switchMic, switchCam, setAudioOutput,
-    shareScreen, stopScreenShare,
+    shareScreen, stopScreenShare, getPeerStats,
     setLocalView: setLocalViewMode,
     setRemoteView: setRemoteViewMode,
   }), [
@@ -663,7 +667,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
     audioInputs, videoInputs, audioOutputs, selectedOutputId,
     startCall, acceptIncoming, declineIncoming, ignoreIncoming, hangup,
     toggleMic, toggleCam, switchMic, switchCam, setAudioOutput,
-    shareScreen, stopScreenShare, setLocalViewMode, setRemoteViewMode,
+    shareScreen, stopScreenShare, getPeerStats, setLocalViewMode, setRemoteViewMode,
   ]);
 
   return <CallContext.Provider value={value}>{children}</CallContext.Provider>;

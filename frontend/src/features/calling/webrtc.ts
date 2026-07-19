@@ -73,6 +73,12 @@ export class CallPeer {
   private remoteAudio: MediaStreamTrack | null = null;
   private remoteVideo: MediaStreamTrack | null = null;
 
+  // Stable stream wrappers — reused while the underlying track id is unchanged
+  // so React/<video> never tear down and re-attach on every refresh (which
+  // prevents the element from ever painting incoming RTP frames).
+  private remoteVideoStream: MediaStream | null = null;
+  private remoteAudioStream: MediaStream | null = null;
+
   private placeholder: { track: MediaStreamTrack; dispose: () => void } | null = null;
   private sendingScreen = false;
   private outboundBaseTrack: MediaStreamTrack | null = null;
@@ -572,24 +578,42 @@ export class CallPeer {
 
   /**
    * Video-only remote stream for the <video> element.
-   * Must NOT include audio — bundling audio into an unmuted <video> causes
-   * autoplay to fail after srcObject rebind (screen share looks "broken").
+   * Returns a STABLE MediaStream: the same object is reused as long as the
+   * underlying receiver video track is unchanged. In the single-transceiver
+   * design the receiver track stays the same across camera↔screen switches
+   * (only frames change), so the <video> should bind ONCE and keep playing —
+   * repeatedly handing React a fresh wrapper caused constant teardown and a
+   * permanently black remote tile.
    */
   buildRemoteVideoStream(): MediaStream | null {
     this.syncReceivers();
-    if (this.remoteVideo && this.remoteVideo.readyState !== "ended") {
-      return new MediaStream([this.remoteVideo]);
+    const track = this.remoteVideo && this.remoteVideo.readyState !== "ended" ? this.remoteVideo : null;
+    if (!track) {
+      this.remoteVideoStream = null;
+      return null;
     }
-    return null;
+    const current = this.remoteVideoStream;
+    if (current && current.getVideoTracks()[0] === track) {
+      return current;
+    }
+    this.remoteVideoStream = new MediaStream([track]);
+    return this.remoteVideoStream;
   }
 
-  /** Audio-only remote stream for a dedicated <audio> element. */
+  /** Audio-only remote stream for a dedicated <audio> element (also stable). */
   buildRemoteAudioStream(): MediaStream | null {
     this.syncReceivers();
-    if (this.remoteAudio && this.remoteAudio.readyState !== "ended") {
-      return new MediaStream([this.remoteAudio]);
+    const track = this.remoteAudio && this.remoteAudio.readyState !== "ended" ? this.remoteAudio : null;
+    if (!track) {
+      this.remoteAudioStream = null;
+      return null;
     }
-    return null;
+    const current = this.remoteAudioStream;
+    if (current && current.getAudioTracks()[0] === track) {
+      return current;
+    }
+    this.remoteAudioStream = new MediaStream([track]);
+    return this.remoteAudioStream;
   }
 
   /** @deprecated use buildRemoteVideoStream — kept for call sites during transition */

@@ -64,25 +64,25 @@ function DeviceSelect({
 
 /**
  * Binds a video-only MediaStream to <video>.
- * Force clear → reattach on every relevant change (stream identity, track id,
- * or an explicit bindKey bump). This is deliberate: some Chrome versions do
- * not repaint a still-mounted <video> after RTCRtpSender.replaceTrack() on the
- * remote side unless srcObject is re-set. This is now safe to do unconditionally
- * because the stream is video-only (audio lives in a separate <audio> element),
- * so there is no autoplay-policy conflict from an unmuted audio track.
+ *
+ * IDEMPOTENT binding: srcObject is set only when the element is not already
+ * showing this exact stream/track. In the single-transceiver design the remote
+ * receiver track is the SAME object across camera↔screen switches (only the
+ * frames change), so the correct behaviour is to bind once and keep playing.
+ * The previous code tore down (srcObject = null) and re-attached on every
+ * refresh — and refresh fires many times per second — which stopped the
+ * element from ever painting the incoming RTP frames (permanent black tile).
  */
 function VideoTile({
   stream,
   muted,
   label,
   videoRef: videoRefProp,
-  bindKey,
 }: {
   stream: MediaStream | null;
   muted?: boolean;
   label: string;
   videoRef?: RefObject<HTMLVideoElement | null>;
-  bindKey?: string | number;
 }) {
   const localRef = useRef<HTMLVideoElement>(null);
   const ref = videoRefProp ?? localRef;
@@ -99,25 +99,29 @@ function VideoTile({
       return;
     }
 
-    el.srcObject = null;
-    el.srcObject = stream;
-    if (import.meta.env.DEV) {
-      console.log("[VIDEO] stream attached", {
-        localPreview: !!muted,
-        bindKey,
-        trackId: trackId.slice(0, 12),
-        mutedTrack: videoTrack.muted,
-        readyState: videoTrack.readyState,
-        audioTracksInStream: stream.getAudioTracks().length,
-      });
+    const already = el.srcObject === stream
+      || (el.srcObject instanceof MediaStream
+        && el.srcObject.getVideoTracks()[0] === videoTrack);
+
+    if (!already) {
+      el.srcObject = stream;
+      if (import.meta.env.DEV) {
+        console.log("[VIDEO] stream attached", {
+          localPreview: !!muted,
+          trackId: trackId.slice(0, 12),
+          mutedTrack: videoTrack.muted,
+          readyState: videoTrack.readyState,
+        });
+      }
     }
+
     const play = () => { void el.play().catch(() => {}); };
     play();
     videoTrack.addEventListener("unmute", play);
     return () => {
       videoTrack.removeEventListener("unmute", play);
     };
-  }, [stream, trackId, muted, videoTrack, bindKey]);
+  }, [stream, trackId, muted, videoTrack]);
 
   if (!stream || (!hasLiveVideo && muted)) {
     return (
@@ -201,7 +205,7 @@ function ScreenReceiveWatch({
         window.clearInterval(id);
         return;
       }
-      if (performance.now() - started > 5000) {
+      if (performance.now() - started > 6000) {
         setFail(true);
         window.clearInterval(id);
       }
@@ -216,6 +220,61 @@ function ScreenReceiveWatch({
       style={{ fontFamily: "Roboto" }}
     >
       Unable to receive shared screen
+    </div>
+  );
+}
+
+/**
+ * Dev-only live probe that directly answers "is the stream coming through?".
+ * Shows the remote <video> intrinsic size plus inbound-rtp frame stats so we
+ * can distinguish "no RTP arriving" (transmission bug) from "frames arriving
+ * but not painting" (render bug).
+ */
+function RemoteStreamDebug({
+  videoElRef,
+  getStats,
+  remoteStream,
+}: {
+  videoElRef: RefObject<HTMLVideoElement | null>;
+  getStats: () => Promise<RTCStatsReport> | undefined;
+  remoteStream: MediaStream | null;
+}) {
+  const [info, setInfo] = useState<string>("");
+
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    let prevFrames = 0;
+    const id = window.setInterval(async () => {
+      const el = videoElRef.current;
+      const w = el?.videoWidth ?? 0;
+      const h = el?.videoHeight ?? 0;
+      const track = remoteStream?.getVideoTracks()[0];
+      let fps = 0;
+      let framesReceived = 0;
+      try {
+        const stats = await getStats();
+        stats?.forEach((r) => {
+          if (r.type === "inbound-rtp" && (r as { kind?: string }).kind === "video") {
+            const o = r as unknown as { framesReceived?: number; framesPerSecond?: number };
+            framesReceived = o.framesReceived ?? 0;
+            fps = o.framesPerSecond ?? (framesReceived - prevFrames);
+            prevFrames = framesReceived;
+          }
+        });
+      } catch { /* */ }
+      setInfo(
+        `video ${w}×${h} · track ${track ? track.readyState : "none"}${track?.muted ? "/muted" : ""} · rx ${framesReceived}f ${Math.round(fps)}fps`,
+      );
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [videoElRef, getStats, remoteStream]);
+
+  if (!import.meta.env.DEV || !info) return null;
+  return (
+    <div
+      className="absolute top-3 right-3 z-[2] text-[10px] px-2 py-1 rounded bg-black/70 text-emerald-300 font-mono pointer-events-none"
+    >
+      {info}
     </div>
   );
 }
@@ -449,7 +508,6 @@ export function CallOverlays() {
               stream={call.remoteStream}
               muted
               videoRef={remoteVideoRef}
-              bindKey={`${call.remoteBindEpoch}-${call.peerScreenSharing ? "screen" : "cam"}-${call.remoteStream?.getVideoTracks()[0]?.id ?? "x"}`}
               label={
                 call.phase === "connecting"
                   ? "Connecting…"
@@ -463,6 +521,11 @@ export function CallOverlays() {
             <ScreenReceiveWatch
               peerSharing={call.peerScreenSharing}
               videoElRef={remoteVideoRef}
+            />
+            <RemoteStreamDebug
+              videoElRef={remoteVideoRef}
+              getStats={call.getPeerStats}
+              remoteStream={call.remoteStream}
             />
             <RemoteAudioSink
               stream={call.remoteAudioStream}

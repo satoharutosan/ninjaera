@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import CallIcon from "@mui/icons-material/Call";
 import CallEndIcon from "@mui/icons-material/CallEnd";
 import VideocamIcon from "@mui/icons-material/Videocam";
@@ -8,8 +8,12 @@ import MicOffIcon from "@mui/icons-material/MicOff";
 import ScreenShareIcon from "@mui/icons-material/ScreenShare";
 import StopScreenShareIcon from "@mui/icons-material/StopScreenShare";
 import CloseIcon from "@mui/icons-material/Close";
+import FullscreenIcon from "@mui/icons-material/Fullscreen";
+import FullscreenExitIcon from "@mui/icons-material/FullscreenExit";
+import ChatIcon from "@mui/icons-material/Chat";
 import { useC, SH2, ChatAvatar } from "@/app/shared";
 import { useCall } from "./CallProvider";
+import { CallChatPanel } from "./CallChatPanel";
 
 function formatElapsed(sec: number) {
   const m = Math.floor(sec / 60);
@@ -105,10 +109,89 @@ function VideoTile({
   );
 }
 
+function FullscreenMediaFrame({
+  children,
+  label,
+  topLeft,
+}: {
+  children: ReactNode;
+  label: string;
+  topLeft?: ReactNode;
+}) {
+  const C = useC();
+  const frameRef = useRef<HTMLDivElement>(null);
+  const [isFs, setIsFs] = useState(false);
+
+  useEffect(() => {
+    const onChange = () => {
+      const el = frameRef.current;
+      const fsEl = document.fullscreenElement
+        || (document as Document & { webkitFullscreenElement?: Element }).webkitFullscreenElement;
+      setIsFs(!!el && fsEl === el);
+    };
+    document.addEventListener("fullscreenchange", onChange);
+    document.addEventListener("webkitfullscreenchange", onChange as EventListener);
+    return () => {
+      document.removeEventListener("fullscreenchange", onChange);
+      document.removeEventListener("webkitfullscreenchange", onChange as EventListener);
+    };
+  }, []);
+
+  const toggle = useCallback(async () => {
+    const el = frameRef.current as (HTMLDivElement & {
+      webkitRequestFullscreen?: () => Promise<void> | void;
+    }) | null;
+    if (!el) return;
+    try {
+      const fsEl = document.fullscreenElement
+        || (document as Document & { webkitFullscreenElement?: Element }).webkitFullscreenElement;
+      if (fsEl === el) {
+        const doc = document as Document & { webkitExitFullscreen?: () => Promise<void> | void };
+        if (document.exitFullscreen) await document.exitFullscreen();
+        else doc.webkitExitFullscreen?.();
+      } else if (el.requestFullscreen) {
+        await el.requestFullscreen();
+      } else {
+        el.webkitRequestFullscreen?.();
+      }
+    } catch {
+      /* fullscreen blocked */
+    }
+  }, []);
+
+  return (
+    <div ref={frameRef} className="relative rounded-2xl overflow-hidden bg-black/50 min-h-[30vh] md:min-h-[40vh] h-full w-full">
+      {children}
+      <div className="absolute bottom-3 left-3 text-xs text-white/80 px-2 py-1 rounded-full bg-black/50" style={{ fontFamily: "Roboto" }}>
+        {label}
+      </div>
+      {topLeft && (
+        <div className="absolute top-3 left-3 flex gap-1 z-[1]">
+          {topLeft}
+        </div>
+      )}
+      <button
+        type="button"
+        aria-label={isFs ? "Exit full screen" : "View full screen"}
+        title={isFs ? "Exit full screen" : "View full screen"}
+        onClick={() => void toggle()}
+        className="absolute top-3 right-3 z-[2] w-9 h-9 rounded-full flex items-center justify-center text-white transition-opacity hover:opacity-100 opacity-90 focus:outline-none focus-visible:ring-2"
+        style={{ background: "rgba(0,0,0,0.55)", boxShadow: "0 1px 4px rgba(0,0,0,0.35)" }}
+      >
+        {isFs
+          ? <FullscreenExitIcon style={{ fontSize: 20, color: C.onSurface === "#E6E1E5" ? "#fff" : "#fff" }} />
+          : <FullscreenIcon style={{ fontSize: 20 }} />}
+      </button>
+    </div>
+  );
+}
+
 export function CallOverlays() {
   const C = useC();
   const call = useCall();
+  const [chatOpen, setChatOpen] = useState(true);
 
+  // Incoming modal
   if (call.phase === "incoming" && call.invite) {
     return (
       <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 p-4" role="dialog" aria-modal="true" aria-label="Incoming call">
@@ -203,11 +286,41 @@ export function CallOverlays() {
 
   const showLocalSwitch = call.screenSharing;
   const showRemoteSwitch = call.peerScreenSharing;
+  const conversationId = call.invite?.conversationId ?? 0;
+  const chatActive = call.phase === "active" && !!conversationId;
+
+  const viewBtn = (active: boolean) => ({
+    background: active ? C.primary : "rgba(0,0,0,0.5)",
+    color: "#fff",
+    fontFamily: "Roboto" as const,
+  });
 
   return (
     <div className="fixed inset-0 z-[80] flex flex-col bg-[#1C1B1F]" role="dialog" aria-modal="true" aria-label="In call">
       <div className="flex-1 relative min-h-0 grid grid-cols-1 md:grid-cols-2 gap-2 p-3">
-        <div className="relative rounded-2xl overflow-hidden bg-black/50 min-h-[40vh]">
+        <FullscreenMediaFrame
+          label={[
+            "Peer",
+            !call.peerMicOn ? "Muted" : "",
+            !call.peerCamOn ? "Cam off" : "",
+            call.peerScreenSharing ? "Screen" : "",
+            call.connectionState,
+          ].filter(Boolean).join(" · ")}
+          topLeft={showRemoteSwitch ? (
+            <>
+              <button type="button" onClick={() => call.setRemoteView("camera")}
+                className="text-[10px] px-2 py-1 rounded-full"
+                style={viewBtn(call.remoteView === "camera")}>
+                View Camera
+              </button>
+              <button type="button" onClick={() => call.setRemoteView("screen")}
+                className="text-[10px] px-2 py-1 rounded-full"
+                style={viewBtn(call.remoteView === "screen" || call.remoteView === "auto")}>
+                View Screen
+              </button>
+            </>
+          ) : undefined}
+        >
           <VideoTile
             stream={call.remoteStream}
             sinkId={call.selectedOutputId || undefined}
@@ -221,54 +334,46 @@ export function CallOverlays() {
                     : "Voice connected"
             }
           />
-          <div className="absolute bottom-3 left-3 text-xs text-white/80 px-2 py-1 rounded-full bg-black/50" style={{ fontFamily: "Roboto" }}>
-            Peer
-            {!call.peerMicOn ? " · Muted" : ""}
-            {!call.peerCamOn ? " · Cam off" : ""}
-            {call.peerScreenSharing ? " · Screen" : ""}
-            {" · "}{call.connectionState}
-          </div>
-          {showRemoteSwitch && (
-            <div className="absolute top-3 right-3 flex gap-1">
-              <button type="button" onClick={() => call.setRemoteView("camera")}
+        </FullscreenMediaFrame>
+
+        <FullscreenMediaFrame
+          label={[
+            "You",
+            !call.micOn ? "Muted" : "",
+            !call.camOn && !call.screenSharing ? "Cam off" : "",
+            call.screenSharing ? "Sharing" : "",
+          ].filter(Boolean).join(" · ")}
+          topLeft={showLocalSwitch ? (
+            <>
+              <button type="button" onClick={() => call.setLocalView("camera")}
                 className="text-[10px] px-2 py-1 rounded-full"
-                style={{ background: call.remoteView === "camera" ? C.primary : "rgba(0,0,0,0.5)", color: "#fff", fontFamily: "Roboto" }}>
+                style={viewBtn(call.localView === "camera")}>
                 View Camera
               </button>
-              <button type="button" onClick={() => call.setRemoteView("screen")}
+              <button type="button" onClick={() => call.setLocalView("screen")}
                 className="text-[10px] px-2 py-1 rounded-full"
-                style={{ background: call.remoteView === "screen" || call.remoteView === "auto" ? C.primary : "rgba(0,0,0,0.5)", color: "#fff", fontFamily: "Roboto" }}>
+                style={viewBtn(call.localView === "screen" || call.localView === "auto")}>
                 View Screen
               </button>
-            </div>
-          )}
-        </div>
-        <div className="relative rounded-2xl overflow-hidden bg-black/50 min-h-[30vh] md:min-h-[40vh]">
+            </>
+          ) : undefined}
+        >
           <VideoTile
             stream={call.localStream}
             muted
             label={call.camOn || call.screenSharing ? "You" : "Camera off"}
           />
-          <div className="absolute bottom-3 left-3 text-xs text-white/80 px-2 py-1 rounded-full bg-black/50" style={{ fontFamily: "Roboto" }}>
-            You {!call.micOn ? "· Muted" : ""} {!call.camOn && !call.screenSharing ? "· Cam off" : ""} {call.screenSharing ? "· Sharing" : ""}
-          </div>
-          {showLocalSwitch && (
-            <div className="absolute top-3 right-3 flex gap-1">
-              <button type="button" onClick={() => call.setLocalView("camera")}
-                className="text-[10px] px-2 py-1 rounded-full"
-                style={{ background: call.localView === "camera" ? C.primary : "rgba(0,0,0,0.5)", color: "#fff", fontFamily: "Roboto" }}>
-                View Camera
-              </button>
-              <button type="button" onClick={() => call.setLocalView("screen")}
-                className="text-[10px] px-2 py-1 rounded-full"
-                style={{ background: call.localView === "screen" || call.localView === "auto" ? C.primary : "rgba(0,0,0,0.5)", color: "#fff", fontFamily: "Roboto" }}>
-                View Screen
-              </button>
-            </div>
-          )}
-        </div>
+        </FullscreenMediaFrame>
       </div>
-      <div className="px-4 py-4 flex flex-col items-center gap-3 border-t" style={{ borderColor: "#49454F", background: "#2B2930" }}>
+
+      {/* Keep mounted while call is active so toggling chat does not wipe the session buffer. */}
+      {chatActive && (
+        <div className={chatOpen ? "" : "hidden"} aria-hidden={!chatOpen}>
+          <CallChatPanel conversationId={conversationId} active={chatActive} />
+        </div>
+      )}
+
+      <div className="px-4 py-4 flex flex-col items-center gap-3 border-t shrink-0" style={{ borderColor: "#49454F", background: "#2B2930" }}>
         <p className="text-sm text-white/80" style={{ fontFamily: "Roboto Mono, monospace" }}>
           {call.phase === "connecting" ? "Connecting…" : formatElapsed(call.elapsedSec)} · {call.callType === "video" ? "Video" : "Voice"}
         </p>
@@ -292,6 +397,18 @@ export function CallOverlays() {
           >
             {call.screenSharing ? <StopScreenShareIcon /> : <ScreenShareIcon />}
           </button>
+          {!!conversationId && (
+            <button
+              type="button"
+              aria-label={chatOpen ? "Hide call chat" : "Show call chat"}
+              aria-pressed={chatOpen}
+              onClick={() => setChatOpen(o => !o)}
+              className="w-12 h-12 rounded-full flex items-center justify-center text-white"
+              style={{ background: chatOpen ? C.primary : "#49454F" }}
+            >
+              <ChatIcon />
+            </button>
+          )}
           <button type="button" aria-label="Leave call" onClick={call.hangup}
             className="w-14 h-12 rounded-full flex items-center justify-center text-white px-4" style={{ background: C.error }}>
             <CallEndIcon />

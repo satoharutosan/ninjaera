@@ -122,6 +122,8 @@ export function CallProvider({ children }: { children: ReactNode }) {
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const ringTickRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pendingStreamRef = useRef<MediaStream | null>(null);
+  /** Peer signaled screen share via call:media-state (may precede unmuted frames). */
+  const peerAnnouncedScreenRef = useRef(false);
 
   phaseRef.current = phase;
   callTypeRef.current = callType;
@@ -182,6 +184,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
     setConnectionState("new");
     setScreenSharing(false);
     setPeerScreenSharing(false);
+    peerAnnouncedScreenRef.current = false;
     setPeerMicOn(true);
     setPeerCamOn(true);
     setLocalView("auto");
@@ -213,8 +216,8 @@ export function CallProvider({ children }: { children: ReactNode }) {
       {
         onRemoteStream: () => refreshRemotePreview(),
         onHasRemoteScreen: (has) => {
-          setPeerScreenSharing(has);
-          if (has && remoteViewRef.current === "auto") refreshRemotePreview();
+          setPeerScreenSharing(has || peerAnnouncedScreenRef.current);
+          refreshRemotePreview();
         },
         onConnectionState: (state) => {
           setConnectionState(state);
@@ -396,22 +399,35 @@ export function CallProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const shareScreen = useCallback(async () => {
+    const peer = peerRef.current;
+    if (!peer) {
+      toast.error("Call is not connected yet");
+      return;
+    }
     try {
-      await peerRef.current?.startScreenShare();
+      await peer.startScreenShare();
       setScreenSharing(true);
       setLocalView("screen");
+      localViewRef.current = "screen";
       refreshLocalPreview();
       syncMediaState(callIdRef.current, { screenSharing: true });
       toast.success("Sharing screen");
-    } catch {
-      toast.error("Screen share unavailable");
+    } catch (e) {
+      setScreenSharing(false);
+      refreshLocalPreview();
+      const name = e instanceof Error ? e.name : "";
+      if (name === "NotAllowedError") toast.message("Screen share cancelled");
+      else toast.error(e instanceof Error ? e.message : "Screen share unavailable");
     }
   }, [refreshLocalPreview]);
 
   const stopScreenShare = useCallback(async () => {
-    await peerRef.current?.stopScreenShare();
+    try {
+      await peerRef.current?.stopScreenShare();
+    } catch { /* */ }
     setScreenSharing(false);
     setLocalView("camera");
+    localViewRef.current = "camera";
     refreshLocalPreview();
     syncMediaState(callIdRef.current, { screenSharing: false });
   }, [refreshLocalPreview]);
@@ -549,8 +565,11 @@ export function CallProvider({ children }: { children: ReactNode }) {
         if (typeof data.micOn === "boolean") setPeerMicOn(data.micOn);
         if (typeof data.camOn === "boolean") setPeerCamOn(data.camOn);
         if (typeof data.screenSharing === "boolean") {
+          peerAnnouncedScreenRef.current = data.screenSharing;
           setPeerScreenSharing(data.screenSharing);
-          refreshRemotePreview();
+          // Pull latest receiver tracks after their renegotiation completes.
+          window.setTimeout(() => refreshRemotePreview(), 50);
+          window.setTimeout(() => refreshRemotePreview(), 300);
         }
       }),
       onRealtimeEvent<{ error: string; code?: string; callId?: string }>("call:error", ({ error, code }) => {

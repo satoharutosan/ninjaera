@@ -153,7 +153,12 @@ export function CallProvider({ children }: { children: ReactNode }) {
   const refreshRemotePreview = useCallback(() => {
     const peer = peerRef.current;
     if (!peer) return;
-    setRemoteStream(peer.buildRemoteViewStream(remoteViewRef.current));
+    // media-state drives whether we show the remote screen m-line vs camera.
+    let prefer = remoteViewRef.current;
+    if (prefer === "auto") {
+      prefer = peerAnnouncedScreenRef.current ? "screen" : "camera";
+    }
+    setRemoteStream(peer.buildRemoteViewStream(prefer));
   }, []);
 
   const stopRingTimer = useCallback(() => {
@@ -215,11 +220,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
     const peer = new CallPeer(
       {
         onRemoteStream: () => refreshRemotePreview(),
-        onHasRemoteScreen: () => {
-          // Screen share uses replaceTrack on the main video sender — remote
-          // frames update in-place; peerScreenSharing is driven by media-state.
-          refreshRemotePreview();
-        },
+        onHasRemoteScreen: () => refreshRemotePreview(),
         onConnectionState: (state) => {
           setConnectionState(state);
           if (state === "failed") {
@@ -575,7 +576,6 @@ export function CallProvider({ children }: { children: ReactNode }) {
         if (callIdRef.current && callIdRef.current !== id) return;
         try {
           await peerRef.current?.handleSignal(signal);
-          // Renegotiation (e.g. peer screen share) may attach/unmute video — refresh tile.
           refreshRemotePreview();
         } catch (e) {
           if (import.meta.env.DEV) console.warn("[WebRTC] signal error", e);
@@ -593,13 +593,17 @@ export function CallProvider({ children }: { children: ReactNode }) {
         if (typeof data.screenSharing === "boolean") {
           peerAnnouncedScreenRef.current = data.screenSharing;
           setPeerScreenSharing(data.screenSharing);
-          if (import.meta.env.DEV) {
-            console.log("[WebRTC] peer media-state screenSharing=", data.screenSharing);
+          if (!data.screenSharing) {
+            remoteViewRef.current = "auto";
+            setRemoteView("auto");
           }
-          // Peer renegotiates after replaceTrack — refresh as answers settle.
-          window.setTimeout(() => refreshRemotePreview(), 50);
-          window.setTimeout(() => refreshRemotePreview(), 250);
-          window.setTimeout(() => refreshRemotePreview(), 800);
+          if (import.meta.env.DEV) {
+            console.log("[WebRTC] peer screenSharing=", data.screenSharing);
+          }
+          // replaceTrack updates frames in-place; switch which m-line we display.
+          refreshRemotePreview();
+          window.setTimeout(() => refreshRemotePreview(), 100);
+          window.setTimeout(() => refreshRemotePreview(), 400);
         }
       }),
       onRealtimeEvent<{ error: string; code?: string; callId?: string }>("call:error", ({ error, code }) => {

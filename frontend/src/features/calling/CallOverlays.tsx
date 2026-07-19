@@ -305,6 +305,8 @@ export function CallOverlays() {
   const conversationId = call.invite?.conversationId ?? 0;
   const chatActive = call.phase === "active" && !!conversationId;
   const showLocalSwitch = call.screenSharing;
+  const showRemoteSwitch = call.peerScreenSharing;
+  const peerName = call.invite?.callerName || "Peer";
 
   const viewBtn = (active: boolean) => ({
     background: active ? C.primary : "rgba(0,0,0,0.5)",
@@ -323,11 +325,25 @@ export function CallOverlays() {
         <div className="flex-1 relative min-h-0 grid grid-cols-1 md:grid-cols-2 gap-2 p-3">
           <FullscreenMediaFrame
             label={[
-              call.invite?.callerName || "Peer",
+              peerName,
               !call.peerMicOn ? "Muted" : "",
               !call.peerCamOn && !call.peerScreenSharing ? "Cam off" : "",
-              call.peerScreenSharing ? "Screen" : "",
+              call.peerScreenSharing ? "is sharing their screen" : "",
             ].filter(Boolean).join(" · ")}
+            topLeft={showRemoteSwitch ? (
+              <>
+                <button type="button" onClick={() => call.setRemoteView("camera")}
+                  className="text-[10px] px-2 py-1 rounded-full hover:opacity-90"
+                  style={viewBtn(call.remoteView === "camera")}>
+                  Camera
+                </button>
+                <button type="button" onClick={() => call.setRemoteView("screen")}
+                  className="text-[10px] px-2 py-1 rounded-full hover:opacity-90"
+                  style={viewBtn(call.remoteView === "screen" || call.remoteView === "auto")}>
+                  Screen
+                </button>
+              </>
+            ) : undefined}
           >
             <VideoTile
               stream={call.remoteStream}
@@ -336,7 +352,7 @@ export function CallOverlays() {
                 call.phase === "connecting"
                   ? "Connecting…"
                   : call.peerScreenSharing
-                    ? "Screen share"
+                    ? `${peerName} is sharing their screen`
                     : call.callType === "video"
                       ? "Waiting for video…"
                       : "Voice connected"
@@ -349,7 +365,7 @@ export function CallOverlays() {
               "You",
               !call.micOn ? "Muted" : "",
               !call.camOn && !call.screenSharing ? "Cam off" : "",
-              call.screenSharing ? "Sharing" : "",
+              call.screenSharing ? "are sharing your screen" : "",
             ].filter(Boolean).join(" · ")}
             topLeft={showLocalSwitch ? (
               <>
@@ -369,7 +385,13 @@ export function CallOverlays() {
             <VideoTile
               stream={call.localStream}
               muted
-              label={call.camOn || call.screenSharing ? "You" : "Camera off"}
+              label={
+                call.screenSharing
+                  ? "You are sharing your screen"
+                  : call.camOn
+                    ? "You"
+                    : "Camera off"
+              }
             />
           </FullscreenMediaFrame>
         </div>

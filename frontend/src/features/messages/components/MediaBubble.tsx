@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { ColorTheme, SH1 } from "@/app/shared";
+import { desktopDarkSelfBubble } from "@/shared/desktopMessageTheme";
 import { LazyVisible } from "../LazyVisible";
 import { MediaPreviewLine } from "../MediaPreviewLine";
 import { VoiceMessagePlayer } from "../VoiceMessagePlayer";
@@ -11,12 +12,16 @@ import { VideoPlayer } from "./VideoPlayer";
 import { FileBubble } from "./FileBubble";
 
 export function MediaBubble({ msg, self, C, onScrollTo, onLightbox }: { msg: ChatMsg; self: boolean; C: ColorTheme; onScrollTo?: (id: number) => void; onLightbox?: (url: string) => void }) {
-  const bg = self ? C.primary : C.surface;
-  const fg = self ? (C.bg === "#FFFBFE" ? "white" : C.onPrimary) : C.onSurface;
+  const desktopSelf = self ? desktopDarkSelfBubble(C) : null;
+  const bg = self ? (desktopSelf?.bg ?? C.primary) : C.surface;
+  const fg = self
+    ? (desktopSelf?.fg ?? (C.bg === "#FFFBFE" ? "white" : C.onPrimary))
+    : C.onSurface;
   const corner = self ? "rounded-[20px_4px_20px_20px]" : "rounded-[4px_20px_20px_20px]";
   const hasLink = URL_SPLIT.test(msg.msg); URL_SPLIT.lastIndex = 0;
   const isLight = C.bg === "#FFFBFE";
-  const replyUsesSelfStyle = self && !isLight;
+  // Desktop dark self bubbles are light-white — use light reply chrome, not white-on-accent.
+  const replyUsesSelfStyle = self && !isLight && !desktopSelf;
   const replyPreviewColor = replyUsesSelfStyle ? "white" : C.onSurfaceVar;
   const replyBlock = msg.replyTo ? (
     <button onClick={() => onScrollTo?.(msg.replyTo!.id)} className={`w-full min-w-0 max-w-full text-left px-3 py-1.5 mb-1 rounded-xl border-l-4 text-xs cursor-pointer hover:opacity-80 transition-opacity ${replyUsesSelfStyle ? "rounded-[16px_4px_4px_16px]" : "rounded-[4px_16px_16px_4px]"}`} style={{ background: replyUsesSelfStyle ? "rgba(255,255,255,.15)" : C.surfaceVar, borderColor: replyUsesSelfStyle ? "rgba(255,255,255,.5)" : C.primary }}>
@@ -113,7 +118,7 @@ export function MediaBubble({ msg, self, C, onScrollTo, onLightbox }: { msg: Cha
     <div className={`px-4 py-2.5 text-sm min-w-0 max-w-full ${corner}`} style={{ background:bg, color:fg, fontFamily:"Roboto", boxShadow:SH1 }}>
       <TextWithLinks text={msg.msg} fg={fg} />
       {msg.edited && <span className="text-[9px] opacity-60 ml-1">(edited)</span>}
-      {hasLink && <LinkPreviewCard text={msg.msg} self={self} C={C} />}
+      {hasLink && <LinkPreviewCard text={msg.msg} self={self && !desktopSelf} C={C} />}
     </div>
   );
 }

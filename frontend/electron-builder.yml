@@ -1,0 +1,124 @@
+# =============================================================================
+# Ninja Era Messenger — electron-builder (single source of packaging config)
+# Do not duplicate this in package.json "build". Activate Windows signing later
+# by following the comments under `win.sign` / scripts/skip-windows-sign.cjs.
+# =============================================================================
+
+appId: com.softfuture.ninjaera.messenger
+productName: Ninja Era Messenger
+# Use ASCII "(c)" so Windows VERSIONINFO (rcedit) does not strip the glyph.
+copyright: Copyright (c) 2026 Soft Future. All rights reserved.
+
+# Never fail the build for missing certificates (signing is intentionally off).
+forceCodeSigning: false
+
+# Fills OriginalFilename after the sign step (electron-builder clears it during rcedit).
+# afterSign still runs when win.signtoolOptions.sign is our no-op hook.
+afterSign: ./scripts/after-sign.cjs
+
+# npm package fields (name/version/description/author) also feed Windows version
+# resources. Keep them in sync with the values below.
+extraMetadata:
+  name: ninja-era-messenger
+  description: Official desktop messaging application for Ninja Era.
+  author:
+    name: Soft Future
+  homepage: https://ninjaera.up.railway.app
+
+directories:
+  output: release
+  # Icons live here: build/icon.ico (Windows), build/icon.png (Linux/mac fallback)
+  buildResources: build
+
+files:
+  - out/**
+  - package.json
+
+extraResources:
+  - from: public/logo.png
+    to: logo.png
+  - from: public/favicon.png
+    to: favicon.png
+  - from: build/icon.ico
+    to: icon.ico
+
+# Auto-update feed (configure a real provider before shipping updates).
+# Unsigned updates: leave verifyUpdateCodeSignature false until signing is on.
+publish:
+  - provider: generic
+    url: https://ninjaera.up.railway.app/desktop-updates/
+
+# ── Windows ──────────────────────────────────────────────────────────────────
+win:
+  # Stable filesystem name (no spaces) → NinjaEraMessenger.exe
+  executableName: NinjaEraMessenger
+  # Multi-size ICO for EXE / installer / taskbar (not the Electron default).
+  icon: build/icon.ico
+  # Still embed ProductName / CompanyName / FileDescription / FileVersion / Icon.
+  signAndEditExecutable: true
+  # Explicit opt-out of code signing (see scripts/skip-windows-sign.cjs).
+  # FUTURE: remove `signtoolOptions.sign` below and set:
+  #   WIN_CSC_LINK=<path-or-base64-of-pfx>
+  #   WIN_CSC_KEY_PASSWORD=<password>
+  # Optionally set forceCodeSigning: true so CI fails if signing is misconfigured.
+  signtoolOptions:
+    sign: ./scripts/skip-windows-sign.cjs
+  # No certificate yet — do not verify update signatures against a publisher.
+  verifyUpdateCodeSignature: false
+  legalTrademarks: Soft Future
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+  artifactName: NinjaEraMessenger-${version}-${arch}.${ext}
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  allowElevation: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Ninja Era Messenger
+  uninstallDisplayName: Ninja Era Messenger
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  installerHeaderIcon: build/icon.ico
+  artifactName: NinjaEraMessenger-Setup-${version}.${ext}
+
+portable:
+  artifactName: NinjaEraMessenger-${version}-portable.${ext}
+
+# ── macOS (build on macOS) ───────────────────────────────────────────────────
+mac:
+  icon: build/icon.png
+  category: public.app-category.social-networking
+  # FUTURE macOS signing: set CSC_LINK / CSC_KEY_PASSWORD (or CSC_NAME) and
+  # remove `identity: null`. Leave null for now so no keychain search occurs.
+  identity: null
+  target:
+    - dmg
+    - zip
+  artifactName: NinjaEraMessenger-${version}-${arch}.${ext}
+
+dmg:
+  title: Ninja Era Messenger ${version}
+
+# ── Linux (build on Linux) ───────────────────────────────────────────────────
+linux:
+  icon: build/icon.png
+  category: Network
+  maintainer: Soft Future
+  vendor: Soft Future
+  synopsis: Official desktop messaging application for Ninja Era.
+  description: Official desktop messaging application for Ninja Era.
+  target:
+    - AppImage
+    - deb
+  artifactName: NinjaEraMessenger-${version}-${arch}.${ext}
+
+appImage:
+  artifactName: NinjaEraMessenger-${version}-${arch}.AppImage

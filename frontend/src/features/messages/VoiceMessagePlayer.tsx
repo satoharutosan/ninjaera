@@ -4,6 +4,7 @@ import PauseIcon from "@mui/icons-material/Pause";
 import DownloadIcon from "@mui/icons-material/Download";
 import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline";
 import { useC, SH1 } from "@/app/shared";
+import { desktopDarkSelfBubble } from "@/shared/desktopMessageTheme";
 import { formatVoiceDuration } from "./voiceAudio";
 
 type Props = {
@@ -45,10 +46,14 @@ export function VoiceMessagePlayer({
 
   const totalMs = durationMs > 0 ? durationMs : legacyDurationMs;
   const totalSec = totalMs / 1000;
-  const fg = self ? "#fff" : C.onSurface;
-  const fill = self ? "#fff" : C.primary;
-  const waveIdle = self ? "rgba(255,255,255,0.35)" : C.outlineVar;
-  const waveActive = self ? "#fff" : C.primary;
+  const desktopSelf = self ? desktopDarkSelfBubble(C) : null;
+  const bubbleBg = self ? (desktopSelf?.bg ?? C.primary) : C.surface;
+  const fg = self ? (desktopSelf?.fg ?? "#fff") : C.onSurface;
+  const fill = self ? (desktopSelf ? C.primary : "#fff") : C.primary;
+  const waveIdle = self
+    ? (desktopSelf ? "rgba(28,27,31,0.22)" : "rgba(255,255,255,0.35)")
+    : C.outlineVar;
+  const waveActive = self ? (desktopSelf ? C.primary : "#fff") : C.primary;
 
   const stopRaf = () => {
     if (rafRef.current != null) {
@@ -232,7 +237,7 @@ export function VoiceMessagePlayer({
     return (
       <div
         className="flex items-center gap-2 px-3 py-2.5 rounded-2xl min-w-[200px]"
-        style={{ background: self ? C.primary : C.surface, color: fg, boxShadow: SH1 }}
+        style={{ background: bubbleBg, color: fg, boxShadow: SH1 }}
         role="alert"
       >
         <ErrorOutlineIcon style={{ fontSize: 18 }} />
@@ -244,7 +249,7 @@ export function VoiceMessagePlayer({
   return (
     <div
       className={`flex items-center gap-2 rounded-2xl max-w-[min(320px,100%)] ${compact ? "px-2.5 py-1.5 min-w-0 w-full" : "px-3 py-2.5 min-w-[240px]"}`}
-      style={{ background: self ? C.primary : C.surface, color: fg, boxShadow: SH1 }}
+      style={{ background: bubbleBg, color: fg, boxShadow: SH1 }}
       role="group"
       aria-label={`Voice message, ${formatVoiceDuration(totalMs)}`}
       onKeyDown={onKeyDown}
@@ -254,7 +259,12 @@ export function VoiceMessagePlayer({
         aria-label={playing ? "Pause" : "Play"}
         onClick={() => void toggle()}
         className={`${compact ? "w-8 h-8" : "w-9 h-9"} rounded-full flex items-center justify-center shrink-0 focus-visible:outline-none focus-visible:ring-2`}
-        style={{ background: self ? "rgba(255,255,255,0.2)" : C.primaryCont, color: self ? "#fff" : C.primary }}
+        style={{
+          background: self
+            ? (desktopSelf ? "rgba(28,27,31,0.08)" : "rgba(255,255,255,0.2)")
+            : C.primaryCont,
+          color: self ? (desktopSelf ? C.primary : "#fff") : C.primary,
+        }}
       >
         {playing ? <PauseIcon style={{ fontSize: compact ? 18 : 20 }} /> : <PlayArrowIcon style={{ fontSize: compact ? 18 : 20 }} />}
       </button>
@@ -295,7 +305,7 @@ export function VoiceMessagePlayer({
             style={{
               left: `calc(${progress * 100}% - 6px)`,
               background: fill,
-              border: `2px solid ${self ? C.primary : C.surface}`,
+              border: `2px solid ${self ? (desktopSelf?.bg ?? C.primary) : C.surface}`,
             }}
           />
         </div>

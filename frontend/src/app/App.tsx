@@ -38,6 +38,7 @@ import { toChatMsg } from "@/features/messages/types";
 import {
   clearActiveConversation,
   clearAllConversationDrafts,
+  getActiveConversation,
 } from "@/features/messages/activeConversationStore";
 import { appPerf } from "@/shared/perf";
 import { pageFromLocation, setPageInLocation } from "@/shared/routing";
@@ -628,8 +629,15 @@ export default function App() {
   /** Keep MessagesPage mounted after first visit so selection/scroll/draft survive navigation. */
   const [messagesKeepAlive, setMessagesKeepAlive] = useState(() => pageFromLocation() === "messages");
   const convRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [dmRequestsIntent, setDmRequestsIntent] = useState<{ requestId?: number; nonce: number } | null>(null);
+  const dmRequestsNonce = useRef(0);
   const clearSelectedConversation = useCallback(() => setSelectedConversationId(null), []);
   const clearFocusMessageInput = useCallback(() => setFocusMessageInput(false), []);
+  const clearDmRequestsIntent = useCallback(() => setDmRequestsIntent(null), []);
+  const openDmRequestsView = useCallback((requestId?: number) => {
+    dmRequestsNonce.current += 1;
+    setDmRequestsIntent({ requestId, nonce: dmRequestsNonce.current });
+  }, []);
   const loggedIn = !!user;
   const theme = isDark ? DARK_C : LIGHT_C;
   const noNav: Page[] = ["oauth-callback", "verify-email", "forgot-password", "reset-password"];
@@ -764,6 +772,98 @@ export default function App() {
     api.notifications.list().then(r => setNotifs(r.notifications)).catch(() => {});
   }, []);
 
+  // Fresh-value refs so stable realtime handlers read current contacts/settings/page/user.
+  const contactsRef = useRef(contacts);
+  contactsRef.current = contacts;
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const pageRef = useRef(page);
+  pageRef.current = page;
+  const userRef = useRef(user);
+  userRef.current = user;
+
+  // Ask for browser notification permission once, after login.
+  useEffect(() => {
+    if (!loggedIn) return;
+    if (typeof Notification === "undefined") return;
+    if (Notification.permission === "default") {
+      Notification.requestPermission().catch(() => {});
+    }
+  }, [loggedIn]);
+
+  const messagePreview = useCallback((m: ApiMessage): string => {
+    if (typeof m.msg === "string" && m.msg.trim()) return m.msg;
+    switch (m.mediaType) {
+      case "image": return "📷 Photo";
+      case "video": return "🎥 Video";
+      case "audio":
+      case "voice": return "🎙️ Voice message";
+      case "file": return "📎 Attachment";
+      default: return "New message";
+    }
+  }, []);
+
+  /** Deep-link a browser notification for a new message (mute-gated, focus + select). */
+  const notifyNewMessage = useCallback((conversationId: number, message: ApiMessage) => {
+    const me = userRef.current;
+    if (!me) return;
+    if (message.self || Number(message.userId) === Number(me.id)) return;
+    if (!settingsRef.current.pushNotif) return;
+    const contact = contactsRef.current.find(c => c.id === conversationId);
+    // Per-conversation mute suppresses all notifications from that conversation.
+    if (contact?.muted) return;
+    // Skip when the user is already viewing this conversation in a focused tab.
+    const active = getActiveConversation(me.id)?.conversationId === conversationId;
+    if (active && pageRef.current === "messages" && typeof document !== "undefined" && document.hasFocus()) return;
+    if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+
+    const isChannel = contact?.type === "channel";
+    const username = message.user || contact?.name || "New message";
+    const title = isChannel && contact ? `${username} • ${contact.name}` : username;
+    try {
+      const n = new Notification(title, {
+        body: messagePreview(message),
+        icon: message.avatarUrl || contact?.avatarUrl || BRAND_LOGO_SRC,
+        tag: `conversation-${conversationId}`,
+      });
+      n.onclick = () => {
+        try { window.focus(); } catch { /* ignore */ }
+        setMessagesKeepAlive(true);
+        setSelectedConversationId(conversationId);
+        setFocusMessageInput(true);
+        go("messages");
+        n.close();
+      };
+    } catch { /* Notification construction can throw on some browsers */ }
+  }, [go, messagePreview]);
+
+  /** Deep-link a browser notification for a new DM request (opens the DM Requests view). */
+  const notifyDmRequest = useCallback(() => {
+    if (!settingsRef.current.pushNotif) return;
+    if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+    api.dm.listRequests()
+      .then(r => {
+        const newest = r.incoming[0];
+        try {
+          const n = new Notification("New message request", {
+            body: newest
+              ? `${newest.requesterDisplayName || newest.requesterName} wants to message you`
+              : "You have a new direct message request.",
+            icon: newest?.requesterAvatar || BRAND_LOGO_SRC,
+            tag: "dm-request",
+          });
+          n.onclick = () => {
+            try { window.focus(); } catch { /* ignore */ }
+            setMessagesKeepAlive(true);
+            go("messages");
+            openDmRequestsView(newest?.id);
+            n.close();
+          };
+        } catch { /* ignore */ }
+      })
+      .catch(() => {});
+  }, [go, openDmRequestsView]);
+
   useEffect(() => {
     refreshConversations();
     refreshMessageBadge();
@@ -815,6 +915,7 @@ export default function App() {
       onRealtimeEvent<{ conversationId: number; message: ApiMessage }>("message:new", ({ conversationId, message }) => {
         if (!user?.id || !conversationId || !message?.id) return;
         messageCache.upsertMessage(conversationId, toChatMsg(message, user.id));
+        notifyNewMessage(conversationId, message);
       }),
       onRealtimeEvent<{ conversationId: number; message: ApiMessage }>("message:updated", ({ conversationId, message }) => {
         if (!user?.id || !conversationId || !message?.id) return;
@@ -824,7 +925,7 @@ export default function App() {
         if (!conversationId || !messageId) return;
         messageCache.removeMessage(conversationId, messageId);
       }),
-      onRealtimeEvent("dm_request:new", () => refreshMessageBadge()),
+      onRealtimeEvent("dm_request:new", () => { refreshMessageBadge(); notifyDmRequest(); }),
       onRealtimeEvent("dm_request:resolved", () => refreshMessageBadge()),
       onRealtimeEvent<{ requestId: number; conversationId: number }>("dm_request:accepted", ({ conversationId }) => {
         joinConversation(conversationId);
@@ -898,7 +999,7 @@ export default function App() {
       unsubs.forEach(u => u());
       if (convRefreshTimer.current) clearTimeout(convRefreshTimer.current);
     };
-  }, [loggedIn, user?.id, refreshConversations, refreshNotifications, refreshMessageBadge]);
+  }, [loggedIn, user?.id, refreshConversations, refreshNotifications, refreshMessageBadge, notifyNewMessage, notifyDmRequest]);
 
   useEffect(() => {
     refreshNotifications();
@@ -1050,6 +1151,8 @@ export default function App() {
               currentUser={user}
               onUserUpdate={setUser}
               initialConversationId={selectedConversationId}
+              dmRequestsIntent={dmRequestsIntent}
+              onDmRequestsIntentHandled={clearDmRequestsIntent}
               focusInput={focusMessageInput}
               onFocusHandled={clearFocusMessageInput}
               onInitialConversationHandled={clearSelectedConversation}

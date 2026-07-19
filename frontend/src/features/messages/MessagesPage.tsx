@@ -18,6 +18,7 @@ import BlockIcon from "@mui/icons-material/Block";
 import FlagIcon from "@mui/icons-material/Flag";
 import DeleteIcon from "@mui/icons-material/Delete";
 import PersonIcon from "@mui/icons-material/Person";
+import LogoutIcon from "@mui/icons-material/Logout";
 import PersonAddIcon from "@mui/icons-material/PersonAdd";
 import InboxIcon from "@mui/icons-material/Inbox";
 import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
@@ -65,12 +66,14 @@ import { ImageLightbox } from "@/features/messages/components/ImageLightbox";
 import { MessageRow } from "@/features/messages/components/MessageRow";
 import { TypingIndicatorStrip } from "@/features/messages/components/TypingIndicatorStrip";
 import { ProfileStatusBadge, type PresenceStatus } from "@/features/messages/components/ProfileStatusBadge";
+import { BrandLogo } from "@/shared/BrandLogo";
+import { BRAND_NAME } from "@/shared/branding";
 
 const EmojiGifPicker = lazy(() =>
   import("@/features/messages/EmojiGifPicker").then((m) => ({ default: m.EmojiGifPicker })),
 );
 
-function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setContacts, onUnreadChange, onConversationsRefresh, currentUserId, currentUser, onUserUpdate, initialConversationId, focusInput, onFocusHandled, onInitialConversationHandled, isActive = true }: {
+function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setContacts, onUnreadChange, onConversationsRefresh, currentUserId, currentUser, onUserUpdate, initialConversationId, dmRequestsIntent, onDmRequestsIntentHandled, focusInput, onFocusHandled, onInitialConversationHandled, isActive = true, desktopMode = false, onDesktopOpenSettings, onDesktopLogout }: {
   settings: AppSettings;
   showEmailToast: (title:string, body:string, page:Page)=>void;
   showPushNotif: (title:string, body:string, page:Page)=>void;
@@ -83,15 +86,27 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
   currentUser?: import("@/app/api").ApiUser | null;
   onUserUpdate?: (u: import("@/app/api").ApiUser) => void;
   initialConversationId?: number | null;
+  /** Notification deep-link into the DM Requests view; `nonce` re-triggers on repeat clicks. */
+  dmRequestsIntent?: { requestId?: number; nonce: number } | null;
+  onDmRequestsIntentHandled?: () => void;
   focusInput?: boolean;
   onFocusHandled?: () => void;
   onInitialConversationHandled?: () => void;
   /** False while Messages is keep-alive-hidden on another route — pause read receipts. */
   isActive?: boolean;
+  /** Electron desktop shell: integrates account controls into the sidebar and reclaims the right column. */
+  desktopMode?: boolean;
+  /** Desktop-only: open the comprehensive desktop settings dialog (owned by the shell). */
+  onDesktopOpenSettings?: () => void;
+  /** Desktop-only: sign the user out via the shell. */
+  onDesktopLogout?: () => void;
 }) {
   const C = useC();
   const callApi = useCallOptional();
   const isMobile = !useWide(767);
+  /** Electron: show the conversation details rail above this width (tablet and below hide it). */
+  const showDesktopRightRail = useWide(1100);
+  const isDarkTheme = C.bg === "#141218";
   const onScrollReveal = useScrollReveal();
   const virtuosoScrollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const emptyContact: Contact = { id: 0, name: "Select a conversation", msg: "", time: "", unread: 0, online: false, bio: "", type: "dm" };
@@ -102,6 +117,8 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
       const found = contacts.find(c => c.id === preferredId);
       if (found) return found;
     }
+    // Desktop opens on the welcome screen (Telegram-style) rather than auto-selecting a channel.
+    if (desktopMode) return emptyContact;
     return contacts.find(c => c.type === "channel") ?? contacts[0] ?? emptyContact;
   });
   const initialDraft = currentUserId && sel.id > 0 ? getConversationDraft(currentUserId, sel.id) : null;
@@ -110,6 +127,7 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [detailsContact, setDetailsContact] = useState<Contact | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [myStatus, setMyStatus] = useState(currentUser?.status || "Online");
   const [myBio, setMyBio] = useState(currentUser?.bio || "");
   const [myMood, setMyMood] = useState(currentUser?.mood || "");
@@ -123,6 +141,8 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
   });
   const [editingId, setEditingId] = useState<number|null>(null);
   const [editText, setEditText] = useState("");
+  /** Which message's reaction picker is open (only one at a time). */
+  const [openReactionId, setOpenReactionId] = useState<number|null>(null);
   const [headerMenu, setHeaderMenu] = useState(false);
   const [ctxMenu, setCtxMenu] = useState<{x:number;y:number;contact:Contact}|null>(null);
   const [confirm, setConfirm] = useState<{title:string;body:string;onOk:()=>void}|null>(null);
@@ -147,6 +167,8 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
   const [dmRequests, setDmRequests] = useState<{ id: number; requesterId: number; requesterName: string; requesterAvatar?: string | null; requesterDisplayName?: string; time: string }[]>([]);
   const [acceptingRequestId, setAcceptingRequestId] = useState<number | null>(null);
   const [rejectingRequestId, setRejectingRequestId] = useState<number | null>(null);
+  const [highlightedRequestId, setHighlightedRequestId] = useState<number | null>(null);
+  const dmRequestRowRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const [typingUsers, setTypingUsers] = useState<{ userId: number; username: string }[]>([]);
   const [pendingPaste, setPendingPaste] = useState<{ file: File; previewUrl: string } | null>(null);
   const [uploadingPaste, setUploadingPaste] = useState(false);
@@ -445,11 +467,16 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
     if (stored && !contacts.some(c => c.id === stored.conversationId)) {
       clearActiveConversation(currentUserId);
     }
+    // Desktop: no forced auto-selection — return to the welcome screen when nothing is active.
+    if (desktopMode) {
+      if (sel.id !== 0) setSel(emptyContact);
+      return;
+    }
     const fallback = contacts.find(c => c.type === "channel") ?? contacts[0];
     setSel(fallback);
     loadComposerDraft(fallback.id);
     rememberActiveConversation(fallback);
-  }, [contacts, sel.id, sel.avatarUrl, sel.name, sel.bio, sel.msg, sel.unread, sel.muted, sel.sortOrder, currentUserId, initialConversationId, loadComposerDraft, rememberActiveConversation]);
+  }, [contacts, sel.id, sel.avatarUrl, sel.name, sel.bio, sel.msg, sel.unread, sel.muted, sel.sortOrder, currentUserId, initialConversationId, loadComposerDraft, rememberActiveConversation, desktopMode]);
 
   // Persist composer draft while typing (debounced).
   useEffect(() => {
@@ -500,6 +527,27 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
   useEffect(() => {
     if (dmRequests.length === 0 && listFilter === "dm-requests") selectListFilter("all");
   }, [dmRequests.length, listFilter, selectListFilter]);
+
+  // Notification deep-link → open the DM Requests view and highlight the target request.
+  useEffect(() => {
+    if (!dmRequestsIntent) return;
+    selectListFilter("dm-requests");
+    loadDmRequests();
+    if (typeof dmRequestsIntent.requestId === "number") {
+      setHighlightedRequestId(dmRequestsIntent.requestId);
+    }
+    onDmRequestsIntentHandled?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dmRequestsIntent?.nonce]);
+
+  // Scroll the highlighted request into view, then fade the highlight.
+  useEffect(() => {
+    if (highlightedRequestId == null) return;
+    const el = dmRequestRowRefs.current.get(highlightedRequestId);
+    el?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    const t = setTimeout(() => setHighlightedRequestId(null), 2600);
+    return () => clearTimeout(t);
+  }, [highlightedRequestId, dmRequests]);
 
   useEffect(() => {
     const unsubs = [
@@ -773,10 +821,15 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
   }, [isMobile, sel.id, persistComposerDraft, loadComposerDraft, rememberActiveConversation]);
 
   const openConversationDetails = useCallback(() => {
-    if (!isMobile || sel.id <= 0) return;
-    setDetailsContact(sel);
-    setDetailsOpen(true);
-  }, [isMobile, sel]);
+    if (sel.id <= 0) return;
+    // Electron large layout: details already live in the right rail.
+    if (desktopMode && showDesktopRightRail) return;
+    // Electron tablet/small: open the details modal. Web mobile: same.
+    if (desktopMode || isMobile) {
+      setDetailsContact(sel);
+      setDetailsOpen(true);
+    }
+  }, [isMobile, desktopMode, showDesktopRightRail, sel]);
 
   const apiUserToContact = useCallback((user: import("@/app/api").ApiUser, fallback?: Partial<Contact>): Contact => ({
     id: -(user.id || 0),
@@ -880,6 +933,13 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
     return () => window.removeEventListener("popstate", onPop);
   }, [detailsOpen]);
 
+  // Electron: when the window grows wide enough for the details rail, close any open modal.
+  useEffect(() => {
+    if (!desktopMode || !showDesktopRightRail || !detailsOpen) return;
+    setDetailsOpen(false);
+    setDetailsContact(null);
+  }, [desktopMode, showDesktopRightRail, detailsOpen]);
+
   const showLeftPanel = isMobile ? showSidebar : true;
   const showConversationList = showSidebar;
   const showChatPane = !isMobile || !showSidebar;
@@ -911,7 +971,10 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
   }, [typingUsers, sel.type]);
 
   const nowTime = () => new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
-  const closeAll = () => { setEmojiOpen(false); setHeaderMenu(false); setCtxMenu(null); };
+  const closeAll = () => { setEmojiOpen(false); setHeaderMenu(false); setCtxMenu(null); setAccountMenuOpen(false); setOpenReactionId(null); };
+
+  // Switching conversations dismisses any open reaction picker.
+  useEffect(() => { setOpenReactionId(null); }, [sel.id]);
 
   const askConfirm = (title:string, body:string, onOk:()=>void) => setConfirm({ title, body, onOk });
 
@@ -1504,7 +1567,11 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
     <div className="h-screen flex overflow-hidden pt-16 max-w-[100vw]" style={{ background:C.bg }} onClick={closeAll}>
       {/* New DM modal */}
       {newDmOpen && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onClick={() => setNewDmOpen(false)}>
+        <div
+          className={`fixed inset-0 z-[60] flex items-center justify-center p-4${desktopMode ? "" : " bg-black/50 backdrop-blur-sm"}`}
+          style={desktopMode ? { background: "rgba(0,0,0,0.5)" } : undefined}
+          onClick={() => setNewDmOpen(false)}
+        >
           <div className="rounded-3xl p-6 w-full max-w-sm shadow-2xl" style={{ background: C.surface }} onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4">
               <h3 className="font-medium text-base" style={{ color: C.onSurface, fontFamily: "Roboto" }}>New Direct Message</h3>
@@ -1543,15 +1610,24 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
       )}
       {/* Settings Modal */}
       {settingsOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[2px] p-4" onClick={() => setSettingsOpen(false)}>
+        <div
+          className={`fixed inset-0 z-50 flex items-center justify-center p-4${desktopMode ? "" : " bg-black/40 backdrop-blur-[2px]"}`}
+          style={desktopMode ? { background: "rgba(0,0,0,0.5)" } : undefined}
+          onClick={() => setSettingsOpen(false)}
+        >
           <div className="rounded-3xl p-6 w-full max-w-sm" style={{ background:C.surface, boxShadow:"0 8px 32px rgba(0,0,0,.24)" }} onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-5">
               <h3 className="font-medium text-base" style={{ color:C.onSurface, fontFamily:"Roboto" }}>My Profile</h3>
               <button type="button" onClick={() => setSettingsOpen(false)} className="w-8 h-8 rounded-full flex items-center justify-center hover:bg-black/5" style={{ color:C.onSurfaceVar }} aria-label="Close"><CloseIcon style={{ fontSize:18 }} /></button>
             </div>
             <div className="flex items-center gap-4 mb-5">
-              <div className="relative shrink-0 w-16 h-16">
-                <ChatAvatar name={currentUser?.username || "?"} avatarUrl={currentUser?.avatarUrl} size={64} />
+              <div className="relative shrink-0 w-16 h-16 ninja-profile-avatar">
+                <ChatAvatar
+                  name={currentUser?.username || "?"}
+                  avatarUrl={currentUser?.avatarUrl}
+                  size={64}
+                  bg={desktopMode ? (isDarkTheme ? "transparent" : C.primary) : undefined}
+                />
                 <ProfileStatusBadge
                   status={myStatus}
                   C={C}
@@ -1602,7 +1678,11 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
                   className="relative w-12 h-12 rounded-full flex items-center justify-center transition-all hover:scale-110 focus:outline-none focus-visible:ring-2"
                   style={{
                     background: active ? C.primaryCont : C.surface,
-                    color: active ? C.primary : C.onSurfaceVar,
+                    // Desktop dark: on-container ink for contrast on accent fill.
+                    // Desktop light: black icons (avoid purple onPrimaryCont / primary).
+                    color: active
+                      ? (desktopMode ? (isDarkTheme ? C.onPrimaryCont : "#000000") : C.primary)
+                      : (desktopMode && !isDarkTheme ? "#000000" : C.onSurfaceVar),
                     boxShadow: active ? `0 0 0 2px ${C.primary}` : SH1,
                   }}>
                   <Icon style={{ fontSize:20 }} />
@@ -1612,9 +1692,79 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
                 </button>
               );
             })}
-            <button title="Settings" onClick={e => { e.stopPropagation(); setSettingsOpen(true); }} className="w-12 h-12 rounded-full flex items-center justify-center transition-all hover:scale-110 mt-auto" style={{ background:C.surface, color:C.onSurfaceVar, boxShadow:SH1 }}>
-              <SettingsIcon style={{ fontSize:20 }} />
-            </button>
+            {desktopMode ? (
+              <div className="mt-auto relative flex flex-col items-center">
+                <div className="relative w-12 h-12 ninja-profile-avatar">
+                  <button
+                    type="button"
+                    title={currentUser?.username || "Account"}
+                    aria-label="Open account menu"
+                    aria-haspopup="menu"
+                    aria-expanded={accountMenuOpen}
+                    onClick={e => { e.stopPropagation(); setAccountMenuOpen(o => !o); }}
+                    className="ninja-account-avatar w-12 h-12 rounded-full overflow-hidden flex items-center justify-center transition-transform hover:scale-105 focus:outline-none"
+                  >
+                    <ChatAvatar
+                      name={currentUser?.username || "?"}
+                      avatarUrl={currentUser?.avatarUrl}
+                      size={48}
+                      bg={isDarkTheme ? "transparent" : C.primary}
+                    />
+                  </button>
+                  <ProfileStatusBadge
+                    status={myStatus}
+                    C={C}
+                    onChange={applyPresenceStatus}
+                  />
+                </div>
+                {accountMenuOpen && (
+                  <div
+                    className="absolute bottom-0 left-[56px] w-56 rounded-2xl border shadow-2xl overflow-hidden py-1 z-50"
+                    style={{ background:C.surface, borderColor:C.outlineVar }}
+                    role="menu"
+                    onClick={e => e.stopPropagation()}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => { setAccountMenuOpen(false); setSettingsOpen(true); }}
+                      className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-black/5 transition-colors border-b"
+                      style={{ borderColor:C.outlineVar }}
+                    >
+                      <ChatAvatar
+                        name={currentUser?.username || "?"}
+                        avatarUrl={currentUser?.avatarUrl}
+                        size={38}
+                        bg={isDarkTheme ? "transparent" : C.primary}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium truncate" style={{ color:C.onSurface, fontFamily:"Roboto" }}>{currentUser?.username || "User"}</p>
+                        <p className="text-xs truncate" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>{currentUser?.isTeamMember ? "Team Member" : currentUser?.isAdmin ? "Administrator" : "Member"}</p>
+                      </div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setAccountMenuOpen(false); onDesktopOpenSettings?.(); }}
+                      className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-left hover:bg-black/5 transition-colors"
+                      style={{ color:C.onSurface, fontFamily:"Roboto" }}
+                    >
+                      <SettingsIcon style={{ fontSize:18, color:C.onSurfaceVar }} />Settings
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setAccountMenuOpen(false); onDesktopLogout?.(); }}
+                      className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-left hover:bg-black/5 transition-colors border-t"
+                      style={{ color:C.error, borderColor:C.outlineVar, fontFamily:"Roboto" }}
+                    >
+                      <LogoutIcon style={{ fontSize:18 }} />Log Out
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <button title="Settings" onClick={e => { e.stopPropagation(); setSettingsOpen(true); }} className="w-12 h-12 rounded-full flex items-center justify-center transition-all hover:scale-110 mt-auto" style={{ background:C.surface, color:C.onSurfaceVar, boxShadow:SH1 }}>
+                <SettingsIcon style={{ fontSize:20 }} />
+              </button>
+            )}
           </div>
           {showConversationList && (
             <div
@@ -1627,12 +1777,17 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
                 <div className="flex items-center gap-2">
                   <div className="flex items-center gap-2 px-3 py-2.5 rounded-full border flex-1" style={{ background:C.surfaceVar, borderColor:C.outlineVar }}>
                     <SearchIcon style={{ fontSize:18, color:C.onSurfaceVar }} />
-                    <input placeholder="Search messages..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="flex-1 bg-transparent text-sm focus:outline-none" style={{ color:C.onSurface, fontFamily:"Roboto" }} />
+                    <input placeholder={desktopMode ? "Search Conversation" : "Search messages..."} value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="flex-1 bg-transparent text-sm focus:outline-none" style={{ color:C.onSurface, fontFamily:"Roboto" }} />
                   </div>
                   <button title="New Direct Message" onClick={e => { e.stopPropagation(); setNewDmOpen(true); setNewDmError(""); setNewDmUsername(""); }}
                     className="w-10 h-10 rounded-full flex items-center justify-center shrink-0 transition-all hover:scale-105 focus:outline-none focus-visible:ring-2"
-                    style={{ background: C.primaryCont, color: C.primary, boxShadow: SH1 }}>
-                    <PersonAddIcon style={{ fontSize: 20 }} />
+                    style={{
+                      background: C.primaryCont,
+                      // Desktop dark: keep the PersonAdd icon pure white for contrast on the accent fill.
+                      color: desktopMode && isDarkTheme ? "#FFFFFF" : C.primary,
+                      boxShadow: SH1,
+                    }}>
+                    <PersonAddIcon style={{ fontSize: 20, color: "inherit" }} />
                   </button>
                 </div>
               </div>
@@ -1645,8 +1800,18 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
                     <div className="space-y-2">
                       {dmRequests.length === 0 ? (
                         <p className="text-xs px-2 py-6 text-center" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>No pending requests.</p>
-                      ) : dmRequests.map(req => (
-                        <div key={req.id} className="flex items-center gap-3 p-2.5 rounded-2xl" style={{ background: C.surfaceVar }}>
+                      ) : dmRequests.map(req => {
+                        const highlighted = highlightedRequestId === req.id;
+                        return (
+                        <div
+                          key={req.id}
+                          ref={el => { if (el) dmRequestRowRefs.current.set(req.id, el); else dmRequestRowRefs.current.delete(req.id); }}
+                          className="flex items-center gap-3 p-2.5 rounded-2xl transition-all"
+                          style={{
+                            background: C.surfaceVar,
+                            boxShadow: highlighted ? `0 0 0 2px ${C.primary}` : undefined,
+                          }}
+                        >
                           <ChatAvatar name={req.requesterName} avatarUrl={req.requesterAvatar} size={36} />
                           <div className="flex-1 min-w-0">
                             <p className="text-sm font-medium truncate" style={{ color: C.onSurface, fontFamily: "Roboto" }}>{req.requesterDisplayName || req.requesterName}</p>
@@ -1656,6 +1821,7 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
                           <div className="flex flex-col gap-1 shrink-0">
                             <button
                               type="button"
+                              aria-label={`Accept message request from ${req.requesterDisplayName || req.requesterName}`}
                               disabled={acceptingRequestId === req.id || rejectingRequestId === req.id}
                               onClick={() => void acceptDmRequest(req.id)}
                               className="px-2.5 py-1 rounded-full text-[10px] font-medium text-white disabled:opacity-60"
@@ -1665,6 +1831,7 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
                             </button>
                             <button
                               type="button"
+                              aria-label={`Reject message request from ${req.requesterDisplayName || req.requesterName}`}
                               disabled={acceptingRequestId === req.id || rejectingRequestId === req.id}
                               onClick={() => void rejectDmRequest(req.id)}
                               className="px-2.5 py-1 rounded-full text-[10px] font-medium border disabled:opacity-60"
@@ -1674,7 +1841,8 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
                             </button>
                           </div>
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                 ) : filteredContacts.length === 0 ? (
@@ -1793,6 +1961,14 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
               <p className="text-sm" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>Select a request from the list to accept or decline.</p>
             </div>
           </div>
+        ) : desktopMode && sel.id <= 0 ? (
+          /* Desktop welcome screen — shown when no conversation is selected. */
+          <div className="flex-1 flex flex-col items-center justify-center px-8 text-center select-none" style={{ background: C.surfaceVar }}>
+            <BrandLogo size={104} priority />
+            <h1 className="mt-6 text-3xl leading-none" style={{ fontFamily: "'Trade Winds', cursive", color: C.onSurface }}>{BRAND_NAME}</h1>
+            <p className="mt-5 text-base font-medium" style={{ color: C.onSurface, fontFamily: "Roboto" }}>Welcome to {BRAND_NAME}</p>
+            <p className="mt-1.5 text-sm max-w-xs" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>Select a channel or direct message to start a conversation.</p>
+          </div>
         ) : (
         <>
         {/* Chat header */}
@@ -1804,9 +1980,9 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
             type="button"
             className="relative shrink-0 rounded-full focus:outline-none focus-visible:ring-2"
             onClick={e => { e.stopPropagation(); openConversationDetails(); }}
-            aria-label={isMobile ? `View ${sel.type === "channel" ? "channel" : "user"} details` : undefined}
-            style={{ cursor: isMobile && sel.id > 0 ? "pointer" : "default" }}
-            tabIndex={isMobile && sel.id > 0 ? 0 : -1}
+            aria-label={(isMobile || (desktopMode && !showDesktopRightRail)) ? `View ${sel.type === "channel" ? "channel" : "user"} details` : undefined}
+            style={{ cursor: (isMobile || (desktopMode && !showDesktopRightRail)) && sel.id > 0 ? "pointer" : "default" }}
+            tabIndex={(isMobile || (desktopMode && !showDesktopRightRail)) && sel.id > 0 ? 0 : -1}
           >
             {sel.type === "channel" ? (
               <ChatAvatar name={sel.name} avatarUrl={sel.avatarUrl} size={36} channel />
@@ -1995,6 +2171,8 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
                     onLightbox={setLightbox}
                     onReply={setReplyingTo}
                     onReact={addReaction}
+                    reactionOpen={openReactionId === m.id}
+                    onReactionOpenChange={(open) => setOpenReactionId(open ? m.id : null)}
                     onDelete={(id) => askConfirm("Delete Message", "Delete this message permanently?", () => deleteMsg(id))}
                     onAdminDelete={(id) => { void deleteMsg(id); }}
                     canAdminDelete={!!currentUser?.isAdmin && sel.type === "channel"}
@@ -2188,16 +2366,30 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
         )}
       </div>
       )}
-      {/* Right panel — desktop/tablet lg+ */}
+      {/* Right panel — web: lg+; Electron: width-driven rail with animated open/close */}
       {listFilter !== "dm-requests" && sel.id > 0 && (
-      <div className="hidden lg:flex w-72 border-l flex-col p-5 shrink-0 overflow-y-auto ninja-scroll" style={{ background:C.surface, borderColor:C.outlineVar }} onScroll={onScrollReveal}>
-        <ConversationDetailsBody sel={sel} C={C} presenceColor={presenceColor} presenceLabel={presenceLabel} />
-      </div>
+        desktopMode ? (
+          <aside
+            className={`ninja-desktop-details border-l flex flex-col shrink-0 overflow-y-auto ninja-scroll${showDesktopRightRail ? " is-open" : ""}`}
+            style={{ background: C.surface, borderColor: C.outlineVar }}
+            aria-hidden={!showDesktopRightRail}
+            onScroll={onScrollReveal}
+          >
+            <div className="ninja-desktop-details-inner p-5 min-w-[18rem]">
+              <ConversationDetailsBody sel={sel} C={C} presenceColor={presenceColor} presenceLabel={presenceLabel} />
+            </div>
+          </aside>
+        ) : (
+          <div className="hidden lg:flex w-72 border-l flex-col p-5 shrink-0 overflow-y-auto ninja-scroll" style={{ background:C.surface, borderColor:C.outlineVar }} onScroll={onScrollReveal}>
+            <ConversationDetailsBody sel={sel} C={C} presenceColor={presenceColor} presenceLabel={presenceLabel} />
+          </div>
+        )
       )}
-      {/* Mobile conversation / user details modal */}
-      {detailsOpen && isMobile && detailsContact && (
+      {/* Conversation / user details modal — mobile, and Electron when the right rail is collapsed */}
+      {detailsOpen && (isMobile || (desktopMode && !showDesktopRightRail)) && detailsContact && (
         <div
-          className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-sm p-0 sm:p-4"
+          className={`fixed inset-0 z-[60] flex items-end sm:items-center justify-center p-0 sm:p-4${desktopMode ? "" : " bg-black/50 backdrop-blur-sm"}`}
+          style={desktopMode ? { background: "rgba(0,0,0,0.5)" } : undefined}
           role="dialog"
           aria-modal="true"
           aria-label={detailsContact.type === "channel" ? "Channel details" : "User profile"}

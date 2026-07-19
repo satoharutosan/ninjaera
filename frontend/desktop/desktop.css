@@ -1,0 +1,169 @@
+/* Desktop-only layout overrides. The reused MessagesPage is sized for the website
+   navbar (h-screen + pt-16); neutralize that so it fills the area under the custom
+   title bar. Also remap hardcoded accent hover utilities to the live accent vars. */
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+/* The shared web stylesheet sets `scrollbar-gutter: stable` on <html>. Since the
+   desktop <html> is overflow:hidden, Windows classic scrollbars still reserve that
+   gutter, leaving a dark strip (window backgroundColor) on the right. Reclaim it. */
+html {
+  scrollbar-gutter: auto;
+}
+
+.ninja-desktop-root {
+  height: 100%;
+  width: 100%;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.ninja-desktop-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+  display: flex;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.ninja-desktop-messages {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  position: relative;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+/* Retarget MessagesPage root: fill the shell, drop web navbar offset / max-w-[100vw]. */
+.ninja-desktop-messages > div {
+  height: 100% !important;
+  width: 100% !important;
+  max-width: none !important;
+  padding-top: 0 !important;
+  box-sizing: border-box;
+}
+
+/* Chat column must claim remaining horizontal space. */
+.ninja-desktop-messages > div > .flex-1 {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+}
+
+/* Conversation details rail — expands/collapses by available width (no layout jump). */
+.ninja-desktop-details {
+  width: 0;
+  min-width: 0;
+  max-width: 0;
+  opacity: 0;
+  border-left-width: 0 !important;
+  overflow: hidden;
+  pointer-events: none;
+  transition:
+    width 220ms ease,
+    max-width 220ms ease,
+    opacity 180ms ease,
+    border-left-width 220ms ease;
+}
+.ninja-desktop-details.is-open {
+  width: 18rem;
+  max-width: 18rem;
+  opacity: 1;
+  border-left-width: 1px !important;
+  pointer-events: auto;
+}
+.ninja-desktop-details-inner {
+  box-sizing: border-box;
+}
+
+/* Hardcoded Tailwind accent hovers → live accent (desktop.css is Electron-only). */
+.hover\:bg-\[\#6750A4\]\/4:hover {
+  background-color: var(--ninja-accent-4) !important;
+}
+.hover\:bg-\[\#6750A4\]\/6:hover {
+  background-color: var(--ninja-accent-6) !important;
+}
+.hover\:bg-\[\#6750A4\]\/8:hover {
+  background-color: var(--ninja-accent-8) !important;
+}
+.active\:bg-\[\#6750A4\]\/10:active {
+  background-color: var(--ninja-accent-10) !important;
+}
+
+/* Profile avatars (sidebar + My Profile): no avatar ring/edge — do not affect status badge. */
+.ninja-desktop-root .ninja-account-avatar,
+.ninja-desktop-root .ninja-profile-avatar {
+  border: none !important;
+  box-shadow: none !important;
+  outline: none !important;
+  --tw-ring-shadow: 0 0 #0000 !important;
+  --tw-ring-offset-shadow: 0 0 #0000 !important;
+}
+.ninja-desktop-root .ninja-account-avatar:focus:not(:focus-visible) {
+  outline: none;
+  box-shadow: none !important;
+}
+.ninja-desktop-root .ninja-account-avatar:focus-visible {
+  outline: 2px solid var(--ninja-accent) !important;
+  outline-offset: 2px;
+  box-shadow: none !important;
+}
+/* Status badge sits above the avatar; keep it clickable and visible. */
+.ninja-desktop-root .ninja-profile-avatar .ninja-status-dot {
+  z-index: 2;
+}
+
+/* Custom title bar drag regions */
+.ninja-titlebar {
+  -webkit-app-region: drag;
+  user-select: none;
+}
+.ninja-no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* Smooth window-control hover animations */
+.ninja-win-btn {
+  transition: background-color 140ms ease, color 140ms ease, transform 140ms ease;
+}
+.ninja-win-btn:active {
+  transform: scale(0.94);
+}
+
+/* Font scaling hook (set on :root by DesktopApp) */
+:root {
+  --ninja-font-scale: 1;
+  --ninja-accent: #6750a4;
+  --ninja-accent-cont: #eaddff;
+  --ninja-accent-4: color-mix(in srgb, #6750a4 4%, transparent);
+  --ninja-accent-6: color-mix(in srgb, #6750a4 6%, transparent);
+  --ninja-accent-8: color-mix(in srgb, #6750a4 8%, transparent);
+  --ninja-accent-10: color-mix(in srgb, #6750a4 10%, transparent);
+  --ninja-surface-bg: #141218;
+}
+
+/* Thin, native-feeling scrollbars */
+.ninja-scroll::-webkit-scrollbar { width: 10px; height: 10px; }
+.ninja-scroll::-webkit-scrollbar-thumb {
+  background: rgba(128, 128, 128, 0.35);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.ninja-scroll::-webkit-scrollbar-thumb:hover { background: rgba(128, 128, 128, 0.55); background-clip: content-box; }
+
+/* Compact mode tightens message density */
+.ninja-compact .ninja-desktop-messages { font-size: 0.94em; }

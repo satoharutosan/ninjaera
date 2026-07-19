@@ -1,8 +1,41 @@
 /** Pre-call media device validation. */
+import { getNinja } from "@/shared/electronBridge";
 
 export type MediaValidationResult =
   | { ok: true; stream: MediaStream }
   | { ok: false; error: string; code: "no-mic" | "no-cam" | "denied" | "unavailable" | "unsupported" };
+
+type DesktopCallPrefs = {
+  cameraId: string;
+  microphoneId: string;
+  speakerId: string;
+  echoCancellation: boolean;
+  noiseSuppression: boolean;
+  autoGainControl: boolean;
+};
+
+/**
+ * Reads the user's saved Calls preferences from the Electron desktop settings.
+ * Returns null on the web (or if unavailable), preserving default browser behavior.
+ */
+async function desktopCallPrefs(): Promise<DesktopCallPrefs | null> {
+  const ninja = getNinja();
+  if (!ninja) return null;
+  try {
+    const s = (await ninja.settings.getAll()) as { calls?: Partial<DesktopCallPrefs> };
+    if (!s?.calls) return null;
+    return {
+      cameraId: s.calls.cameraId ?? "default",
+      microphoneId: s.calls.microphoneId ?? "default",
+      speakerId: s.calls.speakerId ?? "default",
+      echoCancellation: s.calls.echoCancellation ?? true,
+      noiseSuppression: s.calls.noiseSuppression ?? true,
+      autoGainControl: s.calls.autoGainControl ?? true,
+    };
+  } catch {
+    return null;
+  }
+}
 
 function isSecureContextOk() {
   return typeof navigator !== "undefined"
@@ -53,16 +86,28 @@ export async function validateAndGetMedia(needVideo: boolean): Promise<MediaVali
   }
 
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-      },
-      video: needVideo
-        ? { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 24 } }
-        : false,
-    });
+    // Apply saved desktop Calls preferences (device + audio processing). `ideal`
+    // deviceId is used so a missing/unplugged device never over-constrains the request.
+    const prefs = await desktopCallPrefs();
+    const audio: MediaTrackConstraints = {
+      echoCancellation: prefs?.echoCancellation ?? true,
+      noiseSuppression: prefs?.noiseSuppression ?? true,
+      autoGainControl: prefs?.autoGainControl ?? true,
+    };
+    if (prefs?.microphoneId && prefs.microphoneId !== "default") {
+      audio.deviceId = { ideal: prefs.microphoneId };
+    }
+    const video: MediaTrackConstraints | false = needVideo
+      ? {
+          width: { ideal: 640 },
+          height: { ideal: 360 },
+          frameRate: { ideal: 24 },
+          ...(prefs?.cameraId && prefs.cameraId !== "default"
+            ? { deviceId: { ideal: prefs.cameraId } }
+            : {}),
+        }
+      : false;
+    const stream = await navigator.mediaDevices.getUserMedia({ audio, video });
 
     const audioTracks = stream.getAudioTracks();
     if (!audioTracks.length) {

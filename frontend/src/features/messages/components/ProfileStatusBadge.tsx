@@ -21,6 +21,8 @@ type ProfileStatusBadgeProps = {
   status: string;
   C: ColorTheme;
   disabled?: boolean;
+  /** When true, omit the ring/border around the status dot (desktop avatars). */
+  hideBorder?: boolean;
   onChange: (status: PresenceStatus) => void | Promise<void>;
 };
 
@@ -32,6 +34,7 @@ export function ProfileStatusBadge({
   status,
   C,
   disabled,
+  hideBorder = false,
   onChange,
 }: ProfileStatusBadgeProps) {
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
@@ -66,11 +69,13 @@ export function ProfileStatusBadge({
             e.stopPropagation();
             setAnchorEl(e.currentTarget);
           }}
-          className="absolute bottom-0 right-0 w-4 h-4 rounded-full border-2 transition-transform hover:scale-125 focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 disabled:opacity-60"
+          className={`ninja-status-dot absolute bottom-0 right-0 w-4 h-4 rounded-full transition-transform hover:scale-125 focus:outline-none disabled:opacity-60${hideBorder ? "" : " border-2 focus-visible:ring-2 focus-visible:ring-offset-1"}`}
           style={{
             background: color,
-            borderColor: C.surface,
-            boxShadow: `0 0 0 1px ${C.outlineVar}`,
+            border: hideBorder ? "none" : undefined,
+            borderColor: hideBorder ? "transparent" : C.surface,
+            boxShadow: hideBorder ? "none" : `0 0 0 1px ${C.outlineVar}`,
+            outline: "none",
           }}
         />
       </Tooltip>

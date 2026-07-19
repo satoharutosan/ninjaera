@@ -1,5 +1,6 @@
 import { io, type Socket } from "socket.io-client";
 import { getToken } from "./api";
+import { getNinja } from "../shared/electronBridge";
 
 let socket: Socket | null = null;
 /** Persists across socket reconnects so CallProvider handlers stay registered after login. */
@@ -57,6 +58,11 @@ function ensureSocket(): Socket | null {
 
 /** Emit after the socket is connected (buffers until connect if needed). */
 export function emitReliable(event: string, payload: unknown): boolean {
+  const ninja = getNinja();
+  if (ninja) {
+    ninja.socket.emit(event, payload);
+    return true;
+  }
   const s = ensureSocket();
   if (!s) return false;
   if (s.connected) {
@@ -70,10 +76,20 @@ export function emitReliable(event: string, payload: unknown): boolean {
 }
 
 export function connectRealtime() {
+  const ninja = getNinja();
+  if (ninja) {
+    ninja.socket.connect();
+    return null;
+  }
   return ensureSocket();
 }
 
 export function disconnectRealtime() {
+  const ninja = getNinja();
+  if (ninja) {
+    ninja.socket.disconnect();
+    return;
+  }
   if (socket) {
     socket.removeAllListeners();
     socket.disconnect();
@@ -83,6 +99,11 @@ export function disconnectRealtime() {
 }
 
 export function onRealtimeEvent<T = unknown>(event: string, handler: (data: T) => void) {
+  const ninja = getNinja();
+  if (ninja) {
+    // Desktop: subscribe through the main-process socket bridge (survives window hide).
+    return ninja.socket.on(event, handler as (data: unknown) => void);
+  }
   if (!listeners.has(event)) listeners.set(event, new Set());
   const wrapped = handler as (data: unknown) => void;
   const set = listeners.get(event)!;

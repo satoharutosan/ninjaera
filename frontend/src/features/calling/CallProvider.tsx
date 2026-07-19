@@ -22,6 +22,7 @@ import {
 } from "@/app/realtime";
 import { validateAndGetMedia } from "./devices";
 import { CallPeer } from "./webrtc";
+import { getNinja } from "@/shared/electronBridge";
 import type { CallInvite, CallPhase, CallType, IceSignal, VideoViewMode } from "./types";
 
 type CallContextValue = {
@@ -151,6 +152,19 @@ export function CallProvider({ children }: { children: ReactNode }) {
       setVideoInputs(devices.filter(d => d.kind === "videoinput"));
       setAudioOutputs(devices.filter(d => d.kind === "audiooutput"));
     } catch { /* */ }
+  }, []);
+
+  // Desktop: seed the preferred speaker (audio output) from saved Calls settings.
+  useEffect(() => {
+    const ninja = getNinja();
+    if (!ninja) return;
+    ninja.settings
+      .getAll()
+      .then((s) => {
+        const spk = (s as { calls?: { speakerId?: string } })?.calls?.speakerId;
+        if (spk && spk !== "default") setSelectedOutputId(spk);
+      })
+      .catch(() => {});
   }, []);
 
   const refreshLocalPreview = useCallback(() => {

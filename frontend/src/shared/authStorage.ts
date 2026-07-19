@@ -1,5 +1,7 @@
 /** Auth credential storage — localStorage (Stay signed in) vs sessionStorage (browser session only). */
 
+import { getNinja } from "./electronBridge";
+
 export const AUTH_TOKEN_KEY = "ninja-era-token";
 export const AUTH_USER_KEY = "ninja-era-user";
 /** "1" = survive browser restart; "0" = current browser session only */
@@ -79,6 +81,9 @@ function readUserRawFromStores(): string | null {
 }
 
 export function getStoredToken(): string | null {
+  // Desktop: JWT lives in OS-encrypted storage (safeStorage) via the main process.
+  const ninja = getNinja();
+  if (ninja) return ninja.auth.getToken();
   return readTokenFromStores();
 }
 
@@ -95,6 +100,20 @@ export function getCachedUser(): CachedAuthUser | null {
 }
 
 export function persistAuthSession(token: string, user: CachedAuthUser | null, persist: boolean) {
+  // Desktop: token is persisted securely in the main process; keep a non-sensitive
+  // user cache in localStorage for synchronous optimistic restore. Sessions never
+  // expire client-side (Telegram-style).
+  const ninja = getNinja();
+  if (ninja) {
+    setAuthPersistent(true);
+    ninja.auth.setSession(token, user);
+    lsRemove(AUTH_TOKEN_KEY);
+    ssRemove(AUTH_TOKEN_KEY);
+    if (user) lsSet(AUTH_USER_KEY, JSON.stringify(user));
+    else lsRemove(AUTH_USER_KEY);
+    return;
+  }
+
   setAuthPersistent(persist);
   lsRemove(AUTH_TOKEN_KEY);
   lsRemove(AUTH_USER_KEY);
@@ -136,6 +155,7 @@ export function setCachedUser(user: CachedAuthUser | null) {
 
 /** Clears token + user cache. Keeps Stay-signed-in preference and remembered email. */
 export function clearAuthCredentials() {
+  getNinja()?.auth.clear();
   lsRemove(AUTH_TOKEN_KEY);
   lsRemove(AUTH_USER_KEY);
   ssRemove(AUTH_TOKEN_KEY);

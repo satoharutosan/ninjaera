@@ -110,15 +110,20 @@ const MSGS_DATA_INIT: Contact[] = [];
 const AVATAR_COLORS = ["#6750A4","#B3261E","#7D5260","#386A20","#006688","#625B71","#4A4458"];
 const avatarColor = (name: string) => AVATAR_COLORS[name.charCodeAt(0) % AVATAR_COLORS.length];
 
-function ChatAvatar({ name, avatarUrl, size = 40, channel = false, className = "", deleted = false }: {
+function ChatAvatar({ name, avatarUrl, size = 40, channel = false, className = "", deleted = false, bg, fg }: {
   name: string; avatarUrl?: string | null; size?: number; channel?: boolean; className?: string; deleted?: boolean;
+  /** Optional letter-avatar fill; when omitted, a name-hash palette color is used. */
+  bg?: string;
+  /** Optional letter/ink color; defaults to white. */
+  fg?: string;
 }) {
   const label = deleted || name === "Deleted User" ? "Deleted User" : (name || "Deleted User");
   const isDeleted = deleted || label === "Deleted User";
   const style = {
     width: size,
     height: size,
-    background: isDeleted ? "#79747E" : avatarColor(label),
+    background: isDeleted ? "#79747E" : (bg || avatarColor(label)),
+    color: fg || "#FFFFFF",
     fontFamily: "Roboto" as const,
   };
   if (channel) {

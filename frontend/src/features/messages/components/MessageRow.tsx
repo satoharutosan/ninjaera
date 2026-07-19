@@ -1,4 +1,4 @@
-import { useState, memo } from "react";
+import { useState, useEffect, useRef, memo } from "react";
 import ReplyIcon from "@mui/icons-material/Reply";
 import EditIcon from "@mui/icons-material/Edit";
 import CheckIcon from "@mui/icons-material/Check";
@@ -27,6 +27,9 @@ type MessageRowProps = {
   onLightbox: (url: string) => void;
   onReply: (m: ChatMsg) => void;
   onReact: (id: number, emoji: string) => void;
+  /** Whether this row's reaction picker is open (controlled by parent for single-open). */
+  reactionOpen: boolean;
+  onReactionOpenChange: (open: boolean) => void;
   onDelete: (id: number) => void;
   /** Instant moderator delete (channel admins) — no confirm dialog. */
   onAdminDelete?: (id: number) => void;
@@ -52,6 +55,8 @@ export const MessageRow = memo(function MessageRow({
   onLightbox,
   onReply,
   onReact,
+  reactionOpen,
+  onReactionOpenChange,
   onDelete,
   onAdminDelete,
   canAdminDelete,
@@ -60,8 +65,29 @@ export const MessageRow = memo(function MessageRow({
   onOpenProfile,
 }: MessageRowProps) {
   const [hovered, setHovered] = useState(false);
-  const [reactionOpen, setReactionOpen] = useState(false);
+  const reactionWrapRef = useRef<HTMLDivElement | null>(null);
   const showHeader = !prev || prev.user !== m.user || prev.time !== m.time;
+
+  // Click-away + Escape close the reaction picker (no hover dependency).
+  useEffect(() => {
+    if (!reactionOpen) return;
+    const onPointerDown = (e: MouseEvent | TouchEvent) => {
+      if (reactionWrapRef.current && !reactionWrapRef.current.contains(e.target as Node)) {
+        onReactionOpenChange(false);
+      }
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onReactionOpenChange(false);
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("touchstart", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("touchstart", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [reactionOpen, onReactionOpenChange]);
   // Exactly one "NEW" boundary: first message after lastReadMessageId.
   // Do not re-open the divider after self messages (that caused duplicates).
   const showUnreadDivider = !!(
@@ -145,20 +171,30 @@ export const MessageRow = memo(function MessageRow({
             ref={el => registerRef(m.id, el)}
             className="relative min-w-0 max-w-full"
             onMouseEnter={() => setHovered(true)}
-            onMouseLeave={() => { setHovered(false); setReactionOpen(false); }}
+            onMouseLeave={() => setHovered(false)}
           >
-            {hovered && !m.pending && (
+            {(hovered || reactionOpen) && !m.pending && (
               <div className="absolute -top-8 right-0 flex items-center gap-0.5 px-1.5 py-1 rounded-full shadow-lg z-20" style={{ background: C.surface, border: `1px solid ${C.outlineVar}` }}>
-                <div className="relative">
-                  <button title="React" onClick={e => { e.stopPropagation(); setReactionOpen(o => !o); }} className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-black/8 transition-colors text-sm" style={{ color: C.onSurfaceVar }}>😊</button>
+                <div className="relative" ref={reactionWrapRef}>
+                  <button
+                    title="React"
+                    aria-label="Add reaction"
+                    aria-haspopup="menu"
+                    aria-expanded={reactionOpen}
+                    onClick={e => { e.stopPropagation(); onReactionOpenChange(!reactionOpen); }}
+                    className="w-6 h-6 flex items-center justify-center rounded-full hover:bg-black/8 transition-colors text-sm"
+                    style={{ color: C.onSurfaceVar }}
+                  >😊</button>
                   {reactionOpen && (
                     <div
+                      role="menu"
+                      aria-label="Quick reactions"
                       className={`absolute bottom-full mb-1 flex gap-1 px-2 py-1.5 rounded-full shadow-lg ${m.self ? "right-0" : "left-0"}`}
                       style={{ background: C.surface, border: `1px solid ${C.outlineVar}` }}
                       onClick={e => e.stopPropagation()}
                     >
                       {QUICK_REACTIONS.map(emoji => (
-                        <button key={emoji} onClick={() => { onReact(m.id, emoji); setReactionOpen(false); }} className="text-lg hover:scale-125 transition-transform w-7 h-7 flex items-center justify-center rounded-full hover:bg-black/8">{emoji}</button>
+                        <button key={emoji} role="menuitem" aria-label={`React with ${emoji}`} onClick={() => { onReact(m.id, emoji); onReactionOpenChange(false); }} className="text-lg hover:scale-125 transition-transform w-7 h-7 flex items-center justify-center rounded-full hover:bg-black/8">{emoji}</button>
                       ))}
                     </div>
                   )}

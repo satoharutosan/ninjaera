@@ -50,6 +50,21 @@ function env(name: string): string {
   return (process.env[name] || "").trim();
 }
 
+function envFlagTrue(name: string, defaultValue = false): boolean {
+  const raw = env(name).toLowerCase();
+  if (!raw) return defaultValue;
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
+/**
+ * Master switch for outbound email.
+ * Default false — no SMTP/Resend connection unless EMAIL_ENABLED=true.
+ * Calls, sockets, and WebRTC must never depend on this subsystem.
+ */
+export function isEmailEnabled(): boolean {
+  return envFlagTrue("EMAIL_ENABLED", false);
+}
+
 /** Resend API key: explicit RESEND_API_KEY, or SMTP_PASS when SMTP_PROVIDER=resend. */
 export function resendApiKey(): string {
   const explicit = env("RESEND_API_KEY");
@@ -260,8 +275,27 @@ function createResendHttpTransport(): MailTransport {
 
 let cached: MailTransport | null = null;
 
-/** Resolve the active transport (cached). Call resetMailTransport() after env changes. */
+function createDisabledTransport(): MailTransport {
+  const err = () => {
+    throw Object.assign(new Error("Email is disabled (EMAIL_ENABLED=false)"), { code: "EMAIL_DISABLED" });
+  };
+  return {
+    kind: "smtp",
+    provider: "disabled",
+    host: "",
+    port: 0,
+    ipv4: true,
+    async verify() { err(); },
+    async send() { return err(); },
+  };
+}
+
+/**
+ * Resolve the active transport (cached).
+ * Does not open an SMTP socket until verify()/send() — and never when EMAIL_ENABLED=false.
+ */
 export function getMailTransport(): MailTransport {
+  if (!isEmailEnabled()) return createDisabledTransport();
   if (cached) return cached;
   cached = useResendHttp() ? createResendHttpTransport() : createSmtpTransport();
   return cached;

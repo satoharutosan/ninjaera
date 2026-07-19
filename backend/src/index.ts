@@ -30,7 +30,7 @@ import gameDownloadRoutes from "./routes/gameDownloads.js";
 import contentRoutes from "./routes/content.js";
 import externalsRoutes from "./routes/externals.js";
 import { initRealtime } from "./services/realtime.js";
-import { verifyMailOnStartup, mailStatus } from "./services/mail.js";
+import { verifyMailOnStartup, mailStatus, isEmailEnabled } from "./services/mail.js";
 import { optionalAuth } from "./middleware/auth.js";
 import { canDownloadResource, normalizeResourceVisibility } from "./routes/content.js";
 
@@ -225,6 +225,7 @@ async function main() {
       database: dbAsync.provider,
       storage: storage.provider,
       mail: {
+        enabled: isEmailEnabled(),
         configured: mail.configured,
         verified: mail.verified,
         provider: mail.provider,
@@ -272,6 +273,7 @@ async function main() {
     console.log(`Ninja Era API listening on http://${host}:${PORT}`);
     console.log(`  database: ${dbAsync.provider}`);
     console.log(`  storage:  ${storage.provider}`);
+    // Email is lazy + gated by EMAIL_ENABLED — never blocks calls/WebRTC/sockets.
     void verifyMailOnStartup();
   });
 

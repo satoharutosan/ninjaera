@@ -1,13 +1,17 @@
 import crypto from "crypto";
 import {
   getMailTransport,
+  isEmailEnabled,
   resetMailTransportCache,
   resendApiKey,
+  resolveSmtpPreset,
   smtpProviderHint,
   useResendHttp,
   type MailMessage,
   type MailSendResult,
 } from "./mailTransport.js";
+
+export { isEmailEnabled };
 
 const DEFAULT_FROM_NAME = "Ninja Era";
 const DEFAULT_FROM_ADDRESS = "softfuture28@gmail.com";
@@ -56,10 +60,56 @@ export const MAIL_FROM_ADDRESS = DEFAULT_FROM_ADDRESS;
 export const MAIL_FROM = `${DEFAULT_FROM_NAME} <${DEFAULT_FROM_ADDRESS}>`;
 
 export function mailConfigured(): boolean {
+  // Master kill-switch — never treat mail as available when disabled.
+  if (!isEmailEnabled()) return false;
   // Resend HTTP API: RESEND_API_KEY (or SMTP_PASS when SMTP_PROVIDER=resend).
   // SMTP transports (Gmail / SendGrid / Mailgun / SES / Brevo): SMTP_USER + SMTP_PASS.
   if (resendApiKey() && useResendHttp()) return true;
   return Boolean(env("SMTP_USER") && env("SMTP_PASS"));
+}
+
+/** Env-only summary — does not create or connect a transport. */
+function mailRuntimeSummaryFromEnv(): {
+  transport: string;
+  provider: string;
+  host: string;
+  port: number;
+  ipv4: boolean;
+  from: string;
+} {
+  if (!isEmailEnabled()) {
+    return {
+      transport: "disabled",
+      provider: "none",
+      host: "",
+      port: 0,
+      ipv4: true,
+      from: mailFromHeader(),
+    };
+  }
+  if (useResendHttp() && resendApiKey()) {
+    return {
+      transport: "resend-http",
+      provider: "resend",
+      host: "api.resend.com",
+      port: 443,
+      ipv4: true,
+      from: mailFromHeader(),
+    };
+  }
+  const preset = resolveSmtpPreset();
+  const host = env("SMTP_HOST") || preset.host;
+  const port = Number(env("SMTP_PORT") || String(preset.port)) || preset.port;
+  const familyRaw = (env("SMTP_IP_FAMILY") || "4").trim().toLowerCase();
+  const ipv4 = familyRaw !== "0" && familyRaw !== "auto" && familyRaw !== "6";
+  return {
+    transport: "smtp",
+    provider: env("SMTP_PROVIDER") || "gmail",
+    host,
+    port,
+    ipv4,
+    from: mailFromHeader(),
+  };
 }
 
 function mailRuntimeSummary(): {
@@ -70,15 +120,8 @@ function mailRuntimeSummary(): {
   ipv4: boolean;
   from: string;
 } {
-  const t = getMailTransport();
-  return {
-    transport: t.kind,
-    provider: t.provider,
-    host: t.host,
-    port: t.port,
-    ipv4: t.ipv4,
-    from: mailFromHeader(),
-  };
+  // Prefer env snapshot so health checks / logging never open SMTP sockets.
+  return mailRuntimeSummaryFromEnv();
 }
 
 export function resetMailTransport() {
@@ -326,15 +369,39 @@ async function sendWithRetry(
   throw lastErr;
 }
 
+/**
+ * Startup hook — never blocks calls/sockets on SMTP.
+ * By default does not call transporter.verify() (Gmail ETIMEDOUT on many hosts).
+ * Opt in with MAIL_VERIFY_ON_STARTUP=true when EMAIL_ENABLED=true.
+ */
 export async function verifyMailOnStartup(): Promise<void> {
+  if (!isEmailEnabled()) {
+    lastVerifyOk = null;
+    lastVerifyError = null;
+    console.info("[mail] disabled (EMAIL_ENABLED=false) — no SMTP/Resend connection");
+    return;
+  }
+
   if (!mailConfigured()) {
     lastVerifyOk = false;
-    lastVerifyError = "SMTP_USER / SMTP_PASS not set";
-    logMailFailureBanner("not configured");
+    lastVerifyError = "SMTP credentials / RESEND_API_KEY not set";
+    console.warn("[mail] EMAIL_ENABLED=true but transport credentials are missing");
     return;
   }
 
   const summary = mailRuntimeSummary();
+  const probe = ["1", "true", "yes", "on"].includes(env("MAIL_VERIFY_ON_STARTUP").toLowerCase());
+  if (!probe) {
+    lastVerifyOk = null;
+    lastVerifyError = null;
+    console.info(
+      `[mail] enabled — lazy transport (no startup verify) ` +
+        `transport=${summary.transport} provider=${summary.provider} ` +
+        `host=${summary.host}:${summary.port || "?"} from=${summary.from}`,
+    );
+    return;
+  }
+
   try {
     await getMailTransport().verify();
     lastVerifyOk = true;
@@ -343,11 +410,6 @@ export async function verifyMailOnStartup(): Promise<void> {
       `[mail] ready transport=${summary.transport} provider=${summary.provider} ` +
         `host=${summary.host}:${summary.port} ipv4=${summary.ipv4} from=${summary.from}`,
     );
-    if (summary.transport === "smtp" && (summary.provider === "gmail" || summary.host.includes("gmail"))) {
-      console.warn(
-        "[mail] Using Gmail SMTP. If Railway logs show ETIMEDOUT/ENETUNREACH, switch to SMTP_PROVIDER=resend + RESEND_API_KEY (HTTP API).",
-      );
-    }
   } catch (err) {
     lastVerifyOk = false;
     const info = sanitizeMailError(err);

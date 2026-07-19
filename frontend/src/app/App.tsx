@@ -35,6 +35,10 @@ import {
 import { connectRealtime, disconnectRealtime, onRealtimeEvent, joinConversation } from "@/app/realtime";
 import { messageCache } from "@/features/messages/messageCache";
 import { toChatMsg } from "@/features/messages/types";
+import {
+  clearActiveConversation,
+  clearAllConversationDrafts,
+} from "@/features/messages/activeConversationStore";
 import { appPerf } from "@/shared/perf";
 import { pageFromLocation, setPageInLocation } from "@/shared/routing";
 import { BrandLogo } from "@/shared/BrandLogo";
@@ -621,6 +625,8 @@ export default function App() {
   const [dmRequestCount, setDmRequestCount] = useState(0);
   const [selectedConversationId, setSelectedConversationId] = useState<number | null>(null);
   const [focusMessageInput, setFocusMessageInput] = useState(false);
+  /** Keep MessagesPage mounted after first visit so selection/scroll/draft survive navigation. */
+  const [messagesKeepAlive, setMessagesKeepAlive] = useState(() => pageFromLocation() === "messages");
   const convRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const clearSelectedConversation = useCallback(() => setSelectedConversationId(null), []);
   const clearFocusMessageInput = useCallback(() => setFocusMessageInput(false), []);
@@ -650,6 +656,7 @@ export default function App() {
   }, [user]);
 
   const handleLogout = useCallback(() => {
+    const uid = user?.id;
     api.auth.logout().catch(() => {});
     clearAuthStorage();
     setToken(null);
@@ -659,10 +666,24 @@ export default function App() {
     setMsgUnread(0);
     setDmRequestCount(0);
     setSelectedConversationId(null);
+    setMessagesKeepAlive(false);
+    if (uid) {
+      clearActiveConversation(uid);
+      clearAllConversationDrafts(uid);
+    }
     setAuthReady(true);
     messageCache.clear();
     disconnectRealtime();
-  }, []);
+  }, [user?.id]);
+
+  // Mount Messages once visited; keep it alive across route changes (Discord-style).
+  useEffect(() => {
+    if (page === "messages" && loggedIn) setMessagesKeepAlive(true);
+  }, [page, loggedIn]);
+
+  useEffect(() => {
+    if (!loggedIn) setMessagesKeepAlive(false);
+  }, [loggedIn]);
 
   useEffect(() => {
     const token = getStoredToken();
@@ -987,23 +1008,30 @@ export default function App() {
         {page==="forgot-password" && !loggedIn && <ForgotPasswordPage setPage={go} />}
         {page==="reset-password" && <ResetPasswordPage setPage={go} onComplete={handleLogout} />}
         {page==="oauth-callback" && <OAuthCallbackPage setPage={go} onLogin={handleLogin} />}
-        {page==="messages"  && loggedIn && (
-          <MessagesPage
-            settings={settings}
-            showEmailToast={showEmailToast}
-            showPushNotif={showPushNotif}
-            contacts={contacts}
-            setContacts={setContacts}
-            onUnreadChange={setMsgUnread}
-            onConversationsRefresh={refreshConversations}
-            currentUserId={user?.id ?? 0}
-            currentUser={user}
-            onUserUpdate={setUser}
-            initialConversationId={selectedConversationId}
-            focusInput={focusMessageInput}
-            onFocusHandled={clearFocusMessageInput}
-            onInitialConversationHandled={clearSelectedConversation}
-          />
+        {loggedIn && messagesKeepAlive && (
+          <div
+            style={page === "messages" ? undefined : { display: "none" }}
+            aria-hidden={page !== "messages"}
+          >
+            <MessagesPage
+              settings={settings}
+              showEmailToast={showEmailToast}
+              showPushNotif={showPushNotif}
+              contacts={contacts}
+              setContacts={setContacts}
+              onUnreadChange={setMsgUnread}
+              onConversationsRefresh={refreshConversations}
+              currentUserId={user?.id ?? 0}
+              currentUser={user}
+              onUserUpdate={setUser}
+              initialConversationId={selectedConversationId}
+              focusInput={focusMessageInput}
+              onFocusHandled={clearFocusMessageInput}
+              onInitialConversationHandled={clearSelectedConversation}
+              onActiveConversationChange={setSelectedConversationId}
+              isActive={page === "messages"}
+            />
+          </div>
         )}
         {page==="profile"   && loggedIn && <ProfilePage setPage={go} isDark={isDark} setIsDark={toggleTheme} settings={settings} setSettings={setSettings} user={user} setUser={setUser} userAvatar={userAvatar} setUserAvatar={setUserAvatar} onLogout={handleLogout} />}
         {page==="admin"     && loggedIn && user?.isAdmin && <AdminPage setPage={go} />}

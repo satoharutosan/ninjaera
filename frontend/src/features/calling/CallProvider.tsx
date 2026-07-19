@@ -215,8 +215,9 @@ export function CallProvider({ children }: { children: ReactNode }) {
     const peer = new CallPeer(
       {
         onRemoteStream: () => refreshRemotePreview(),
-        onHasRemoteScreen: (has) => {
-          setPeerScreenSharing(has || peerAnnouncedScreenRef.current);
+        onHasRemoteScreen: () => {
+          // Screen share uses replaceTrack on the main video sender — remote
+          // frames update in-place; peerScreenSharing is driven by media-state.
           refreshRemotePreview();
         },
         onConnectionState: (state) => {

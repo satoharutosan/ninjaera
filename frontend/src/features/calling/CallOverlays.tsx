@@ -11,7 +11,7 @@ import CloseIcon from "@mui/icons-material/Close";
 import FullscreenIcon from "@mui/icons-material/Fullscreen";
 import FullscreenExitIcon from "@mui/icons-material/FullscreenExit";
 import ChatIcon from "@mui/icons-material/Chat";
-import { useC, SH2, ChatAvatar } from "@/app/shared";
+import { useC, SH2, ChatAvatar, BADGE_BG } from "@/app/shared";
 import { useCall } from "./CallProvider";
 import { CallChatPanel } from "./CallChatPanel";
 
@@ -26,13 +26,11 @@ function DeviceSelect({
   value,
   onChange,
   options,
-  C,
 }: {
   label: string;
   value: string;
   onChange: (id: string) => void;
   options: MediaDeviceInfo[];
-  C: ReturnType<typeof useC>;
 }) {
   if (options.length < 1) return null;
   return (
@@ -118,7 +116,6 @@ function FullscreenMediaFrame({
   label: string;
   topLeft?: ReactNode;
 }) {
-  const C = useC();
   const frameRef = useRef<HTMLDivElement>(null);
   const [isFs, setIsFs] = useState(false);
 
@@ -160,7 +157,7 @@ function FullscreenMediaFrame({
   }, []);
 
   return (
-    <div ref={frameRef} className="relative rounded-2xl overflow-hidden bg-black/50 min-h-[30vh] md:min-h-[40vh] h-full w-full">
+    <div ref={frameRef} className="relative rounded-2xl overflow-hidden bg-black/50 min-h-[30vh] md:min-h-0 h-full w-full">
       {children}
       <div className="absolute bottom-3 left-3 text-xs text-white/80 px-2 py-1 rounded-full bg-black/50" style={{ fontFamily: "Roboto" }}>
         {label}
@@ -178,9 +175,7 @@ function FullscreenMediaFrame({
         className="absolute top-3 right-3 z-[2] w-9 h-9 rounded-full flex items-center justify-center text-white transition-opacity hover:opacity-100 opacity-90 focus:outline-none focus-visible:ring-2"
         style={{ background: "rgba(0,0,0,0.55)", boxShadow: "0 1px 4px rgba(0,0,0,0.35)" }}
       >
-        {isFs
-          ? <FullscreenExitIcon style={{ fontSize: 20, color: C.onSurface === "#E6E1E5" ? "#fff" : "#fff" }} />
-          : <FullscreenIcon style={{ fontSize: 20 }} />}
+        {isFs ? <FullscreenExitIcon style={{ fontSize: 20 }} /> : <FullscreenIcon style={{ fontSize: 20 }} />}
       </button>
     </div>
   );
@@ -189,9 +184,32 @@ function FullscreenMediaFrame({
 export function CallOverlays() {
   const C = useC();
   const call = useCall();
-  const [chatOpen, setChatOpen] = useState(true);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatUnread, setChatUnread] = useState(0);
+  const [badgePulse, setBadgePulse] = useState(false);
 
-  // Incoming modal
+  // Reset chat UI when leaving a call
+  useEffect(() => {
+    if (call.phase !== "active" && call.phase !== "connecting") {
+      setChatOpen(false);
+      setChatUnread(0);
+    }
+  }, [call.phase]);
+
+  const closeChat = useCallback(() => setChatOpen(false), []);
+  const toggleChat = useCallback(() => {
+    setChatOpen(prev => {
+      if (!prev) setChatUnread(0);
+      return !prev;
+    });
+  }, []);
+
+  const onUnread = useCallback((delta: number) => {
+    setChatUnread(n => n + delta);
+    setBadgePulse(true);
+    window.setTimeout(() => setBadgePulse(false), 400);
+  }, []);
+
   if (call.phase === "incoming" && call.invite) {
     return (
       <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 p-4" role="dialog" aria-modal="true" aria-label="Incoming call">
@@ -201,13 +219,13 @@ export function CallOverlays() {
             aria-label="Dismiss call"
             title="Dismiss"
             onClick={call.ignoreIncoming}
-            className="absolute top-3 right-3 w-9 h-9 rounded-full flex items-center justify-center hover:bg-black/5"
+            className="absolute top-3 right-3 w-9 h-9 rounded-full flex items-center justify-center hover:opacity-80"
             style={{ color: C.onSurfaceVar }}
           >
             <CloseIcon style={{ fontSize: 20 }} />
           </button>
           <div
-            className="mx-auto mb-4 w-20 h-20 rounded-full overflow-hidden ring-4"
+            className="mx-auto mb-4 w-20 h-20 rounded-full overflow-hidden"
             style={{
               boxShadow: `0 0 0 6px ${C.primary}33`,
               animation: "ne-ring-pulse 1.4s ease-in-out infinite",
@@ -227,7 +245,7 @@ export function CallOverlays() {
               type="button"
               aria-label="Decline call"
               onClick={call.declineIncoming}
-              className="w-14 h-14 rounded-full flex items-center justify-center text-white"
+              className="w-14 h-14 rounded-full flex items-center justify-center text-white hover:opacity-90"
               style={{ background: C.error }}
             >
               <CallEndIcon />
@@ -236,7 +254,7 @@ export function CallOverlays() {
               type="button"
               aria-label="Accept call"
               onClick={() => void call.acceptIncoming()}
-              className="w-14 h-14 rounded-full flex items-center justify-center text-white"
+              className="w-14 h-14 rounded-full flex items-center justify-center text-white hover:opacity-90"
               style={{ background: "#386A20" }}
             >
               <CallIcon />
@@ -271,7 +289,7 @@ export function CallOverlays() {
             type="button"
             aria-label="Cancel call"
             onClick={call.hangup}
-            className="w-14 h-14 rounded-full flex items-center justify-center text-white mx-auto"
+            className="w-14 h-14 rounded-full flex items-center justify-center text-white mx-auto hover:opacity-90"
             style={{ background: C.error }}
           >
             <CallEndIcon />
@@ -284,10 +302,9 @@ export function CallOverlays() {
 
   if (call.phase !== "active" && call.phase !== "connecting") return null;
 
-  const showLocalSwitch = call.screenSharing;
-  const showRemoteSwitch = call.peerScreenSharing;
   const conversationId = call.invite?.conversationId ?? 0;
   const chatActive = call.phase === "active" && !!conversationId;
+  const showLocalSwitch = call.screenSharing;
 
   const viewBtn = (active: boolean) => ({
     background: active ? C.primary : "rgba(0,0,0,0.5)",
@@ -295,104 +312,101 @@ export function CallOverlays() {
     fontFamily: "Roboto" as const,
   });
 
+  const ctrlBtn = (active: boolean, danger = false) => ({
+    background: danger ? C.error : active ? "#49454F" : C.error,
+  });
+
   return (
     <div className="fixed inset-0 z-[80] flex flex-col bg-[#1C1B1F]" role="dialog" aria-modal="true" aria-label="In call">
-      <div className="flex-1 relative min-h-0 grid grid-cols-1 md:grid-cols-2 gap-2 p-3">
-        <FullscreenMediaFrame
-          label={[
-            "Peer",
-            !call.peerMicOn ? "Muted" : "",
-            !call.peerCamOn ? "Cam off" : "",
-            call.peerScreenSharing ? "Screen" : "",
-            call.connectionState,
-          ].filter(Boolean).join(" · ")}
-          topLeft={showRemoteSwitch ? (
-            <>
-              <button type="button" onClick={() => call.setRemoteView("camera")}
-                className="text-[10px] px-2 py-1 rounded-full"
-                style={viewBtn(call.remoteView === "camera")}>
-                View Camera
-              </button>
-              <button type="button" onClick={() => call.setRemoteView("screen")}
-                className="text-[10px] px-2 py-1 rounded-full"
-                style={viewBtn(call.remoteView === "screen" || call.remoteView === "auto")}>
-                View Screen
-              </button>
-            </>
-          ) : undefined}
-        >
-          <VideoTile
-            stream={call.remoteStream}
-            sinkId={call.selectedOutputId || undefined}
-            label={
-              call.phase === "connecting"
-                ? "Connecting…"
-                : call.peerScreenSharing
-                  ? "Screen share"
-                  : call.callType === "video"
-                    ? "Waiting for video…"
-                    : "Voice connected"
-            }
-          />
-        </FullscreenMediaFrame>
+      {/* Main column: video + controls only — chat overlays and never shrinks this. */}
+      <div className="relative flex-1 min-h-0 flex flex-col">
+        <div className="flex-1 relative min-h-0 grid grid-cols-1 md:grid-cols-2 gap-2 p-3">
+          <FullscreenMediaFrame
+            label={[
+              call.invite?.callerName || "Peer",
+              !call.peerMicOn ? "Muted" : "",
+              !call.peerCamOn && !call.peerScreenSharing ? "Cam off" : "",
+              call.peerScreenSharing ? "Screen" : "",
+            ].filter(Boolean).join(" · ")}
+          >
+            <VideoTile
+              stream={call.remoteStream}
+              sinkId={call.selectedOutputId || undefined}
+              label={
+                call.phase === "connecting"
+                  ? "Connecting…"
+                  : call.peerScreenSharing
+                    ? "Screen share"
+                    : call.callType === "video"
+                      ? "Waiting for video…"
+                      : "Voice connected"
+              }
+            />
+          </FullscreenMediaFrame>
 
-        <FullscreenMediaFrame
-          label={[
-            "You",
-            !call.micOn ? "Muted" : "",
-            !call.camOn && !call.screenSharing ? "Cam off" : "",
-            call.screenSharing ? "Sharing" : "",
-          ].filter(Boolean).join(" · ")}
-          topLeft={showLocalSwitch ? (
-            <>
-              <button type="button" onClick={() => call.setLocalView("camera")}
-                className="text-[10px] px-2 py-1 rounded-full"
-                style={viewBtn(call.localView === "camera")}>
-                View Camera
-              </button>
-              <button type="button" onClick={() => call.setLocalView("screen")}
-                className="text-[10px] px-2 py-1 rounded-full"
-                style={viewBtn(call.localView === "screen" || call.localView === "auto")}>
-                View Screen
-              </button>
-            </>
-          ) : undefined}
-        >
-          <VideoTile
-            stream={call.localStream}
-            muted
-            label={call.camOn || call.screenSharing ? "You" : "Camera off"}
-          />
-        </FullscreenMediaFrame>
-      </div>
-
-      {/* Keep mounted while call is active so toggling chat does not wipe the session buffer. */}
-      {chatActive && (
-        <div className={chatOpen ? "" : "hidden"} aria-hidden={!chatOpen}>
-          <CallChatPanel conversationId={conversationId} active={chatActive} />
+          <FullscreenMediaFrame
+            label={[
+              "You",
+              !call.micOn ? "Muted" : "",
+              !call.camOn && !call.screenSharing ? "Cam off" : "",
+              call.screenSharing ? "Sharing" : "",
+            ].filter(Boolean).join(" · ")}
+            topLeft={showLocalSwitch ? (
+              <>
+                <button type="button" onClick={() => call.setLocalView("camera")}
+                  className="text-[10px] px-2 py-1 rounded-full hover:opacity-90"
+                  style={viewBtn(call.localView === "camera")}>
+                  Camera
+                </button>
+                <button type="button" onClick={() => call.setLocalView("screen")}
+                  className="text-[10px] px-2 py-1 rounded-full hover:opacity-90"
+                  style={viewBtn(call.localView === "screen" || call.localView === "auto")}>
+                  Screen
+                </button>
+              </>
+            ) : undefined}
+          >
+            <VideoTile
+              stream={call.localStream}
+              muted
+              label={call.camOn || call.screenSharing ? "You" : "Camera off"}
+            />
+          </FullscreenMediaFrame>
         </div>
-      )}
+
+        {/* Overlay sidebar — does not resize video; no dimming backdrop. */}
+        {chatActive && (
+          <CallChatPanel
+            conversationId={conversationId}
+            active={chatActive}
+            open={chatOpen}
+            onClose={closeChat}
+            onUnread={onUnread}
+          />
+        )}
+      </div>
 
       <div className="px-4 py-4 flex flex-col items-center gap-3 border-t shrink-0" style={{ borderColor: "#49454F", background: "#2B2930" }}>
         <p className="text-sm text-white/80" style={{ fontFamily: "Roboto Mono, monospace" }}>
           {call.phase === "connecting" ? "Connecting…" : formatElapsed(call.elapsedSec)} · {call.callType === "video" ? "Video" : "Voice"}
+          {call.connectionState === "connected" ? "" : ` · ${call.connectionState}`}
         </p>
         <div className="flex flex-wrap items-center justify-center gap-3">
           <button type="button" aria-label={call.micOn ? "Mute" : "Unmute"} onClick={call.toggleMic}
-            className="w-12 h-12 rounded-full flex items-center justify-center text-white"
-            style={{ background: call.micOn ? "#49454F" : C.error }}>
+            className="w-12 h-12 rounded-full flex items-center justify-center text-white hover:opacity-90 transition-opacity"
+            style={ctrlBtn(call.micOn)}>
             {call.micOn ? <MicIcon /> : <MicOffIcon />}
           </button>
           <button type="button" aria-label={call.camOn ? "Camera off" : "Camera on"} onClick={call.toggleCam}
-            className="w-12 h-12 rounded-full flex items-center justify-center text-white"
-            style={{ background: call.camOn ? "#49454F" : C.error }}>
+            className="w-12 h-12 rounded-full flex items-center justify-center text-white hover:opacity-90 transition-opacity"
+            style={ctrlBtn(call.camOn)}>
             {call.camOn ? <VideocamIcon /> : <VideocamOffIcon />}
           </button>
           <button
             type="button"
             aria-label={call.screenSharing ? "Stop sharing" : "Share screen"}
             onClick={() => void (call.screenSharing ? call.stopScreenShare() : call.shareScreen())}
-            className="w-12 h-12 rounded-full flex items-center justify-center text-white"
+            className="w-12 h-12 rounded-full flex items-center justify-center text-white hover:opacity-90 transition-opacity"
             style={{ background: call.screenSharing ? C.primary : "#49454F" }}
           >
             {call.screenSharing ? <StopScreenShareIcon /> : <ScreenShareIcon />}
@@ -400,17 +414,33 @@ export function CallOverlays() {
           {!!conversationId && (
             <button
               type="button"
+              data-call-chat-toggle
               aria-label={chatOpen ? "Hide call chat" : "Show call chat"}
               aria-pressed={chatOpen}
-              onClick={() => setChatOpen(o => !o)}
-              className="w-12 h-12 rounded-full flex items-center justify-center text-white"
+              onClick={toggleChat}
+              className="relative w-12 h-12 rounded-full flex items-center justify-center text-white hover:opacity-90 transition-opacity"
               style={{ background: chatOpen ? C.primary : "#49454F" }}
             >
               <ChatIcon />
+              {chatUnread > 0 && !chatOpen && (
+                <span
+                  className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold flex items-center justify-center text-white"
+                  style={{
+                    background: BADGE_BG,
+                    fontFamily: "Roboto",
+                    transform: badgePulse ? "scale(1.15)" : "scale(1)",
+                    transition: "transform 180ms ease",
+                  }}
+                  aria-label={`${chatUnread} unread`}
+                >
+                  {chatUnread > 99 ? "99+" : chatUnread}
+                </span>
+              )}
             </button>
           )}
           <button type="button" aria-label="Leave call" onClick={call.hangup}
-            className="w-14 h-12 rounded-full flex items-center justify-center text-white px-4" style={{ background: C.error }}>
+            className="w-14 h-12 rounded-full flex items-center justify-center text-white px-4 hover:opacity-90 transition-opacity"
+            style={{ background: C.error }}>
             <CallEndIcon />
           </button>
         </div>
@@ -421,7 +451,6 @@ export function CallOverlays() {
               value={call.audioInputs[0]?.deviceId || ""}
               onChange={id => void call.switchMic(id)}
               options={call.audioInputs}
-              C={C}
             />
           )}
           {call.videoInputs.length > 0 && (
@@ -430,7 +459,6 @@ export function CallOverlays() {
               value={call.videoInputs[0]?.deviceId || ""}
               onChange={id => void call.switchCam(id)}
               options={call.videoInputs}
-              C={C}
             />
           )}
           {call.audioOutputs.length > 0 && (
@@ -439,11 +467,13 @@ export function CallOverlays() {
               value={call.selectedOutputId || call.audioOutputs[0]?.deviceId || ""}
               onChange={id => void call.setAudioOutput(id)}
               options={call.audioOutputs}
-              C={C}
             />
           )}
         </div>
       </div>
+      <style>{`
+        @keyframes ne-badge-pop { 0%{transform:scale(1)} 50%{transform:scale(1.2)} 100%{transform:scale(1)} }
+      `}</style>
     </div>
   );
 }

@@ -10,8 +10,11 @@ export type PeerHandlers = {
 
 /**
  * 1:1 WebRTC peer.
- * Always negotiates 1 audio + 2 video m-lines so camera and screen can both be live.
- * Screen share uses replaceTrack + renegotiation so caller and callee both send/receive.
+ *
+ * Media layout: 1 audio + 1 video m-line (sendrecv).
+ * Screen share swaps the outbound video track via replaceTrack:
+ *   camera → screen → camera
+ * without recreating the peer connection. Both caller and callee use the same path.
  */
 export class CallPeer {
   pc: RTCPeerConnection;
@@ -19,23 +22,13 @@ export class CallPeer {
   cameraTrack: MediaStreamTrack | null = null;
   screenTrack: MediaStreamTrack | null = null;
   private makingOffer = false;
-  private ignoreOffer = false;
   private polite: boolean;
-  private needsRenegotiate = false;
-  private closed = false;
-  /** Serialize offer/answer so screen-share renegotiation cannot race ICE/glare. */
-  private signalingChain: Promise<void> = Promise.resolve();
-
-  private audioTransceiver: RTCRtpTransceiver;
-  private cameraTransceiver: RTCRtpTransceiver;
-  private screenTransceiver: RTCRtpTransceiver;
   private audioSender: RTCRtpSender;
-  private cameraSender: RTCRtpSender;
-  private screenSender: RTCRtpSender;
-
+  private videoSender: RTCRtpSender;
   private remoteAudio: MediaStreamTrack | null = null;
-  private remoteCamera: MediaStreamTrack | null = null;
-  private remoteScreen: MediaStreamTrack | null = null;
+  private remoteVideo: MediaStreamTrack | null = null;
+  /** True while we are sending a screen track (local). */
+  private sendingScreen = false;
 
   constructor(
     private handlers: PeerHandlers,
@@ -44,12 +37,8 @@ export class CallPeer {
     this.polite = polite;
     this.pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
 
-    this.audioTransceiver = this.pc.addTransceiver("audio", { direction: "sendrecv" });
-    this.cameraTransceiver = this.pc.addTransceiver("video", { direction: "sendrecv" });
-    this.screenTransceiver = this.pc.addTransceiver("video", { direction: "sendrecv" });
-    this.audioSender = this.audioTransceiver.sender;
-    this.cameraSender = this.cameraTransceiver.sender;
-    this.screenSender = this.screenTransceiver.sender;
+    this.audioSender = this.pc.addTransceiver("audio", { direction: "sendrecv" }).sender;
+    this.videoSender = this.pc.addTransceiver("video", { direction: "sendrecv" }).sender;
 
     this.pc.onicecandidate = (e) => {
       if (e.candidate) {
@@ -59,25 +48,16 @@ export class CallPeer {
 
     this.pc.ontrack = (e) => {
       const track = e.track;
-      if (e.transceiver === this.audioTransceiver || track.kind === "audio") {
-        if (track.kind === "audio") this.remoteAudio = track;
-      } else if (e.transceiver === this.screenTransceiver) {
-        this.remoteScreen = track;
-      } else if (e.transceiver === this.cameraTransceiver) {
-        this.remoteCamera = track;
+      if (track.kind === "audio") {
+        this.remoteAudio = track;
       } else if (track.kind === "video") {
-        // Fallback if transceiver identity was lost across renegotiation.
-        const idx = this.pc.getTransceivers().indexOf(e.transceiver);
-        if (idx === 2) this.remoteScreen = track;
-        else this.remoteCamera = track;
+        this.remoteVideo = track;
       }
-
       this.emitRemote();
       track.onunmute = () => this.emitRemote();
       track.onmute = () => this.emitRemote();
       track.onended = () => {
-        if (this.remoteCamera === track) this.remoteCamera = null;
-        if (this.remoteScreen === track) this.remoteScreen = null;
+        if (this.remoteVideo === track) this.remoteVideo = null;
         if (this.remoteAudio === track) this.remoteAudio = null;
         this.emitRemote();
       };
@@ -88,26 +68,11 @@ export class CallPeer {
     };
   }
 
-  private enqueueSignal(op: () => Promise<void>) {
-    this.signalingChain = this.signalingChain.then(op).catch(() => { /* glare / closed */ });
-    return this.signalingChain;
-  }
-
   private emitRemote() {
-    const tracks = [
-      this.remoteAudio,
-      this.remoteCamera,
-      this.remoteScreen,
-    ].filter((t): t is MediaStreamTrack => !!t && t.readyState !== "ended");
-    this.handlers.onRemoteStream(new MediaStream(tracks));
-    // Live + unmuted screen track = peer is actively sharing frames.
-    // media-state also drives peerScreenSharing for UI before the first frame arrives.
-    const screenLive = !!(
-      this.remoteScreen
-      && this.remoteScreen.readyState === "live"
-      && !this.remoteScreen.muted
+    const tracks = [this.remoteAudio, this.remoteVideo].filter(
+      (t): t is MediaStreamTrack => !!t && t.readyState !== "ended",
     );
-    this.handlers.onHasRemoteScreen?.(screenLive);
+    this.handlers.onRemoteStream(new MediaStream(tracks));
   }
 
   async setLocalStream(stream: MediaStream, withVideo: boolean) {
@@ -119,24 +84,19 @@ export class CallPeer {
     if (audio) await this.audioSender.replaceTrack(audio);
     if (withVideo && video) {
       video.enabled = true;
-      await this.cameraSender.replaceTrack(video);
+      await this.videoSender.replaceTrack(video);
     } else if (video) {
       video.enabled = false;
-      await this.cameraSender.replaceTrack(video);
+      await this.videoSender.replaceTrack(video);
     } else {
-      await this.cameraSender.replaceTrack(null);
+      await this.videoSender.replaceTrack(null);
     }
   }
 
   async createOffer() {
-    if (this.closed) return;
     this.makingOffer = true;
     try {
       const offer = await this.pc.createOffer();
-      if (this.pc.signalingState !== "stable" && this.pc.signalingState !== "have-local-offer") {
-        this.needsRenegotiate = true;
-        return;
-      }
       await this.pc.setLocalDescription(offer);
       if (this.pc.localDescription) {
         this.handlers.onSignal({ kind: "offer", sdp: this.pc.localDescription });
@@ -146,80 +106,38 @@ export class CallPeer {
     }
   }
 
-  /**
-   * Renegotiate after screen track attach/detach so the answerer can send
-   * on the screen m-line (replaceTrack alone is not enough in both roles).
-   */
-  async renegotiate() {
-    return this.enqueueSignal(async () => {
-      if (this.closed) return;
-      if (this.pc.signalingState !== "stable") {
-        this.needsRenegotiate = true;
-        return;
-      }
-      await this.createOffer();
-    });
-  }
-
-  private async flushRenegotiate() {
-    if (!this.needsRenegotiate || this.closed) return;
-    if (this.pc.signalingState !== "stable") return;
-    this.needsRenegotiate = false;
-    await this.createOffer();
-  }
-
   async handleSignal(signal: IceSignal) {
-    return this.enqueueSignal(async () => {
-      if (this.closed) return;
-
-      if (signal.kind === "ice") {
-        try {
-          await this.pc.addIceCandidate(signal.candidate);
-        } catch {
-          /* ignore */
-        }
-        return;
+    if (signal.kind === "ice") {
+      try {
+        await this.pc.addIceCandidate(signal.candidate);
+      } catch {
+        /* ignore */
       }
+      return;
+    }
 
-      const description = signal.sdp;
-      const offerCollision =
-        signal.kind === "offer"
-        && (this.makingOffer || this.pc.signalingState !== "stable");
+    const description = signal.sdp;
+    const offerCollision =
+      signal.kind === "offer"
+      && (this.makingOffer || this.pc.signalingState !== "stable");
 
-      this.ignoreOffer = !this.polite && offerCollision;
-      if (this.ignoreOffer) return;
+    if (offerCollision) {
+      if (!this.polite) return;
+      await Promise.all([
+        this.pc.setLocalDescription({ type: "rollback" }),
+        this.pc.setRemoteDescription(description),
+      ]);
+    } else {
+      await this.pc.setRemoteDescription(description);
+    }
 
-      if (offerCollision) {
-        await Promise.all([
-          this.pc.setLocalDescription({ type: "rollback" }),
-          this.pc.setRemoteDescription(description),
-        ]);
-      } else {
-        await this.pc.setRemoteDescription(description);
+    if (signal.kind === "offer") {
+      const answer = await this.pc.createAnswer();
+      await this.pc.setLocalDescription(answer);
+      if (this.pc.localDescription) {
+        this.handlers.onSignal({ kind: "answer", sdp: this.pc.localDescription });
       }
-
-      if (signal.kind === "offer") {
-        const answer = await this.pc.createAnswer();
-        await this.pc.setLocalDescription(answer);
-        if (this.pc.localDescription) {
-          this.handlers.onSignal({ kind: "answer", sdp: this.pc.localDescription });
-        }
-      }
-
-      // Refresh remote track refs from receivers after SDP apply (replaceTrack / renegotiation).
-      this.syncRemoteFromReceivers();
-      await this.flushRenegotiate();
-    });
-  }
-
-  private syncRemoteFromReceivers() {
-    const audioTrack = this.audioTransceiver.receiver.track;
-    const cameraTrack = this.cameraTransceiver.receiver.track;
-    const screenTrack = this.screenTransceiver.receiver.track;
-    if (audioTrack && audioTrack.readyState !== "ended") this.remoteAudio = audioTrack;
-    if (cameraTrack && cameraTrack.readyState !== "ended") this.remoteCamera = cameraTrack;
-    if (screenTrack && screenTrack.readyState !== "ended") this.remoteScreen = screenTrack;
-    this.emitRemote();
+    }
   }
 
   setMicEnabled(on: boolean) {
@@ -228,9 +146,12 @@ export class CallPeer {
   }
 
   setCamEnabled(on: boolean) {
+    // While screen sharing, camera enable state is held on the camera track only.
     if (this.cameraTrack) this.cameraTrack.enabled = on;
-    this.localStream?.getVideoTracks().forEach(t => { t.enabled = on; });
-    if (this.cameraSender.track) this.cameraSender.track.enabled = on;
+    if (!this.sendingScreen) {
+      this.localStream?.getVideoTracks().forEach(t => { t.enabled = on; });
+      if (this.videoSender.track) this.videoSender.track.enabled = on;
+    }
   }
 
   async replaceAudioInput(deviceId: string) {
@@ -259,10 +180,12 @@ export class CallPeer {
     const newTrack = next.getVideoTracks()[0];
     const old = this.cameraTrack || this.localStream.getVideoTracks()[0];
     if (newTrack) {
-      await this.cameraSender.replaceTrack(newTrack);
       this.cameraTrack = newTrack;
+      if (!this.sendingScreen) {
+        await this.videoSender.replaceTrack(newTrack);
+      }
     }
-    if (old) {
+    if (old && old !== this.screenTrack) {
       this.localStream.removeTrack(old);
       old.stop();
     }
@@ -270,41 +193,49 @@ export class CallPeer {
     next.getAudioTracks().forEach(t => t.stop());
   }
 
+  /**
+   * Swap outbound video: camera → screen via replaceTrack (no reconnect).
+   * Works for both caller and callee because the video m-line is already negotiated.
+   */
   async startScreenShare(): Promise<MediaStreamTrack> {
+    if (this.pc.connectionState === "closed" || this.pc.signalingState === "closed") {
+      throw new Error("Call is not connected");
+    }
     const display = await navigator.mediaDevices.getDisplayMedia({
       video: { frameRate: { ideal: 15 }, width: { ideal: 1280 }, height: { ideal: 720 } },
       audio: false,
     });
     const track = display.getVideoTracks()[0];
     if (!track) throw new Error("No screen track");
+
     if (this.screenTrack) {
       try { this.screenTrack.stop(); } catch { /* */ }
     }
     this.screenTrack = track;
-    await this.screenSender.replaceTrack(track);
-    // Ensure the screen m-line is sendrecv for both roles (critical for callee → caller).
-    this.needsRenegotiate = true;
-    await this.renegotiate();
+    this.sendingScreen = true;
+    await this.videoSender.replaceTrack(track);
+
     track.onended = () => {
       void this.stopScreenShare();
     };
     return track;
   }
 
+  /** Restore outbound video to the camera track (or null). */
   async stopScreenShare(): Promise<void> {
     if (this.screenTrack) {
       this.screenTrack.onended = null;
       try { this.screenTrack.stop(); } catch { /* */ }
       this.screenTrack = null;
     }
-    await this.screenSender.replaceTrack(null);
-    this.needsRenegotiate = true;
-    await this.renegotiate();
+    this.sendingScreen = false;
+    const cam = this.cameraTrack && this.cameraTrack.readyState === "live" ? this.cameraTrack : null;
+    await this.videoSender.replaceTrack(cam);
     this.handlers.onScreenShareStopped?.();
   }
 
   isScreenSharing() {
-    return !!this.screenTrack && this.screenTrack.readyState === "live";
+    return this.sendingScreen && !!this.screenTrack && this.screenTrack.readyState === "live";
   }
 
   getLocalCameraStream(): MediaStream | null {
@@ -321,51 +252,23 @@ export class CallPeer {
     return new MediaStream([this.screenTrack, ...audio]);
   }
 
-  buildRemoteViewStream(prefer: "auto" | "camera" | "screen"): MediaStream | null {
-    this.syncRemoteFromReceiversQuiet();
+  buildRemoteViewStream(_prefer: "auto" | "camera" | "screen"): MediaStream | null {
     const audio = this.remoteAudio ? [this.remoteAudio] : [];
-    const screenOk = !!(
-      this.remoteScreen
-      && this.remoteScreen.readyState === "live"
-      && !this.remoteScreen.muted
-    );
-    const cameraOk = !!(this.remoteCamera && this.remoteCamera.readyState === "live");
-
-    if (prefer === "screen" && this.remoteScreen) {
-      return new MediaStream([...audio, this.remoteScreen]);
-    }
-    if (prefer === "camera" && this.remoteCamera) {
-      return new MediaStream([...audio, this.remoteCamera]);
-    }
-    if (screenOk && this.remoteScreen) {
-      return new MediaStream([...audio, this.remoteScreen]);
-    }
-    if (cameraOk && this.remoteCamera) {
-      return new MediaStream([...audio, this.remoteCamera]);
+    if (this.remoteVideo && this.remoteVideo.readyState === "live") {
+      return new MediaStream([...audio, this.remoteVideo]);
     }
     if (audio.length) return new MediaStream(audio);
     return null;
   }
 
-  private syncRemoteFromReceiversQuiet() {
-    try {
-      const audioTrack = this.audioTransceiver.receiver.track;
-      const cameraTrack = this.cameraTransceiver.receiver.track;
-      const screenTrack = this.screenTransceiver.receiver.track;
-      if (audioTrack && audioTrack.readyState !== "ended") this.remoteAudio = audioTrack;
-      if (cameraTrack && cameraTrack.readyState !== "ended") this.remoteCamera = cameraTrack;
-      if (screenTrack && screenTrack.readyState !== "ended") this.remoteScreen = screenTrack;
-    } catch { /* pc closed */ }
-  }
-
   close() {
-    this.closed = true;
     try {
       if (this.screenTrack) {
         this.screenTrack.onended = null;
         this.screenTrack.stop();
         this.screenTrack = null;
       }
+      this.sendingScreen = false;
       this.localStream?.getTracks().forEach(t => t.stop());
       this.localStream = null;
       this.cameraTrack = null;

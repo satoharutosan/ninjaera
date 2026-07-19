@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import CloseIcon from "@mui/icons-material/Close";
 import SendIcon from "@mui/icons-material/Send";
 import { api, type ApiMessage } from "@/app/api";
 import { onRealtimeEvent } from "@/app/realtime";
@@ -14,25 +15,34 @@ type CallChatLine = {
 };
 
 /**
- * Lightweight in-call chat bound to the existing DM conversation.
- * Starts empty (no history fetch); only messages sent/received during this call session.
+ * In-call chat bound to the existing DM conversation.
+ * Starts empty (no history fetch); only messages from this call session.
  */
 export function CallChatPanel({
   conversationId,
   active,
+  open,
+  onClose,
+  onUnread,
 }: {
   conversationId: number;
   active: boolean;
+  open: boolean;
+  onClose: () => void;
+  /** Fired when a non-self message arrives while the sidebar is closed. */
+  onUnread?: (delta: number) => void;
 }) {
   const C = useC();
   const [lines, setLines] = useState<CallChatLine[]>([]);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const seenIds = useRef(new Set<number>());
   const sessionStartedRef = useRef(false);
+  const openRef = useRef(open);
+  openRef.current = open;
 
-  // Reset when a call session becomes active — never load prior DM history.
   useEffect(() => {
     if (!active || !conversationId) return;
     setLines([]);
@@ -54,29 +64,58 @@ export function CallChatPanel({
         if (Number(cid) !== Number(conversationId)) return;
         if (!message?.id || !message.msg) return;
         if (message.mediaType === "call_event") return;
-        // Text-only panel: skip media-only rows without caption
         if (message.mediaType && message.mediaType !== "gif" && !message.msg.trim()) return;
-        if (seenIds.current.has(Number(message.id))) return;
-        seenIds.current.add(Number(message.id));
+        const id = Number(message.id);
+        if (seenIds.current.has(id)) return;
+        seenIds.current.add(id);
+        const self = !!message.self;
         setLines(prev => [
           ...prev,
           {
-            id: Number(message.id),
+            id,
             userId: Number(message.userId),
-            user: message.self ? "You" : (message.user || "User"),
+            user: self ? "You" : (message.user || "User"),
             msg: message.msg,
-            self: !!message.self,
+            self,
             time: message.time || "",
           },
         ]);
+        if (!self && !openRef.current) {
+          onUnread?.(1);
+        }
       },
     );
     return unsub;
-  }, [active, conversationId]);
+  }, [active, conversationId, onUnread]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [lines.length]);
+    if (open) bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [lines.length, open]);
+
+  // Outside click closes sidebar (no backdrop dimming).
+  useEffect(() => {
+    if (!open) return;
+    const onPointer = (e: MouseEvent | TouchEvent) => {
+      const el = panelRef.current;
+      const target = e.target as Node | null;
+      if (!el || !target) return;
+      if (el.contains(target)) return;
+      // Ignore clicks on the chat toggle button (marked via data attribute).
+      const t = target instanceof Element ? target : target.parentElement;
+      if (t?.closest?.("[data-call-chat-toggle]")) return;
+      onClose();
+    };
+    // Defer so the opening click does not immediately close.
+    const timer = window.setTimeout(() => {
+      document.addEventListener("mousedown", onPointer);
+      document.addEventListener("touchstart", onPointer);
+    }, 0);
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener("mousedown", onPointer);
+      document.removeEventListener("touchstart", onPointer);
+    };
+  }, [open, onClose]);
 
   const send = async () => {
     const trimmed = text.trim();
@@ -109,24 +148,48 @@ export function CallChatPanel({
   if (!active || !conversationId) return null;
 
   return (
-    <div
-      className="flex flex-col min-h-0 border-t"
-      style={{ borderColor: "#49454F", background: "#211F26", maxHeight: "40vh" }}
-      role="region"
+    <aside
+      ref={panelRef}
+      className="absolute top-0 right-0 bottom-0 z-[90] flex flex-col shadow-2xl border-l"
+      style={{
+        width: "min(360px, 92vw)",
+        background: C.surface,
+        borderColor: C.outlineVar,
+        transform: open ? "translateX(0)" : "translateX(100%)",
+        transition: "transform 220ms cubic-bezier(0.2, 0, 0, 1)",
+        pointerEvents: open ? "auto" : "none",
+      }}
+      role="complementary"
       aria-label="Call chat"
+      aria-hidden={!open}
     >
-      <div className="px-3 py-2 flex items-center justify-between shrink-0">
-        <p className="text-xs font-medium uppercase tracking-wide" style={{ color: "rgba(255,255,255,0.65)", fontFamily: "Roboto" }}>
-          Call Chat
-        </p>
-        <p className="text-[10px]" style={{ color: "rgba(255,255,255,0.4)", fontFamily: "Roboto" }}>
-          Saved to conversation
-        </p>
+      <div
+        className="flex items-center justify-between px-4 py-3 border-b shrink-0"
+        style={{ borderColor: C.outlineVar }}
+      >
+        <div>
+          <p className="text-sm font-medium" style={{ color: C.onSurface, fontFamily: "Roboto" }}>
+            Call Chat
+          </p>
+          <p className="text-[11px]" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
+            Saved to this conversation
+          </p>
+        </div>
+        <button
+          type="button"
+          aria-label="Close chat"
+          onClick={onClose}
+          className="w-9 h-9 rounded-full flex items-center justify-center transition-opacity hover:opacity-80"
+          style={{ color: C.onSurfaceVar }}
+        >
+          <CloseIcon style={{ fontSize: 20 }} />
+        </button>
       </div>
-      <div className="flex-1 min-h-[6rem] overflow-y-auto px-3 pb-2 space-y-2">
+
+      <div className="flex-1 min-h-0 overflow-y-auto px-3 py-3 space-y-2">
         {lines.length === 0 && (
-          <p className="text-xs text-center py-4" style={{ color: "rgba(255,255,255,0.4)", fontFamily: "Roboto" }}>
-            Messages sent here appear in this DM after the call.
+          <p className="text-xs text-center py-8 px-4" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
+            No messages yet. Chat during the call appears here and in your DM history afterward.
           </p>
         )}
         {lines.map(line => (
@@ -134,14 +197,14 @@ export function CallChatPanel({
             key={line.id}
             className={`flex flex-col ${line.self ? "items-end" : "items-start"}`}
           >
-            <span className="text-[10px] mb-0.5" style={{ color: "rgba(255,255,255,0.45)", fontFamily: "Roboto" }}>
+            <span className="text-[10px] mb-0.5" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
               {line.user}{line.time ? ` · ${line.time}` : ""}
             </span>
             <div
-              className="max-w-[85%] px-3 py-1.5 rounded-2xl text-sm break-words"
+              className="max-w-[90%] px-3 py-1.5 rounded-2xl text-sm break-words"
               style={{
-                background: line.self ? C.primary : "rgba(255,255,255,0.08)",
-                color: line.self ? "#fff" : "rgba(255,255,255,0.9)",
+                background: line.self ? C.primary : C.surfaceVar,
+                color: line.self ? C.onPrimary : C.onSurface,
                 fontFamily: "Roboto",
               }}
             >
@@ -151,23 +214,24 @@ export function CallChatPanel({
         ))}
         <div ref={bottomRef} />
       </div>
+
       <form
-        className="flex items-center gap-2 px-3 py-2 border-t shrink-0"
-        style={{ borderColor: "#49454F" }}
+        className="flex items-center gap-2 px-3 py-3 border-t shrink-0"
+        style={{ borderColor: C.outlineVar }}
         onSubmit={e => { e.preventDefault(); void send(); }}
       >
         <input
           type="text"
           value={text}
           onChange={e => setText(e.target.value)}
-          placeholder="Type a message…"
+          placeholder="Message…"
           aria-label="Call chat message"
           maxLength={4000}
           className="flex-1 min-w-0 rounded-xl px-3 py-2 text-sm border focus:outline-none focus-visible:ring-2"
           style={{
-            background: "#1C1B1F",
-            color: "#E6E1E5",
-            borderColor: "#938F99",
+            background: C.bg,
+            color: C.onSurface,
+            borderColor: C.outlineVar,
             fontFamily: "Roboto",
           }}
         />
@@ -181,6 +245,6 @@ export function CallChatPanel({
           <SendIcon style={{ fontSize: 18 }} />
         </button>
       </form>
-    </div>
+    </aside>
   );
 }

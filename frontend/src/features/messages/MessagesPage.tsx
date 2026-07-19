@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, lazy, Suspense } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo, lazy, Suspense } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import SearchIcon from "@mui/icons-material/Search";
 import SendIcon from "@mui/icons-material/Send";
@@ -64,6 +64,7 @@ import { useScrollReveal } from "@/features/messages/hooks/useScrollReveal";
 import { ConversationDetailsBody } from "@/features/messages/components/ConversationDetailsBody";
 import { ImageLightbox } from "@/features/messages/components/ImageLightbox";
 import { MessageRow } from "@/features/messages/components/MessageRow";
+import { TypingIndicatorStrip } from "@/features/messages/components/TypingIndicatorStrip";
 
 const EmojiGifPicker = lazy(() =>
   import("@/features/messages/EmojiGifPicker").then((m) => ({ default: m.EmojiGifPicker })),
@@ -827,12 +828,15 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
     }, 2000);
   };
 
-  const typingLabel = () => {
+  const typingLabel = useMemo(() => {
     if (!typingUsers.length) return null;
     if (sel.type === "dm") return `${typingUsers[0].username} is typing...`;
     if (typingUsers.length === 1) return `${typingUsers[0].username} is typing...`;
+    if (typingUsers.length === 2) {
+      return `${typingUsers[0].username} and ${typingUsers[1].username} are typing...`;
+    }
     return "Several users are typing...";
-  };
+  }, [typingUsers, sel.type]);
 
   const nowTime = () => new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
   const closeAll = () => { setEmojiOpen(false); setHeaderMenu(false); setCtxMenu(null); };
@@ -1835,9 +1839,6 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
                         <CircularProgress size={16} thickness={4} style={{ color: C.primary }} />
                       </div>
                     )}
-                    {typingLabel() && (
-                      <p className="text-xs px-2 py-1 italic" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>{typingLabel()}</p>
-                    )}
                   </div>
                 ),
               }}
@@ -1923,8 +1924,9 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
             </div>
           )}
         </div>
-        {/* Input bar */}
+        {/* Input bar — typing strip is anchored here (not in the message list). */}
         <div className="border-t shrink-0" style={{ background:C.surface, borderColor:C.outlineVar }}>
+          <TypingIndicatorStrip label={typingLabel} color={C.onSurfaceVar} />
           {replyingTo && (
             <div className="flex items-center gap-3 px-5 py-2 border-b" style={{ borderColor:C.outlineVar, background:C.surfaceVar }}>
               <ReplyIcon style={{ fontSize:16, color:C.primary }} />

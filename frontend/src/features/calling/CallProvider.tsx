@@ -41,8 +41,11 @@ type CallContextValue = {
   remoteView: VideoViewMode;
   connectionState: string;
   localStream: MediaStream | null;
+  /** Remote video-only stream for the <video> tile (never includes audio). */
   remoteStream: MediaStream | null;
-  /** Increments when peer screen-share signaling arrives — forces video rebind. */
+  /** Remote audio-only stream for a dedicated <audio> element. */
+  remoteAudioStream: MediaStream | null;
+  /** Increments when peer screen-share signaling arrives. */
   remoteBindEpoch: number;
   audioInputs: MediaDeviceInfo[];
   videoInputs: MediaDeviceInfo[];
@@ -108,6 +111,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
   const [connectionState, setConnectionState] = useState("new");
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+  const [remoteAudioStream, setRemoteAudioStream] = useState<MediaStream | null>(null);
   const [audioInputs, setAudioInputs] = useState<MediaDeviceInfo[]>([]);
   const [videoInputs, setVideoInputs] = useState<MediaDeviceInfo[]>([]);
   const [audioOutputs, setAudioOutputs] = useState<MediaDeviceInfo[]>([]);
@@ -157,8 +161,8 @@ export function CallProvider({ children }: { children: ReactNode }) {
   const refreshRemotePreview = useCallback(() => {
     const peer = peerRef.current;
     if (!peer) return;
-    // Fresh MediaStream wrapper each time so React + <video> see a new srcObject.
     setRemoteStream(peer.cloneRemoteViewStream());
+    setRemoteAudioStream(peer.cloneRemoteAudioStream());
   }, []);
 
   const stopRingTimer = useCallback(() => {
@@ -180,6 +184,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
     peerRef.current = null;
     setLocalStream(null);
     setRemoteStream(null);
+    setRemoteAudioStream(null);
     if (tickRef.current) {
       clearInterval(tickRef.current);
       tickRef.current = null;
@@ -600,14 +605,10 @@ export function CallProvider({ children }: { children: ReactNode }) {
               remoteTrackId: peerRef.current?.getRemoteVideoTrackId(),
             });
           }
-          // Renegotiation may still be in flight — rebind several times.
+          // replaceTrack keeps the same receiver track id — refresh wrappers only.
+          // Do NOT force-clear <video>.srcObject (autoplay would fail on A+V streams).
           refreshRemotePreview();
-          window.setTimeout(() => refreshRemotePreview(), 200);
-          window.setTimeout(() => {
-            refreshRemotePreview();
-            setRemoteBindEpoch(e => e + 1);
-          }, 600);
-          window.setTimeout(() => refreshRemotePreview(), 1200);
+          window.setTimeout(() => refreshRemotePreview(), 400);
         }
       }),
       onRealtimeEvent<{ error: string; code?: string; callId?: string }>("call:error", ({ error, code }) => {
@@ -640,7 +641,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
   const value = useMemo<CallContextValue>(() => ({
     phase, invite, callId, callType, elapsedSec, ringingSec, micOn, camOn,
     screenSharing, peerScreenSharing, peerMicOn, peerCamOn, localView, remoteView,
-    connectionState, localStream, remoteStream, remoteBindEpoch,
+    connectionState, localStream, remoteStream, remoteAudioStream, remoteBindEpoch,
     audioInputs, videoInputs, audioOutputs, selectedOutputId,
     startCall: (opts) => { void startCall(opts); },
     acceptIncoming: () => { void acceptIncoming(); },
@@ -652,7 +653,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
   }), [
     phase, invite, callId, callType, elapsedSec, ringingSec, micOn, camOn,
     screenSharing, peerScreenSharing, peerMicOn, peerCamOn, localView, remoteView,
-    connectionState, localStream, remoteStream, remoteBindEpoch,
+    connectionState, localStream, remoteStream, remoteAudioStream, remoteBindEpoch,
     audioInputs, videoInputs, audioOutputs, selectedOutputId,
     startCall, acceptIncoming, declineIncoming, ignoreIncoming, hangup,
     toggleMic, toggleCam, switchMic, switchCam, setAudioOutput,

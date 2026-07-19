@@ -89,12 +89,13 @@ export class CallPeer {
 
     this.pc.ontrack = (e) => {
       const track = e.track;
-      webrtcLog("Remote track received", {
+      // Explicit pipeline probe — if this never logs video after remote share, RTP is broken.
+      console.log("[REMOTE TRACK]", {
         kind: track.kind,
-        id: track.id.slice(0, 12),
-        mid: e.transceiver?.mid,
-        muted: track.muted,
+        id: track.id,
         readyState: track.readyState,
+        muted: track.muted,
+        mid: e.transceiver?.mid,
         streams: e.streams.length,
       });
 
@@ -152,10 +153,10 @@ export class CallPeer {
 
   private emitRemote() {
     this.syncReceivers();
-    const tracks = [this.remoteAudio, this.remoteVideo].filter(
-      (t): t is MediaStreamTrack => !!t && t.readyState !== "ended",
-    );
-    this.handlers.onRemoteStream(new MediaStream(tracks));
+    // Handlers refresh from buildRemoteVideoStream/buildRemoteAudioStream.
+    // Pass a video-only stream so callers never bind audio into <video>.
+    const video = this.buildRemoteVideoStream();
+    this.handlers.onRemoteStream(video || new MediaStream());
   }
 
   private assertCanMutateMedia() {
@@ -502,16 +503,21 @@ export class CallPeer {
     }
 
     const afterId = this.findVideoSender().track?.id ?? null;
-    webrtcLog("After replaceTrack:", afterId);
+    webrtcLog("Replacing camera track with screen track", { beforeId, afterId, screenId: track.id });
     if (afterId !== track.id) {
-      webrtcLog("ERROR: sender.track was not updated to screen track");
+      webrtcLog("ERROR: sender.track was not updated to screen track", {
+        sender: afterId,
+        connectionState: this.pc.connectionState,
+        trackId: track.id,
+      });
       this.sendingScreen = false;
       this.screenTrack = null;
       try { track.stop(); } catch { /* */ }
       throw new Error("Screen track was not attached to the video sender.");
     }
+    webrtcLog("SUCCESS — video sender now carries screen track");
 
-    // Critical: force SDP renegotiation so remote actually receives screen RTP.
+    // Renegotiate so both sides refresh RTP after replaceTrack.
     await this.renegotiate("screen-share-start");
 
     track.onended = () => {
@@ -574,34 +580,52 @@ export class CallPeer {
 
   getLocalCameraStream(): MediaStream | null {
     if (!this.cameraTrack || this.cameraTrack.readyState !== "live") {
-      return this.localStream;
+      const v = this.localStream?.getVideoTracks().find(t => t.readyState === "live");
+      return v ? new MediaStream([v]) : null;
     }
-    const audio = this.localStream?.getAudioTracks() || [];
-    return new MediaStream([this.cameraTrack, ...audio]);
+    return new MediaStream([this.cameraTrack]);
   }
 
   getLocalScreenStream(): MediaStream | null {
     if (!this.sendingScreen || !this.screenTrack || this.screenTrack.readyState === "ended") {
       return null;
     }
-    const audio = this.localStream?.getAudioTracks() || [];
-    return new MediaStream([this.screenTrack, ...audio]);
+    return new MediaStream([this.screenTrack]);
   }
 
-  /** Remote camera/screen share the same receiver track after replaceTrack. */
-  buildRemoteViewStream(_prefer?: "auto" | "camera" | "screen"): MediaStream | null {
+  /**
+   * Video-only remote stream for the <video> element.
+   * Must NOT include audio — bundling audio into an unmuted <video> causes
+   * autoplay to fail after srcObject rebind (screen share looks "broken").
+   */
+  buildRemoteVideoStream(): MediaStream | null {
     this.syncReceivers();
-    const audio = this.remoteAudio && this.remoteAudio.readyState !== "ended" ? [this.remoteAudio] : [];
     if (this.remoteVideo && this.remoteVideo.readyState !== "ended") {
-      return new MediaStream([...audio, this.remoteVideo]);
+      return new MediaStream([this.remoteVideo]);
     }
-    if (audio.length) return new MediaStream(audio);
     return null;
   }
 
-  /** Force a fresh MediaStream wrapper (for video element rebind). */
+  /** Audio-only remote stream for a dedicated <audio> element. */
+  buildRemoteAudioStream(): MediaStream | null {
+    this.syncReceivers();
+    if (this.remoteAudio && this.remoteAudio.readyState !== "ended") {
+      return new MediaStream([this.remoteAudio]);
+    }
+    return null;
+  }
+
+  /** @deprecated use buildRemoteVideoStream — kept for call sites during transition */
+  buildRemoteViewStream(_prefer?: "auto" | "camera" | "screen"): MediaStream | null {
+    return this.buildRemoteVideoStream();
+  }
+
   cloneRemoteViewStream(): MediaStream | null {
-    return this.buildRemoteViewStream("auto");
+    return this.buildRemoteVideoStream();
+  }
+
+  cloneRemoteAudioStream(): MediaStream | null {
+    return this.buildRemoteAudioStream();
   }
 
   getRemoteVideoTrackId(): string | null {

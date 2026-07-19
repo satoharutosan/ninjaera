@@ -23,20 +23,50 @@ const now = () => new Date().toISOString();
 
 const upload = createMemoryUploader({ limits: { fileSize: 5 * 1024 * 1024 } });
 
+type UserSettingsRow = {
+  email_notif: number;
+  push_notif: number;
+  two_fa: number;
+  public_profile: number;
+};
+
+/** Older accounts (or partial signups) may lack a settings row — create defaults. */
+async function ensureUserSettings(userId: number): Promise<UserSettingsRow> {
+  let settings = await qGet<UserSettingsRow>(
+    "SELECT email_notif, push_notif, two_fa, public_profile FROM user_settings WHERE user_id = ?",
+    userId,
+  );
+  if (!settings) {
+    await qRun(
+      `INSERT INTO user_settings (user_id, email_notif, push_notif, two_fa, public_profile)
+       VALUES (?, 1, 0, 0, 1)`,
+      userId,
+    );
+    settings = await qGet<UserSettingsRow>(
+      "SELECT email_notif, push_notif, two_fa, public_profile FROM user_settings WHERE user_id = ?",
+      userId,
+    );
+  }
+  return settings ?? {
+    email_notif: 1,
+    push_notif: 0,
+    two_fa: 0,
+    public_profile: 1,
+  };
+}
+
 router.get("/me", requireAuth, async (req, res) => {
   const user = req.user!;
-  const settings = await qGet<{
-    email_notif: number; push_notif: number; two_fa: number; public_profile: number;
-  }>("SELECT * FROM user_settings WHERE user_id = ?", user.id);
+  const settings = await ensureUserSettings(user.id);
   const stats = await qGet("SELECT * FROM game_stats WHERE user_id = ?", user.id);
 
   res.json({
     user: await publicUser(user, user.id),
     settings: {
-      emailNotif: settings!.email_notif === 1,
-      pushNotif: settings!.push_notif === 1,
-      twoFA: settings!.two_fa === 1,
-      publicProfile: settings!.public_profile === 1,
+      emailNotif: settings.email_notif === 1,
+      pushNotif: settings.push_notif === 1,
+      twoFA: settings.two_fa === 1,
+      publicProfile: settings.public_profile === 1,
     },
     stats,
   });
@@ -279,6 +309,7 @@ router.patch("/me/settings", requireAuth, async (req, res) => {
     return;
   }
 
+  await ensureUserSettings(req.user!.id);
   values.push(req.user!.id);
   await qRun(`UPDATE user_settings SET ${updates.join(", ")} WHERE user_id = ?`, ...values);
   res.json({ ok: true });

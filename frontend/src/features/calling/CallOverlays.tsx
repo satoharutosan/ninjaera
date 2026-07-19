@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import CallIcon from "@mui/icons-material/Call";
 import CallEndIcon from "@mui/icons-material/CallEnd";
 import VideocamIcon from "@mui/icons-material/Videocam";
@@ -62,59 +62,65 @@ function DeviceSelect({
   );
 }
 
+/**
+ * Binds a video-only MediaStream to <video>.
+ * Never clear srcObject when the underlying track id is unchanged — replaceTrack
+ * updates frames in place. Clearing + play() on streams that include audio fails
+ * autoplay and leaves a black remote tile during screen share.
+ */
 function VideoTile({
   stream,
   muted,
   label,
-  sinkId,
-  /** Changes when screen share toggles or remote track identity changes. */
-  bindKey,
+  videoRef: videoRefProp,
 }: {
   stream: MediaStream | null;
   muted?: boolean;
   label: string;
-  sinkId?: string;
-  bindKey?: string | number;
+  videoRef?: RefObject<HTMLVideoElement | null>;
 }) {
-  const ref = useRef<HTMLVideoElement>(null);
+  const localRef = useRef<HTMLVideoElement>(null);
+  const ref = videoRefProp ?? localRef;
   const videoTrack = stream?.getVideoTracks()[0] ?? null;
   const hasLiveVideo = !!videoTrack && videoTrack.readyState === "live";
   const trackId = videoTrack?.id ?? "none";
 
-  // Always keep a <video> mounted for remote so we can rebind without unmount races.
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
 
-    // Force clear → attach so browsers paint new RTP after replaceTrack/renegotiate.
-    el.srcObject = null;
-    if (stream) {
+    if (!stream || !videoTrack) {
+      if (el.srcObject) el.srcObject = null;
+      return;
+    }
+
+    const attached = el.srcObject instanceof MediaStream ? el.srcObject : null;
+    const attachedId = attached?.getVideoTracks()[0]?.id;
+    // Same RTP receiver track after screen replaceTrack — keep binding.
+    if (attachedId === videoTrack.id && el.srcObject) {
+      void el.play().catch(() => {});
+    } else {
       el.srcObject = stream;
       if (import.meta.env.DEV) {
-        console.log("[Video] Remote stream attached", {
+        console.log("[Video] srcObject bound", {
           localPreview: !!muted,
-          bindKey,
           trackId: trackId.slice(0, 12),
-          mutedTrack: videoTrack?.muted,
-          readyState: videoTrack?.readyState,
+          mutedTrack: videoTrack.muted,
+          readyState: videoTrack.readyState,
+          audioTracksInStream: stream.getAudioTracks().length,
         });
       }
-      const play = () => { void el.play().catch(() => {}); };
-      play();
-      // replaceTrack can leave the element paused until unmute
-      videoTrack?.addEventListener("unmute", play);
-      return () => {
-        videoTrack?.removeEventListener("unmute", play);
-      };
+      void el.play().catch((err) => {
+        if (import.meta.env.DEV) console.warn("[Video] play() failed", err);
+      });
     }
-    return undefined;
-  }, [stream, bindKey, trackId, muted, videoTrack]);
 
-  useEffect(() => {
-    const el = ref.current as HTMLVideoElement & { setSinkId?: (id: string) => Promise<void> } | null;
-    if (!el || !sinkId || muted || typeof el.setSinkId !== "function") return;
-    void el.setSinkId(sinkId).catch(() => {});
-  }, [sinkId, muted, stream, bindKey]);
+    const play = () => { void el.play().catch(() => {}); };
+    videoTrack.addEventListener("unmute", play);
+    return () => {
+      videoTrack.removeEventListener("unmute", play);
+    };
+  }, [stream, trackId, muted, videoTrack]);
 
   if (!stream || (!hasLiveVideo && muted)) {
     return (
@@ -129,9 +135,91 @@ function VideoTile({
       ref={ref}
       autoPlay
       playsInline
-      muted={muted}
+      muted={!!muted}
       className={`w-full h-full ${hasLiveVideo ? "object-contain bg-black" : "object-cover"}`}
     />
+  );
+}
+
+/** Dedicated remote audio sink — keeps <video> free of audio tracks for autoplay. */
+function RemoteAudioSink({
+  stream,
+  sinkId,
+}: {
+  stream: MediaStream | null;
+  sinkId?: string;
+}) {
+  const ref = useRef<HTMLAudioElement>(null);
+  const trackId = stream?.getAudioTracks()[0]?.id ?? "none";
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    if (!stream || !stream.getAudioTracks().length) {
+      el.srcObject = null;
+      return;
+    }
+    const attached = el.srcObject instanceof MediaStream ? el.srcObject : null;
+    const attachedId = attached?.getAudioTracks()[0]?.id;
+    if (attachedId === stream.getAudioTracks()[0]?.id && el.srcObject) {
+      void el.play().catch(() => {});
+      return;
+    }
+    el.srcObject = stream;
+    void el.play().catch(() => {});
+  }, [stream, trackId]);
+
+  useEffect(() => {
+    const el = ref.current as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> } | null;
+    if (!el || !sinkId || typeof el.setSinkId !== "function") return;
+    void el.setSinkId(sinkId).catch(() => {});
+  }, [sinkId, stream, trackId]);
+
+  return <audio ref={ref} autoPlay playsInline className="hidden" />;
+}
+
+function ScreenReceiveWatch({
+  peerSharing,
+  videoElRef,
+}: {
+  peerSharing: boolean;
+  videoElRef: RefObject<HTMLVideoElement | null>;
+}) {
+  const [fail, setFail] = useState(false);
+
+  useEffect(() => {
+    if (!peerSharing) {
+      setFail(false);
+      return;
+    }
+    setFail(false);
+    const started = performance.now();
+    const id = window.setInterval(() => {
+      const el = videoElRef.current;
+      const w = el?.videoWidth ?? 0;
+      const h = el?.videoHeight ?? 0;
+      // Placeholder outbound is 16×16 — real camera/screen is larger.
+      if (w > 32 && h > 32) {
+        setFail(false);
+        window.clearInterval(id);
+        return;
+      }
+      if (performance.now() - started > 5000) {
+        setFail(true);
+        window.clearInterval(id);
+      }
+    }, 400);
+    return () => window.clearInterval(id);
+  }, [peerSharing, videoElRef]);
+
+  if (!fail || !peerSharing) return null;
+  return (
+    <div
+      className="absolute inset-x-3 top-3 z-[2] text-center text-xs px-3 py-2 rounded-lg bg-black/70 text-white/90"
+      style={{ fontFamily: "Roboto" }}
+    >
+      Unable to receive shared screen
+    </div>
   );
 }
 
@@ -215,6 +303,7 @@ export function CallOverlays() {
   const [chatOpen, setChatOpen] = useState(false);
   const [chatUnread, setChatUnread] = useState(0);
   const [badgePulse, setBadgePulse] = useState(false);
+  const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
 
   // Reset chat UI when leaving a call
   useEffect(() => {
@@ -358,10 +447,11 @@ export function CallOverlays() {
               call.peerScreenSharing ? "is sharing their screen" : "",
             ].filter(Boolean).join(" · ")}
           >
+            {/* Remote video is always muted; audio plays via RemoteAudioSink. */}
             <VideoTile
               stream={call.remoteStream}
-              sinkId={call.selectedOutputId || undefined}
-              bindKey={`${call.remoteBindEpoch}-${call.peerScreenSharing ? "screen" : "cam"}-${call.remoteStream?.getVideoTracks()[0]?.id ?? "x"}`}
+              muted
+              videoRef={remoteVideoRef}
               label={
                 call.phase === "connecting"
                   ? "Connecting…"
@@ -371,6 +461,14 @@ export function CallOverlays() {
                       ? "Waiting for video…"
                       : "Voice connected"
               }
+            />
+            <ScreenReceiveWatch
+              peerSharing={call.peerScreenSharing}
+              videoElRef={remoteVideoRef}
+            />
+            <RemoteAudioSink
+              stream={call.remoteAudioStream}
+              sinkId={call.selectedOutputId || undefined}
             />
           </FullscreenMediaFrame>
 
@@ -399,7 +497,6 @@ export function CallOverlays() {
             <VideoTile
               stream={call.localStream}
               muted
-              bindKey={`local-${call.screenSharing ? "screen" : "cam"}-${call.localStream?.getVideoTracks()[0]?.id ?? "x"}`}
               label={
                 call.screenSharing
                   ? "You are sharing your screen"

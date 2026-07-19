@@ -6,6 +6,8 @@
 import { qGet, qAll, qRun, qTransaction } from "../db/query.js";
 import { emitToUser, getConversationParticipantIds } from "./realtime.js";
 import { isDeletedUser } from "./deletedUser.js";
+import { BLOCKED_MESSAGE_BY_THEM, usersAreBlocked } from "./conversationAccess.js";
+import { unhideConversationForUser } from "./dmVisibility.js";
 
 const now = () => new Date().toISOString();
 
@@ -29,6 +31,7 @@ export type AcceptDmFailure = {
   success: false;
   status: number;
   error: string;
+  code?: string;
 };
 
 export type AcceptDmResult = AcceptDmSuccess | AcceptDmFailure;
@@ -196,6 +199,15 @@ export async function acceptDmRequest(
     return { success: false, status: 404, error: "DM request not found" };
   }
 
+  if (await usersAreBlocked(existing.requester_id, recipientId)) {
+    return {
+      success: false,
+      status: 403,
+      error: BLOCKED_MESSAGE_BY_THEM,
+      code: "blocked",
+    };
+  }
+
   // Already accepted — return existing DM without duplicating.
   if (existing.status === "accepted") {
     let convId = existing.conversation_id
@@ -208,6 +220,8 @@ export async function acceptDmRequest(
         convId, now(), requestId,
       );
     }
+    await unhideConversationForUser(convId, recipientId);
+    await unhideConversationForUser(convId, existing.requester_id);
     await markDmRequestNotificationsProcessed(requestId, recipientId);
     const dm = await loadPeerForViewer(existing.requester_id, convId);
     emitAcceptEvents({

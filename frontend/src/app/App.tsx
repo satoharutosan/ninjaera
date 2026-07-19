@@ -783,6 +783,28 @@ export default function App() {
         refreshConversations();
         refreshMessageBadge();
       }),
+      onRealtimeEvent<{ conversationId: number }>("conversation:restored", ({ conversationId }) => {
+        joinConversation(conversationId);
+        refreshConversations();
+        refreshMessageBadge();
+      }),
+      onRealtimeEvent<{ conversationId: number }>("conversation:hidden", () => {
+        refreshConversations();
+        refreshMessageBadge();
+      }),
+      onRealtimeEvent<{
+        peerUserId: number;
+        blockedByMe: boolean;
+        isBlocked: boolean;
+      }>("relationship:updated", (data) => {
+        if (!data?.peerUserId) return;
+        setContacts(prev => prev.map(c =>
+          c.type === "dm" && c.otherUserId === data.peerUserId
+            ? { ...c, blockedByMe: data.blockedByMe, isBlocked: data.isBlocked }
+            : c,
+        ));
+        refreshMessageBadge();
+      }),
       onRealtimeEvent<{ conversationId: number }>("conversation:new", ({ conversationId }) => {
         joinConversation(conversationId);
         refreshConversations();
@@ -828,6 +850,7 @@ export default function App() {
         username: string;
         avatarUrl?: string | null;
         bio?: string;
+        mood?: string;
         status?: string;
       }>("profile:updated", (data) => {
         if (!data?.userId || !data.username) return;
@@ -840,6 +863,7 @@ export default function App() {
               username: data.username,
               avatarUrl: data.avatarUrl !== undefined ? data.avatarUrl : prev.avatarUrl,
               bio: data.bio !== undefined ? data.bio : prev.bio,
+              mood: data.mood !== undefined ? data.mood : prev.mood,
               status: data.status !== undefined ? data.status : prev.status,
             };
           });
@@ -857,6 +881,7 @@ export default function App() {
               name: data.username,
               avatarUrl: data.avatarUrl !== undefined ? data.avatarUrl : c.avatarUrl,
               bio: data.bio !== undefined ? data.bio : c.bio,
+              mood: data.mood !== undefined ? data.mood : c.mood,
               ...(data.status !== undefined ? { status: data.status } : {}),
             };
           });

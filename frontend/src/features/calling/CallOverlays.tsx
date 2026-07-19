@@ -233,46 +233,56 @@ function ScreenReceiveWatch({
 function RemoteStreamDebug({
   videoElRef,
   getStats,
+  getVideoDirection,
   remoteStream,
 }: {
   videoElRef: RefObject<HTMLVideoElement | null>;
   getStats: () => Promise<RTCStatsReport> | undefined;
+  getVideoDirection: () => string | null;
   remoteStream: MediaStream | null;
 }) {
   const [info, setInfo] = useState<string>("");
 
   useEffect(() => {
     if (!import.meta.env.DEV) return;
-    let prevFrames = 0;
     const id = window.setInterval(async () => {
       const el = videoElRef.current;
       const w = el?.videoWidth ?? 0;
       const h = el?.videoHeight ?? 0;
       const track = remoteStream?.getVideoTracks()[0];
-      let fps = 0;
-      let framesReceived = 0;
+      let rx = 0;
+      let rxFps = 0;
+      let tx = 0;
+      let txFps = 0;
       try {
         const stats = await getStats();
         stats?.forEach((r) => {
-          if (r.type === "inbound-rtp" && (r as { kind?: string }).kind === "video") {
+          const kind = (r as { kind?: string; mediaType?: string }).kind
+            ?? (r as { mediaType?: string }).mediaType;
+          if (r.type === "inbound-rtp" && kind === "video") {
             const o = r as unknown as { framesReceived?: number; framesPerSecond?: number };
-            framesReceived = o.framesReceived ?? 0;
-            fps = o.framesPerSecond ?? (framesReceived - prevFrames);
-            prevFrames = framesReceived;
+            rx = o.framesReceived ?? 0;
+            rxFps = o.framesPerSecond ?? 0;
+          }
+          if (r.type === "outbound-rtp" && kind === "video") {
+            const o = r as unknown as { framesSent?: number; framesPerSecond?: number };
+            tx = o.framesSent ?? 0;
+            txFps = o.framesPerSecond ?? 0;
           }
         });
       } catch { /* */ }
+      const dir = getVideoDirection() ?? "?";
       setInfo(
-        `video ${w}×${h} · track ${track ? track.readyState : "none"}${track?.muted ? "/muted" : ""} · rx ${framesReceived}f ${Math.round(fps)}fps`,
+        `${dir} · ${w}×${h} ${track ? track.readyState : "none"}${track?.muted ? "/muted" : ""} · tx ${tx}f/${Math.round(txFps)} · rx ${rx}f/${Math.round(rxFps)}`,
       );
     }, 1000);
     return () => window.clearInterval(id);
-  }, [videoElRef, getStats, remoteStream]);
+  }, [videoElRef, getStats, getVideoDirection, remoteStream]);
 
   if (!import.meta.env.DEV || !info) return null;
   return (
     <div
-      className="absolute top-3 right-3 z-[2] text-[10px] px-2 py-1 rounded bg-black/70 text-emerald-300 font-mono pointer-events-none"
+      className="absolute top-3 right-3 z-[2] text-[10px] px-2 py-1 rounded bg-black/80 text-emerald-300 font-mono pointer-events-none max-w-[95%] truncate"
     >
       {info}
     </div>
@@ -525,6 +535,7 @@ export function CallOverlays() {
             <RemoteStreamDebug
               videoElRef={remoteVideoRef}
               getStats={call.getPeerStats}
+              getVideoDirection={call.getVideoDirection}
               remoteStream={call.remoteStream}
             />
             <RemoteAudioSink

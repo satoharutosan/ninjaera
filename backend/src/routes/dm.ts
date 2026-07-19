@@ -6,9 +6,11 @@ import { isUserActive } from "../middleware/admin.js";
 import { logActivitySync } from "../services/activityLog.js";
 import { emitToUser } from "../services/realtime.js";
 import {
+  BLOCKED_MESSAGE_BY_THEM,
   canOpenDmWithoutRequest,
   usersAreBlocked,
 } from "../services/conversationAccess.js";
+import { unhideConversationForUser } from "../services/dmVisibility.js";
 import { acceptDmRequest, rejectDmRequest } from "../services/dmRequests.js";
 
 const router = Router();
@@ -121,12 +123,13 @@ router.post("/dm-requests", requireAuth, rateLimit({
   }
 
   if (await usersAreBlocked(req.user!.id, recipient.id)) {
-    res.status(403).json({ error: "You cannot message this user" });
+    res.status(403).json({ error: BLOCKED_MESSAGE_BY_THEM, code: "blocked" });
     return;
   }
 
   const existingConv = await findDmConversation(req.user!.id, recipient.id);
   if (existingConv) {
+    await unhideConversationForUser(existingConv, req.user!.id);
     res.status(400).json({ error: "You already have a conversation with this user", conversationId: existingConv });
     return;
   }
@@ -248,7 +251,11 @@ router.post("/dm-requests/:id/accept", requireAuth, async (req, res) => {
   const requestId = Number(req.params.id);
   const result = await acceptDmRequest(requestId, req.user!.id, req.user!.username);
   if (!result.success) {
-    res.status(result.status).json({ success: false, error: result.error });
+    res.status(result.status).json({
+      success: false,
+      error: result.error,
+      ...(result.code ? { code: result.code } : {}),
+    });
     return;
   }
   res.json({
@@ -319,12 +326,13 @@ router.post("/dm-conversations", requireAuth, rateLimit({
   }
 
   if (await usersAreBlocked(req.user!.id, other.id)) {
-    res.status(403).json({ error: "You cannot message this user" });
+    res.status(403).json({ error: BLOCKED_MESSAGE_BY_THEM, code: "blocked" });
     return;
   }
 
   const existing = await findDmConversation(req.user!.id, other.id);
   if (existing) {
+    await unhideConversationForUser(existing, req.user!.id);
     res.json({ conversationId: existing });
     return;
   }

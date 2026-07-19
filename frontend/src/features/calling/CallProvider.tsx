@@ -71,6 +71,8 @@ type CallContextValue = {
   stopScreenShare: () => Promise<void>;
   /** Live WebRTC stats for the active peer (dev diagnostics). */
   getPeerStats: () => Promise<RTCStatsReport> | undefined;
+  /** Negotiated video transceiver direction (dev diagnostics). */
+  getVideoDirection: () => string | null;
   setLocalView: (mode: VideoViewMode) => void;
   setRemoteView: (mode: VideoViewMode) => void;
 };
@@ -122,6 +124,8 @@ export function CallProvider({ children }: { children: ReactNode }) {
   const [remoteBindEpoch, setRemoteBindEpoch] = useState(0);
 
   const peerRef = useRef<CallPeer | null>(null);
+  /** Signals (offer/answer/ice) received before the peer exists — flushed on create. */
+  const pendingSignalsRef = useRef<IceSignal[]>([]);
   const callIdRef = useRef<string | null>(null);
   const isCallerRef = useRef(false);
   const cancelledRef = useRef(false);
@@ -184,6 +188,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
   const cleanupPeer = useCallback(() => {
     peerRef.current?.close();
     peerRef.current = null;
+    pendingSignalsRef.current = [];
     setLocalStream(null);
     setRemoteStream(null);
     setRemoteAudioStream(null);
@@ -248,10 +253,14 @@ export function CallProvider({ children }: { children: ReactNode }) {
       !asCaller,
     );
     peerRef.current = peer;
+    // Attaching tracks here triggers onnegotiationneeded inside CallPeer, which
+    // drives the offer (perfect negotiation) — no manual createOffer needed and
+    // no track-attach race. Flush any signals that arrived before this point.
     await peer.setLocalStream(stream, type === "video");
     refreshLocalPreview();
-    if (asCaller) {
-      await peer.createOffer();
+    const buffered = pendingSignalsRef.current.splice(0);
+    for (const sig of buffered) {
+      try { await peer.handleSignal(sig); } catch { /* */ }
     }
   }, [refreshDevices, refreshLocalPreview, refreshRemotePreview]);
 
@@ -476,6 +485,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
   }, [refreshRemotePreview]);
 
   const getPeerStats = useCallback(() => peerRef.current?.pc.getStats(), []);
+  const getVideoDirection = useCallback(() => peerRef.current?.getVideoDirection() ?? null, []);
 
   useEffect(() => {
     const unsubs = [
@@ -584,8 +594,15 @@ export function CallProvider({ children }: { children: ReactNode }) {
       }),
       onRealtimeEvent<{ callId: string; signal: IceSignal }>("call:signal", async ({ callId: id, signal }) => {
         if (callIdRef.current && callIdRef.current !== id) return;
+        const peer = peerRef.current;
+        if (!peer) {
+          // Offer/answer/ICE can arrive before beginMedia finishes constructing
+          // the peer — buffer instead of dropping, or negotiation deadlocks.
+          pendingSignalsRef.current.push(signal);
+          return;
+        }
         try {
-          await peerRef.current?.handleSignal(signal);
+          await peer.handleSignal(signal);
           refreshRemotePreview();
         } catch (e) {
           if (import.meta.env.DEV) console.warn("[WebRTC] signal error", e);
@@ -657,7 +674,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
     acceptIncoming: () => { void acceptIncoming(); },
     declineIncoming, ignoreIncoming, hangup,
     toggleMic, toggleCam, switchMic, switchCam, setAudioOutput,
-    shareScreen, stopScreenShare, getPeerStats,
+    shareScreen, stopScreenShare, getPeerStats, getVideoDirection,
     setLocalView: setLocalViewMode,
     setRemoteView: setRemoteViewMode,
   }), [
@@ -667,7 +684,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
     audioInputs, videoInputs, audioOutputs, selectedOutputId,
     startCall, acceptIncoming, declineIncoming, ignoreIncoming, hangup,
     toggleMic, toggleCam, switchMic, switchCam, setAudioOutput,
-    shareScreen, stopScreenShare, getPeerStats, setLocalViewMode, setRemoteViewMode,
+    shareScreen, stopScreenShare, getPeerStats, getVideoDirection, setLocalViewMode, setRemoteViewMode,
   ]);
 
   return <CallContext.Provider value={value}>{children}</CallContext.Provider>;

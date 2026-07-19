@@ -13,6 +13,8 @@ export type ApiUser = {
   city?: string | null;
   status?: string;
   bio?: string;
+  /** Discord-style custom status text. Empty string when unset. */
+  mood?: string;
   memberSince?: string;
   village?: string;
   clan?: string;
@@ -41,6 +43,7 @@ export type ApiConversation = {
   status?: string;
   muted?: boolean;
   bio: string;
+  mood?: string;
   type: "channel" | "dm";
   avatarUrl?: string | null;
   otherUserId?: number;
@@ -54,6 +57,8 @@ export type ApiConversation = {
   isAdmin?: boolean;
   country?: string;
   city?: string | null;
+  blockedByMe?: boolean;
+  isBlocked?: boolean;
 };
 
 export type ApiMessage = {
@@ -243,7 +248,7 @@ export const api = {
 
   users: {
     me: () => request<{ user: ApiUser; settings: ApiSettings; stats: Record<string, number> }>("/users/me"),
-    update: (data: Partial<ApiUser & { bio: string; status: string }>) =>
+    update: (data: Partial<ApiUser & { bio: string; mood: string; status: string }>) =>
       request<{ user: ApiUser }>("/users/me", { method: "PATCH", body: JSON.stringify(data) }),
     uploadAvatar: (file: File) => {
       const form = new FormData();
@@ -266,6 +271,7 @@ export const api = {
     achievements: () => request<{ achievements: { title: string; description: string; icon: string }[] }>("/users/me/achievements"),
     inventory: () => request<{ inventory: { name: string; rarity: string; quantity: number; icon: string }[] }>("/users/me/inventory"),
     block: (userId: number) => request<{ ok: boolean }>(`/users/${userId}/block`, { method: "POST" }),
+    unblock: (userId: number) => request<{ ok: boolean }>(`/users/${userId}/block`, { method: "DELETE" }),
     pingPresence: () => request<{ ok: boolean }>("/users/me/presence", { method: "POST" }),
     get: (id: number) => request<{ user: ApiUser }>(`/users/${id}`),
   },

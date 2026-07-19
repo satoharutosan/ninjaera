@@ -17,6 +17,8 @@ import { rateLimit } from "../middleware/rateLimit.js";
 import { emitProfileUpdated, syncTeamMemberDisplayName } from "../services/profileBroadcast.js";
 import { normalizeEmail } from "../services/emailVerification.js";
 import { assertTrustedRegistrationEmail } from "../config/trustedEmailProviders.js";
+import { emitToUser } from "../services/realtime.js";
+import { hasBlocked, usersAreBlocked } from "../services/conversationAccess.js";
 
 const router = Router();
 const now = () => new Date().toISOString();
@@ -72,8 +74,15 @@ router.get("/me", requireAuth, async (req, res) => {
   });
 });
 
+const MOOD_MAX_LEN = 128;
+
+function normalizeMood(raw: unknown): string {
+  const trimmed = String(raw ?? "").trim();
+  return trimmed.slice(0, MOOD_MAX_LEN);
+}
+
 router.patch("/me", requireAuth, async (req, res) => {
-  const { username, email, gender, dateOfBirth, country, city, status, bio, village, clan } = req.body;
+  const { username, email, gender, dateOfBirth, country, city, status, bio, mood, village, clan } = req.body;
   const fields: string[] = [];
   const values: unknown[] = [];
   let nextUsername: string | undefined;
@@ -116,6 +125,7 @@ router.patch("/me", requireAuth, async (req, res) => {
   if (country !== undefined) { fields.push("country = ?"); values.push(country); }
   if (city !== undefined) { fields.push("city = ?"); values.push(city); }
   if (bio !== undefined) { fields.push("bio = ?"); values.push(bio); }
+  if (mood !== undefined) { fields.push("mood = ?"); values.push(normalizeMood(mood)); }
   if (village !== undefined) { fields.push("village = ?"); values.push(village); }
   if (clan !== undefined) { fields.push("clan = ?"); values.push(clan); }
 
@@ -351,6 +361,7 @@ router.get("/:id", optionalAuth, async (req, res) => {
         avatarUrl: null,
         status: "Offline",
         bio: "",
+        mood: "",
         level: 1,
         isNpc: false,
         isAdmin: false,
@@ -365,6 +376,10 @@ router.get("/:id", optionalAuth, async (req, res) => {
 
 router.post("/:id/block", requireAuth, async (req, res) => {
   const blockedId = Number(req.params.id);
+  if (!Number.isFinite(blockedId) || blockedId <= 0) {
+    res.status(400).json({ error: "Invalid user id" });
+    return;
+  }
   if (blockedId === req.user!.id) {
     res.status(400).json({ error: "Cannot block yourself" });
     return;
@@ -373,11 +388,38 @@ router.post("/:id/block", requireAuth, async (req, res) => {
     "INSERT OR IGNORE INTO blocks (blocker_id, blocked_id, created_at) VALUES (?, ?, ?)",
     req.user!.id, blockedId, now(),
   );
+  const stillBlocked = await usersAreBlocked(req.user!.id, blockedId);
+  emitToUser(req.user!.id, "relationship:updated", {
+    peerUserId: blockedId,
+    blockedByMe: true,
+    isBlocked: stillBlocked,
+  });
+  emitToUser(blockedId, "relationship:updated", {
+    peerUserId: req.user!.id,
+    blockedByMe: await hasBlocked(blockedId, req.user!.id),
+    isBlocked: stillBlocked,
+  });
   res.json({ ok: true });
 });
 
 router.delete("/:id/block", requireAuth, async (req, res) => {
-  await qRun("DELETE FROM blocks WHERE blocker_id = ? AND blocked_id = ?", req.user!.id, Number(req.params.id));
+  const peerId = Number(req.params.id);
+  if (!Number.isFinite(peerId) || peerId <= 0) {
+    res.status(400).json({ error: "Invalid user id" });
+    return;
+  }
+  await qRun("DELETE FROM blocks WHERE blocker_id = ? AND blocked_id = ?", req.user!.id, peerId);
+  const stillBlocked = await usersAreBlocked(req.user!.id, peerId);
+  emitToUser(req.user!.id, "relationship:updated", {
+    peerUserId: peerId,
+    blockedByMe: false,
+    isBlocked: stillBlocked,
+  });
+  emitToUser(peerId, "relationship:updated", {
+    peerUserId: req.user!.id,
+    blockedByMe: await hasBlocked(peerId, req.user!.id),
+    isBlocked: stillBlocked,
+  });
   res.json({ ok: true });
 });
 

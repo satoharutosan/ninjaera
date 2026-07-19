@@ -53,6 +53,11 @@ export function ConversationDetailsBody({
         >
           {deleted ? "Account no longer available" : presenceLabel(sel)}
         </span>
+        {sel.type === "dm" && !deleted && (sel.mood || "").trim() ? (
+          <p className="text-xs mt-2 italic leading-relaxed" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
+            {(sel.mood || "").trim()}
+          </p>
+        ) : null}
         {!deleted && sel.bio ? (
           <p className="text-xs mt-3 leading-relaxed text-left" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>{sel.bio}</p>
         ) : null}

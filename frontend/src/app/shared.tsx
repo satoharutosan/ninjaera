@@ -264,6 +264,8 @@ export type Contact = {
   unread: number;
   online: boolean;
   bio: string;
+  /** Peer custom status text (DMs). Empty when unset. */
+  mood?: string;
   type: "channel" | "dm";
   avatarUrl?: string | null;
   status?: string;
@@ -284,6 +286,10 @@ export type Contact = {
   lastActivityAt?: string | null;
   /** Admin-defined channel order (channels only). */
   sortOrder?: number | null;
+  /** Viewer blocked this peer. */
+  blockedByMe?: boolean;
+  /** Either side has a block (viewer blocked them, or they blocked viewer). */
+  isBlocked?: boolean;
 };
 
 export {

@@ -69,6 +69,7 @@ export type UserRow = {
   city: string | null;
   status: string;
   bio: string;
+  mood: string;
   member_since: string;
   village: string;
   clan: string;

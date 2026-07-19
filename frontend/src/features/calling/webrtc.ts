@@ -67,8 +67,16 @@ export class CallPeer {
   private polite: boolean;
   private closed = false;
 
-  private audioTransceiver: RTCRtpTransceiver;
-  private videoTransceiver: RTCRtpTransceiver;
+  // Assigned when the video/audio m-lines are established (caller: in
+  // setLocalStream; callee: when the offer arrives, in ensureLocalAttached).
+  private audioTransceiver!: RTCRtpTransceiver;
+  private videoTransceiver!: RTCRtpTransceiver;
+  private mediaReady = false;
+
+  // Local tracks captured in setLocalStream; the callee attaches these onto the
+  // transceivers created by the caller's offer (avoids duplicate m-lines/glare).
+  private pendingAudioTrack: MediaStreamTrack | null = null;
+  private pendingVideoTrack: MediaStreamTrack | null = null;
 
   private remoteAudio: MediaStreamTrack | null = null;
   private remoteVideo: MediaStreamTrack | null = null;
@@ -90,9 +98,6 @@ export class CallPeer {
   ) {
     this.polite = polite;
     this.pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-
-    this.audioTransceiver = this.pc.addTransceiver("audio", { direction: "sendrecv" });
-    this.videoTransceiver = this.pc.addTransceiver("video", { direction: "sendrecv" });
 
     this.pc.onicecandidate = (e) => {
       if (e.candidate) {
@@ -139,6 +144,30 @@ export class CallPeer {
     this.pc.onsignalingstatechange = () => {
       webrtcLog("signalingState", this.pc.signalingState);
     };
+
+    // SINGLE-OFFERER negotiation: only the impolite peer (the caller) ever
+    // creates offers. The callee attaches its tracks onto the transceivers the
+    // offer creates and only answers. This deterministically avoids glare and
+    // the duplicate video m-lines that produced a sendonly transceiver while
+    // real frames arrived on a second, ignored m-line.
+    this.pc.onnegotiationneeded = async () => {
+      if (this.closed || this.polite) return;
+      try {
+        this.makingOffer = true;
+        await this.pc.setLocalDescription();
+        if (this.pc.localDescription) {
+          webrtcLog("negotiationneeded → offer", {
+            video: this.getVideoDirection(),
+            signalingState: this.pc.signalingState,
+          });
+          this.handlers.onSignal({ kind: "offer", sdp: this.pc.localDescription });
+        }
+      } catch (err) {
+        webrtcLog("negotiationneeded failed", err);
+      } finally {
+        this.makingOffer = false;
+      }
+    };
   }
 
   /** Resolve the live video RTCRtpSender — never assume getSenders()[0]. */
@@ -156,6 +185,7 @@ export class CallPeer {
   }
 
   private syncReceivers() {
+    if (!this.mediaReady) return;
     try {
       const a = this.audioTransceiver.receiver.track;
       const v = this.videoTransceiver.receiver.track;
@@ -261,9 +291,6 @@ export class CallPeer {
     const video = stream.getVideoTracks()[0] || null;
     this.cameraTrack = video;
 
-    const audioSender = this.audioTransceiver.sender;
-    if (audio) await audioSender.replaceTrack(audio);
-
     let outbound: MediaStreamTrack;
     if (video) {
       video.enabled = !!withVideo;
@@ -272,34 +299,61 @@ export class CallPeer {
       if (!this.placeholder) this.placeholder = createPlaceholderVideoTrack();
       outbound = this.placeholder.track;
     }
-
     this.outboundBaseTrack = outbound;
-    const videoSender = this.findVideoSender();
-    await videoSender.replaceTrack(outbound);
-    try {
-      this.videoTransceiver.direction = "sendrecv";
-    } catch { /* */ }
+    this.pendingAudioTrack = audio;
+    this.pendingVideoTrack = outbound;
 
-    webrtcLog("Local video sender ready", {
-      trackId: outbound.id.slice(0, 12),
-      enabled: outbound.enabled,
-      withVideo,
-      senders: this.pc.getSenders().map(s => s.track?.kind || "empty"),
-    });
+    if (!this.polite) {
+      // Caller = sole offerer. Create the transceivers (audio, then video) WITH
+      // their tracks so the auto-fired offer is sendrecv with real media.
+      this.audioTransceiver = this.pc.addTransceiver(audio ?? "audio", { direction: "sendrecv" });
+      this.videoTransceiver = this.pc.addTransceiver(outbound, { direction: "sendrecv" });
+      this.mediaReady = true;
+      webrtcLog("Caller media ready (transceivers created)", {
+        videoTrackId: outbound.id.slice(0, 12),
+        hasAudio: !!audio,
+        withVideo,
+        video: this.getVideoDirection(),
+      });
+    } else {
+      // Callee attaches these onto the offer's transceivers in ensureLocalAttached.
+      webrtcLog("Callee local tracks captured (await offer)", {
+        videoTrackId: outbound.id.slice(0, 12),
+        hasAudio: !!audio,
+        withVideo,
+      });
+    }
   }
 
-  async createOffer() {
-    if (this.closed) return;
-    this.makingOffer = true;
-    try {
-      const offer = await this.pc.createOffer();
-      await this.pc.setLocalDescription(offer);
-      if (this.pc.localDescription) {
-        this.handlers.onSignal({ kind: "offer", sdp: this.pc.localDescription });
+  /**
+   * Callee-only: attach the local tracks onto the transceivers created by the
+   * caller's offer, and force them sendrecv. Runs after setRemoteDescription
+   * (so the transceivers exist) and before createAnswer.
+   */
+  private async ensureLocalAttached() {
+    if (this.mediaReady || !this.polite) return;
+    const transceivers = this.pc.getTransceivers();
+    const audioT = transceivers.find(t => t.receiver.track?.kind === "audio");
+    const videoT = transceivers.find(t => t.receiver.track?.kind === "video");
+
+    if (audioT) {
+      this.audioTransceiver = audioT;
+      if (this.pendingAudioTrack) {
+        try { await audioT.sender.replaceTrack(this.pendingAudioTrack); } catch { /* */ }
       }
-    } finally {
-      this.makingOffer = false;
+      try { audioT.direction = "sendrecv"; } catch { /* */ }
     }
+    if (videoT) {
+      this.videoTransceiver = videoT;
+      if (this.pendingVideoTrack) {
+        try { await videoT.sender.replaceTrack(this.pendingVideoTrack); } catch { /* */ }
+      }
+      try { videoT.direction = "sendrecv"; } catch { /* */ }
+    }
+    this.mediaReady = true;
+    webrtcLog("Callee attached local tracks to offer transceivers", {
+      video: this.getVideoDirection(),
+    });
   }
 
   async handleSignal(signal: IceSignal) {
@@ -332,15 +386,25 @@ export class CallPeer {
     }
 
     if (signal.kind === "offer") {
+      // Callee: attach local tracks to the offer's transceivers so the answer
+      // is sendrecv with real media (must be before createAnswer).
+      await this.ensureLocalAttached();
       webrtcLog("Receiving offer → creating answer");
-      const answer = await this.pc.createAnswer();
-      await this.pc.setLocalDescription(answer);
+      await this.pc.setLocalDescription();
       if (this.pc.localDescription) {
         this.handlers.onSignal({ kind: "answer", sdp: this.pc.localDescription });
       }
     } else {
       webrtcLog("Receiving answer");
     }
+
+    webrtcLog("Post-SDP directions", {
+      video: this.getVideoDirection(),
+      audio: this.mediaReady
+        ? `${this.audioTransceiver.direction}/${this.audioTransceiver.currentDirection ?? "?"}`
+        : "no-media",
+      signalingState: this.pc.signalingState,
+    });
 
     this.emitRemote();
     // After renegotiation answer, refresh remote binding for peers
@@ -632,6 +696,15 @@ export class CallPeer {
   getRemoteVideoTrackId(): string | null {
     this.syncReceivers();
     return this.remoteVideo?.id ?? null;
+  }
+
+  /** "direction/currentDirection" of the video transceiver for diagnostics. */
+  getVideoDirection(): string {
+    if (!this.mediaReady) return "no-media";
+    const dir = this.videoTransceiver.direction;
+    const cur = this.videoTransceiver.currentDirection ?? "?";
+    const senderTrack = this.videoTransceiver.sender.track;
+    return `${dir}/${cur} send:${senderTrack ? senderTrack.kind : "none"}${senderTrack && !senderTrack.enabled ? "(off)" : ""}`;
   }
 
   close() {

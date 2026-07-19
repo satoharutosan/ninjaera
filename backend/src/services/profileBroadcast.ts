@@ -6,6 +6,7 @@ export type ProfileUpdatedPayload = {
   username: string;
   avatarUrl: string | null;
   bio: string;
+  mood: string;
   status: string;
   updatedAt: string;
 };
@@ -21,9 +22,10 @@ export async function emitProfileUpdated(userId: number) {
     username: string;
     avatar_url: string | null;
     bio: string | null;
+    mood: string | null;
     status: string | null;
     updated_at: string | null;
-  }>("SELECT username, avatar_url, bio, status, updated_at FROM users WHERE id = ?", userId);
+  }>("SELECT username, avatar_url, bio, mood, status, updated_at FROM users WHERE id = ?", userId);
   if (!row) return;
 
   const payload: ProfileUpdatedPayload = {
@@ -31,6 +33,7 @@ export async function emitProfileUpdated(userId: number) {
     username: row.username,
     avatarUrl: row.avatar_url,
     bio: row.bio ?? "",
+    mood: row.mood ?? "",
     status: row.status || "Online",
     updatedAt: row.updated_at || new Date().toISOString(),
   };

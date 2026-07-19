@@ -20,9 +20,15 @@ import {
   assertCanAccessConversation,
   assertNotBlockedInConversation,
   canOpenDmWithoutRequest,
+  BLOCKED_MESSAGE_BY_THEM,
   sanitizeReplyToId,
   usersAreBlocked,
 } from "../services/conversationAccess.js";
+import {
+  hideConversationForUser,
+  restoreHiddenPeersOnDmMessage,
+  unhideConversationForUser,
+} from "../services/dmVisibility.js";
 import { validateUpload } from "../services/uploadValidation.js";
 
 const router = Router();
@@ -35,15 +41,20 @@ async function requireConversationAccess(
 ): Promise<boolean> {
   const access = await assertCanAccessConversation(req.user!.id, conversationId);
   if (!access.ok) {
-    res.status(access.status).json({ error: access.error });
+    res.status(access.status).json({ error: access.error, ...(access.code ? { code: access.code } : {}) });
     return false;
   }
   const blocked = await assertNotBlockedInConversation(req.user!.id, conversationId);
   if (!blocked.ok) {
-    res.status(blocked.status).json({ error: blocked.error });
+    res.status(blocked.status).json({ error: blocked.error, code: blocked.code || "blocked" });
     return false;
   }
   return true;
+}
+
+/** After a successful DM send: restore soft-hidden peers (unless blocked). */
+async function afterDmMessageSent(conversationId: number, senderId: number) {
+  await restoreHiddenPeersOnDmMessage(conversationId, senderId);
 }
 
 const upload = createMemoryUploader({ limits: { fileSize: MESSAGE_MAX_FILE_BYTES } });
@@ -312,12 +323,12 @@ async function formatConversations(
   // (conversationId → conversationid), which breaks Map lookups and marks every DM peer deleted.
   const others = await qAll<{
     conversation_id: number; id: number | null; is_online: number; last_seen_at: string | null; status: string;
-    username: string | null; avatar_url: string | null; bio: string; village: string; clan: string;
+    username: string | null; avatar_url: string | null; bio: string; mood: string | null; village: string; clan: string;
     level: number; rank: string; member_since: string; is_team_member: number; is_admin: number; country: string; city: string | null;
     is_deleted: number | null;
   }>(`
     SELECT cp.conversation_id, u.id, u.is_online, u.last_seen_at, u.status, u.username,
-           u.avatar_url, u.bio, u.village, u.clan, u.level, u.rank,
+           u.avatar_url, u.bio, u.mood, u.village, u.clan, u.level, u.rank,
            u.member_since, u.is_team_member, u.is_admin, u.country, u.city,
            u.is_deleted
     FROM conversation_participants cp
@@ -327,6 +338,26 @@ async function formatConversations(
   const otherByConv = new Map<number, typeof others[0]>();
   for (const o of others) {
     if (!otherByConv.has(o.conversation_id)) otherByConv.set(o.conversation_id, o);
+  }
+
+  const peerIds = [...new Set(
+    others.map(o => Number(o.id)).filter((id): id is number => Number.isFinite(id) && id > 0),
+  )];
+  const blockedByMe = new Set<number>();
+  const blockedByThem = new Set<number>();
+  if (peerIds.length) {
+    const peerPlaceholders = peerIds.map(() => "?").join(",");
+    const blockRows = await qAll<{ blocker_id: number; blocked_id: number }>(`
+      SELECT blocker_id, blocked_id FROM blocks
+      WHERE (blocker_id = ? AND blocked_id IN (${peerPlaceholders}))
+         OR (blocked_id = ? AND blocker_id IN (${peerPlaceholders}))
+    `, userId, ...peerIds, userId, ...peerIds);
+    for (const b of blockRows) {
+      const blocker = Number(b.blocker_id);
+      const blocked = Number(b.blocked_id);
+      if (blocker === userId) blockedByMe.add(blocked);
+      if (blocked === userId) blockedByThem.add(blocker);
+    }
   }
 
   const unreadRows = await qAll<{ conversation_id: number; c: number }>(`
@@ -402,6 +433,7 @@ async function formatConversations(
       status: isDm ? presenceStatus : undefined,
       muted: selfPart?.muted === 1,
       bio: isDm ? (peerDeleted ? "" : (other?.bio || "")) : conv.bio,
+      mood: isDm ? (peerDeleted ? "" : (other?.mood || "")) : undefined,
       type: conv.type,
       avatarUrl: isDm
         ? (peerDeleted ? null : (other?.avatar_url || undefined))
@@ -417,6 +449,10 @@ async function formatConversations(
       isAdmin: isDm && !peerDeleted ? Number(other?.is_admin) === 1 : undefined,
       country: isDm && !peerDeleted ? other?.country : undefined,
       city: isDm && !peerDeleted ? other?.city : undefined,
+      blockedByMe: isDm && peerId != null ? blockedByMe.has(peerId) : false,
+      isBlocked: isDm && peerId != null
+        ? (blockedByMe.has(peerId) || blockedByThem.has(peerId))
+        : false,
     };
   }));
 }
@@ -480,7 +516,9 @@ router.get("/conversations", requireAuth, async (req, res) => {
   }>(`
     SELECT c.* FROM conversations c
     JOIN conversation_participants cp ON cp.conversation_id = c.id
-    WHERE cp.user_id = ? AND (c.archived IS NULL OR c.archived = 0)
+    WHERE cp.user_id = ?
+      AND cp.hidden_at IS NULL
+      AND (c.archived IS NULL OR c.archived = 0)
     ORDER BY
       CASE WHEN c.type = 'channel' THEN 0 ELSE 1 END,
       CASE WHEN c.type = 'channel' THEN COALESCE(c.sort_order, c.id) ELSE 0 END,
@@ -687,6 +725,7 @@ router.post("/messages", requireAuth, rateLimit({
     media_type: null,
     file_name: null,
   }));
+  await afterDmMessageSent(Number(conversationId), req.user!.id);
   await emitMessageToParticipants(conversationId, "message:new", (viewerId) => ({
     conversationId,
     message: forViewer(viewerId),
@@ -754,6 +793,7 @@ router.post("/messages/gif", requireAuth, rateLimit({
     media_type: "gif",
     file_name: `${label}.gif`,
   }));
+  await afterDmMessageSent(conversationId, req.user!.id);
   await emitMessageToParticipants(conversationId, "message:new", (viewerId) => ({
     conversationId,
     message: forViewer(viewerId),
@@ -851,6 +891,7 @@ router.post("/messages/media", requireAuth, rateLimit({
     media_type: mediaType,
     file_name: req.file.originalname,
   }));
+  await afterDmMessageSent(conversationId, req.user!.id);
   await emitMessageToParticipants(conversationId, "message:new", (viewerId) => ({
     conversationId,
     message: forViewer(viewerId),
@@ -993,7 +1034,18 @@ router.put("/conversations/:id/mute", requireAuth, async (req, res) => {
 
 router.delete("/contacts/:contactId", requireAuth, async (req, res) => {
   const convId = Number(req.params.contactId);
-  await qRun("DELETE FROM conversation_participants WHERE conversation_id = ? AND user_id = ?", convId, req.user!.id);
+  const participant = await qGet(
+    "SELECT 1 FROM conversation_participants WHERE conversation_id = ? AND user_id = ?",
+    convId,
+    req.user!.id,
+  );
+  if (!participant) {
+    res.status(404).json({ error: "Conversation not found" });
+    return;
+  }
+  // Soft-hide only — preserve membership + full message history for later restore.
+  await hideConversationForUser(convId, req.user!.id);
+  emitToUser(req.user!.id, "conversation:hidden", { conversationId: convId });
   res.json({ ok: true });
 });
 
@@ -1014,7 +1066,7 @@ router.post("/conversations", requireAuth, rateLimit({
 
   if (target) {
     if (realUser && await usersAreBlocked(req.user!.id, realUser.id)) {
-      res.status(403).json({ error: "You cannot message this user" });
+      res.status(403).json({ error: BLOCKED_MESSAGE_BY_THEM, code: "blocked" });
       return;
     }
 
@@ -1027,6 +1079,7 @@ router.post("/conversations", requireAuth, rateLimit({
     `, req.user!.id, target.id);
 
     if (existingDm) {
+      await unhideConversationForUser(existingDm.id, req.user!.id);
       const conv = await qGet<{ id: number; type: string; name: string; bio: string }>("SELECT * FROM conversations WHERE id = ?", existingDm.id);
       res.json({ conversation: await formatConversation(conv!, req.user!.id) });
       return;

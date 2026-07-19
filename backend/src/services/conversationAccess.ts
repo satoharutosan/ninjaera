@@ -1,9 +1,14 @@
 import { qGet } from "../db/query.js";
 import { userCanAccessChannel } from "./channels.js";
 
-export type AccessDenial = { ok: false; status: 403 | 404; error: string };
+export type AccessDenial = { ok: false; status: 403 | 404; error: string; code?: string };
 export type AccessOk = { ok: true };
 export type AccessResult = AccessOk | AccessDenial;
+
+export const BLOCKED_MESSAGE_BY_THEM =
+  "You cannot send messages because this user has blocked you.";
+export const BLOCKED_MESSAGE_BY_ME =
+  "You blocked this user. Unblock them to send messages.";
 
 /**
  * Central conversation ACL used by send/edit/react/read/mute/call/typing.
@@ -54,6 +59,16 @@ export async function usersAreBlocked(a: number, b: number): Promise<boolean> {
   return Boolean(row);
 }
 
+/** True when `blockerId` has blocked `blockedId`. */
+export async function hasBlocked(blockerId: number, blockedId: number): Promise<boolean> {
+  const row = await qGet(
+    "SELECT 1 FROM blocks WHERE blocker_id = ? AND blocked_id = ? LIMIT 1",
+    blockerId,
+    blockedId,
+  );
+  return Boolean(row);
+}
+
 /**
  * For DM conversations, ensure the viewer is not blocked relative to the other participant.
  * Channels always pass (blocks do not apply to public/team channels).
@@ -75,8 +90,14 @@ export async function assertNotBlockedInConversation(
   `, conversationId, userId);
   if (!other) return { ok: true };
 
-  if (await usersAreBlocked(userId, other.user_id)) {
-    return { ok: false, status: 403, error: "You cannot interact with this user" };
+  const peerId = Number(other.user_id);
+  const iBlocked = await hasBlocked(userId, peerId);
+  const theyBlocked = await hasBlocked(peerId, userId);
+  if (theyBlocked) {
+    return { ok: false, status: 403, error: BLOCKED_MESSAGE_BY_THEM, code: "blocked" };
+  }
+  if (iBlocked) {
+    return { ok: false, status: 403, error: BLOCKED_MESSAGE_BY_ME, code: "blocked" };
   }
   return { ok: true };
 }

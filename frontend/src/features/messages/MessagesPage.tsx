@@ -64,6 +64,7 @@ import { ConversationDetailsBody } from "@/features/messages/components/Conversa
 import { ImageLightbox } from "@/features/messages/components/ImageLightbox";
 import { MessageRow } from "@/features/messages/components/MessageRow";
 import { TypingIndicatorStrip } from "@/features/messages/components/TypingIndicatorStrip";
+import { ProfileStatusBadge, type PresenceStatus } from "@/features/messages/components/ProfileStatusBadge";
 
 const EmojiGifPicker = lazy(() =>
   import("@/features/messages/EmojiGifPicker").then((m) => ({ default: m.EmojiGifPicker })),
@@ -111,6 +112,7 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [myStatus, setMyStatus] = useState(currentUser?.status || "Online");
   const [myBio, setMyBio] = useState(currentUser?.bio || "");
+  const [myMood, setMyMood] = useState(currentUser?.mood || "");
   const [savingProfile, setSavingProfile] = useState(false);
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [voiceBusy, setVoiceBusy] = useState(false);
@@ -213,7 +215,7 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
     isNearBottomRef, pinToBottomRef, visibleStartDataIndexRef, suppressMarkReadUntilRef, markReadTimerRef,
     loadOlderMessages, loadNewerMessages,
     applyNewMessage, applyUpdatedMessage, applyDeletedMessage, applyReaction,
-    jumpToLatest, appendLocal, replaceOptimistic, markLocalFailed, updateLocal,
+    jumpToLatest, appendLocal, replaceOptimistic, markLocalFailed, removeLocal, updateLocal,
   } = thread;
 
   useEffect(() => { selIdRef.current = sel.id; }, [sel.id]);
@@ -273,6 +275,7 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
     if (currentUser) {
       setMyStatus(currentUser.status || "Online");
       setMyBio(currentUser.bio || "");
+      setMyMood(currentUser.mood || "");
     }
   }, [currentUser]);
 
@@ -414,10 +417,13 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
         updated.avatarUrl !== sel.avatarUrl
         || updated.name !== sel.name
         || updated.bio !== sel.bio
+        || updated.mood !== sel.mood
         || updated.msg !== sel.msg
         || updated.unread !== sel.unread
         || updated.muted !== sel.muted
         || updated.sortOrder !== sel.sortOrder
+        || updated.blockedByMe !== sel.blockedByMe
+        || updated.isBlocked !== sel.isBlocked
       ) {
         setSel(updated);
         setDetailsContact(prev => (prev && prev.id === updated.id ? updated : prev));
@@ -548,6 +554,37 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
         joinConversation(conversationId);
         refreshContacts();
       }),
+      onRealtimeEvent<{ conversationId: number }>("conversation:restored", ({ conversationId }) => {
+        joinConversation(conversationId);
+        refreshContacts();
+      }),
+      onRealtimeEvent<{ conversationId: number }>("conversation:hidden", ({ conversationId }) => {
+        setContacts(prev => prev.filter(c => c.id !== conversationId));
+        if (selIdRef.current === conversationId) {
+          setSel(emptyContact);
+        }
+        refreshContacts();
+      }),
+      onRealtimeEvent<{
+        peerUserId: number;
+        blockedByMe: boolean;
+        isBlocked: boolean;
+      }>("relationship:updated", (data) => {
+        if (!data?.peerUserId) return;
+        setContacts(prev => {
+          let changed = false;
+          const next = prev.map(c => {
+            if (c.type !== "dm" || c.otherUserId !== data.peerUserId) return c;
+            changed = true;
+            return { ...c, blockedByMe: data.blockedByMe, isBlocked: data.isBlocked };
+          });
+          return changed ? next : prev;
+        });
+        setSel(prev => {
+          if (prev.otherUserId !== data.peerUserId) return prev;
+          return { ...prev, blockedByMe: data.blockedByMe, isBlocked: data.isBlocked };
+        });
+      }),
       onRealtimeEvent<{ conversationId: number; userId: number; username: string; typing: boolean }>("typing", ({ conversationId, userId, username, typing }) => {
         if (Number(conversationId) !== Number(selIdRef.current) || Number(userId) === Number(currentUserId)) return;
         setTypingUsers(prev => {
@@ -589,6 +626,7 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
         username: string;
         avatarUrl?: string | null;
         bio?: string;
+        mood?: string;
         status?: string;
       }>("profile:updated", (data) => {
         if (!data?.userId || !data.username) return;
@@ -616,6 +654,7 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
             name: data.username,
             avatarUrl: data.avatarUrl !== undefined ? data.avatarUrl : prev.avatarUrl,
             bio: data.bio !== undefined ? data.bio : prev.bio,
+            mood: data.mood !== undefined ? data.mood : prev.mood,
             ...(data.status !== undefined ? { status: data.status } : {}),
           };
         });
@@ -626,8 +665,25 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
             name: data.username,
             avatarUrl: data.avatarUrl !== undefined ? data.avatarUrl : prev.avatarUrl,
             bio: data.bio !== undefined ? data.bio : prev.bio,
+            mood: data.mood !== undefined ? data.mood : prev.mood,
             ...(data.status !== undefined ? { status: data.status } : {}),
           };
+        });
+        setContacts(prev => {
+          let changed = false;
+          const next = prev.map(c => {
+            if (c.type !== "dm" || c.otherUserId !== data.userId) return c;
+            changed = true;
+            return {
+              ...c,
+              name: data.username,
+              avatarUrl: data.avatarUrl !== undefined ? data.avatarUrl : c.avatarUrl,
+              bio: data.bio !== undefined ? data.bio : c.bio,
+              mood: data.mood !== undefined ? data.mood : c.mood,
+              ...(data.status !== undefined ? { status: data.status } : {}),
+            };
+          });
+          return changed ? next : prev;
         });
       }),
     ];
@@ -662,10 +718,26 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
 
   useEffect(() => { setTypingUsers([]); }, [sel.id]);
 
+  const applyPresenceStatus = useCallback(async (next: PresenceStatus) => {
+    const prev = myStatus;
+    setMyStatus(next);
+    try {
+      const { user: updated } = await api.users.update({ status: next });
+      setMyStatus(updated.status || next);
+      onUserUpdate?.(updated);
+    } catch {
+      setMyStatus(prev);
+      toast.error("Failed to update status");
+    }
+  }, [myStatus, onUserUpdate]);
+
   const saveMyProfile = async () => {
     setSavingProfile(true);
     try {
-      const { user: updated } = await api.users.update({ status: myStatus, bio: myBio });
+      const mood = myMood.trim().slice(0, 128);
+      const { user: updated } = await api.users.update({ bio: myBio, mood });
+      setMyMood(updated.mood || "");
+      if (updated.status) setMyStatus(updated.status);
       onUserUpdate?.(updated);
       setSettingsOpen(false);
       toast.success("Profile saved");
@@ -714,6 +786,7 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
     unread: 0,
     online: !user.isDeleted && (user.status || "Online") === "Online",
     bio: user.isDeleted ? "" : (user.bio || ""),
+    mood: user.isDeleted ? "" : (user.mood || ""),
     type: "dm",
     avatarUrl: user.isDeleted ? null : (user.avatarUrl ?? fallback?.avatarUrl),
     otherUserId: user.id,
@@ -845,6 +918,7 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
   const sendPendingPaste = async () => {
     const staged = pendingPasteRef.current;
     if (!staged || !sel.id || uploadingPaste) return;
+    if (guardBlockedCompose()) return;
     if (!isMessageFileWithinLimit(staged.file)) {
       toast.error(MESSAGE_MAX_FILE_ERROR);
       clearPendingPaste();
@@ -882,8 +956,9 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
       refreshContacts();
     } catch (err) {
       if (localPreview.startsWith("blob:")) URL.revokeObjectURL(localPreview);
-      markLocalFailed(tempId);
-      toast.error(err instanceof ApiError ? err.message : "Failed to upload screenshot");
+      if (isBlockedSendError(err)) removeLocal(tempId);
+      else markLocalFailed(tempId);
+      toastBlockedOrSendError(err, "Failed to upload screenshot");
     } finally {
       setUploadingPaste(false);
     }
@@ -897,6 +972,7 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
     }
     const trimmed = input.trim();
     if (!trimmed && !extra?.mediaUrl) return;
+    if (guardBlockedCompose()) return;
     const replySnap = replyingTo;
     const convId = sel.id;
     setInput(""); setReplyingTo(null); setEmojiOpen(false);
@@ -925,9 +1001,10 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
       const { message } = await api.messages.send(convId, trimmed, replySnap?.id);
       replaceOptimistic(tempId, toChatMsg(message, currentUserId));
       refreshContacts();
-    } catch {
-      markLocalFailed(tempId);
-      toast.error("Failed to send message");
+    } catch (err) {
+      if (isBlockedSendError(err)) removeLocal(tempId);
+      else markLocalFailed(tempId);
+      toastBlockedOrSendError(err, "Failed to send message");
     }
     forceScrollToBottom("auto");
   };
@@ -944,6 +1021,7 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
     const file = e.target.files?.[0];
     if (!file) return;
     e.target.value = "";
+    if (guardBlockedCompose()) return;
     if (!isMessageFileWithinLimit(file)) {
       toast.error(MESSAGE_MAX_FILE_ERROR);
       return;
@@ -978,13 +1056,15 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
       refreshContacts();
     } catch (err) {
       if (localUrl) URL.revokeObjectURL(localUrl);
-      markLocalFailed(tempId);
-      toast.error(err instanceof ApiError ? err.message : "Failed to upload file");
+      if (isBlockedSendError(err)) removeLocal(tempId);
+      else markLocalFailed(tempId);
+      toastBlockedOrSendError(err, "Failed to upload file");
     }
     forceScrollToBottom("auto");
   };
 
   const sendVoiceFile = async (file: File, meta: import("@/features/messages/voiceAudio").VoiceUploadMeta) => {
+    if (guardBlockedCompose()) return;
     if (!isMessageFileWithinLimit(file)) {
       toast.error(MESSAGE_MAX_FILE_ERROR);
       return;
@@ -1027,14 +1107,16 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
       refreshContacts();
     } catch (err) {
       URL.revokeObjectURL(localUrl);
-      markLocalFailed(tempId);
-      toast.error(err instanceof ApiError ? err.message : "Failed to upload voice message");
+      if (isBlockedSendError(err)) removeLocal(tempId);
+      else markLocalFailed(tempId);
+      toastBlockedOrSendError(err, "Failed to upload voice message");
     }
     forceScrollToBottom("auto");
   };
 
   const sendGifItem = async (g: GifItem) => {
     if (!sel.id) return;
+    if (guardBlockedCompose()) return;
     const replySnap = replyingTo;
     setReplyingTo(null);
     setEmojiOpen(false);
@@ -1057,9 +1139,10 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
       const { message } = await api.messages.sendGif(sel.id, g.url, g.label, replySnap?.id);
       replaceOptimistic(tempId, toChatMsg(message, currentUserId));
       refreshContacts();
-    } catch {
-      markLocalFailed(tempId);
-      toast.error("Failed to send GIF");
+    } catch (err) {
+      if (isBlockedSendError(err)) removeLocal(tempId);
+      else markLocalFailed(tempId);
+      toastBlockedOrSendError(err, "Failed to send GIF");
     }
     forceScrollToBottom("auto");
   };
@@ -1067,6 +1150,12 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
   const startDmCall = (type: "voice" | "video") => {
     if (sel.type !== "dm" || !sel.otherUserId || sel.isDeleted) {
       if (sel.isDeleted) toast.message("This user is no longer available");
+      return;
+    }
+    if (sel.isBlocked || sel.blockedByMe) {
+      toast.error(sel.blockedByMe
+        ? "You blocked this user. Unblock them to call."
+        : "You cannot call this user because they have blocked you.");
       return;
     }
     if (!canPlaceCall(currentUser, { isTeamMember: sel.isTeamMember, isAdmin: sel.isAdmin })) {
@@ -1125,11 +1214,76 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
     }
   };
 
+  const isBlockedSendError = (err: unknown) =>
+    err instanceof ApiError && (err.data?.code === "blocked" || /blocked/i.test(err.message));
+
+  const toastBlockedOrSendError = (err: unknown, fallback: string) => {
+    if (isBlockedSendError(err)) {
+      toast.error(err instanceof ApiError ? err.message : "You cannot send messages because this user has blocked you.");
+      return;
+    }
+    toast.error(err instanceof ApiError ? err.message : fallback);
+  };
+
+  const guardBlockedCompose = () => {
+    if (sel.type !== "dm") return false;
+    if (sel.blockedByMe) {
+      toast.error("You blocked this user. Unblock them to send messages.");
+      return true;
+    }
+    if (sel.isBlocked) {
+      toast.error("You cannot send messages because this user has blocked you.");
+      return true;
+    }
+    return false;
+  };
+
   const deleteContact = async (contactId: number) => {
     try { await api.messages.deleteContact(contactId); } catch { /* */ }
     setContacts(prev => prev.filter(c => c.id !== contactId));
-    if (sel.id === contactId) { const remaining = contacts.filter(c=>c.id!==contactId); if(remaining.length) setSel(remaining[0]); }
+    if (sel.id === contactId) {
+      const remaining = contacts.filter(c => c.id !== contactId);
+      if (remaining.length) setSel(remaining[0]);
+      else setSel(emptyContact);
+    }
     refreshContacts();
+  };
+
+  const blockUser = async (contact: Contact) => {
+    if (!contact.otherUserId) return;
+    try {
+      await api.users.block(contact.otherUserId);
+      setContacts(prev => prev.map(c =>
+        c.otherUserId === contact.otherUserId
+          ? { ...c, blockedByMe: true, isBlocked: true }
+          : c,
+      ));
+      setSel(prev => prev.otherUserId === contact.otherUserId
+        ? { ...prev, blockedByMe: true, isBlocked: true }
+        : prev);
+      toast.success(`Blocked ${contact.name}`);
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Failed to block user");
+    }
+  };
+
+  const unblockUser = async (contact: Contact) => {
+    if (!contact.otherUserId) return;
+    try {
+      await api.users.unblock(contact.otherUserId);
+      setContacts(prev => prev.map(c =>
+        c.otherUserId === contact.otherUserId
+          ? { ...c, blockedByMe: false, isBlocked: false }
+          : c,
+      ));
+      setSel(prev => prev.otherUserId === contact.otherUserId
+        ? { ...prev, blockedByMe: false, isBlocked: false }
+        : prev);
+      toast.success(`Unblocked ${contact.name}`);
+      refreshContacts();
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Failed to unblock user");
+    }
   };
 
   const scrollTo = (id: number) => {
@@ -1304,10 +1458,35 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
         closeFn();
       } },
       ...(!contact.isDeleted ? [
-        { Icon:BlockIcon,     label:"Block User",          danger:true,  action:() => { askConfirm("Block User", `Block ${contact.name}? They won't be able to message you.`, () => { if (contact.otherUserId) api.users.block(contact.otherUserId).catch(() => {}); closeFn(); }); } },
-        { Icon:FlagIcon,      label:"Report User",         danger:true,  action:() => { askConfirm("Report User", `Report ${contact.name} for inappropriate behaviour?`, () => { api.messages.report({ reason: `Reported user: ${contact.name}`, userId: contact.otherUserId }).then(() => toast.success("Report submitted")).catch(() => toast.error("Failed to submit report")); closeFn(); }); } },
+        contact.blockedByMe
+          ? { Icon: BlockIcon, label: "Unblock User", danger: false, action: () => { void unblockUser(contact); closeFn(); } }
+          : { Icon: BlockIcon, label: "Block User", danger: true, action: () => {
+              askConfirm(
+                "Block User",
+                `Block ${contact.name}? They won't be able to message you.`,
+                () => { void blockUser(contact); closeFn(); },
+              );
+            } },
+        { Icon: FlagIcon, label: "Report User", danger: true, action: () => {
+          askConfirm(
+            "Report User",
+            `Report ${contact.name} for inappropriate behaviour?`,
+            () => {
+              api.messages.report({ reason: `Reported user: ${contact.name}`, userId: contact.otherUserId })
+                .then(() => toast.success("Report submitted"))
+                .catch(() => toast.error("Failed to submit report"));
+              closeFn();
+            },
+          );
+        } },
       ] : []),
-      { Icon:PersonIcon,    label:"Delete Contact",      danger:true,  action:() => { askConfirm("Delete Contact", `Remove ${contact.name} from your contacts?`, () => { deleteContact(contact.id); closeFn(); }); } },
+      { Icon: PersonIcon, label: "Delete Contact", danger: true, action: () => {
+        askConfirm(
+          "Delete Contact",
+          `Remove ${contact.name} from your list? Your message history is kept and will reappear if they message you again.`,
+          () => { void deleteContact(contact.id); closeFn(); },
+        );
+      } },
     ];
   };
 
@@ -1366,42 +1545,44 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
       {settingsOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[2px] p-4" onClick={() => setSettingsOpen(false)}>
           <div className="rounded-3xl p-6 w-full max-w-sm" style={{ background:C.surface, boxShadow:"0 8px 32px rgba(0,0,0,.24)" }} onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center justify-between mb-5">
               <h3 className="font-medium text-base" style={{ color:C.onSurface, fontFamily:"Roboto" }}>My Profile</h3>
-              <button onClick={() => setSettingsOpen(false)} className="w-8 h-8 rounded-full flex items-center justify-center hover:bg-black/5" style={{ color:C.onSurfaceVar }}><CloseIcon style={{ fontSize:18 }} /></button>
+              <button type="button" onClick={() => setSettingsOpen(false)} className="w-8 h-8 rounded-full flex items-center justify-center hover:bg-black/5" style={{ color:C.onSurfaceVar }} aria-label="Close"><CloseIcon style={{ fontSize:18 }} /></button>
             </div>
-            <div className="flex items-center gap-4 mb-6">
-              <div className="relative">
+            <div className="flex items-center gap-4 mb-5">
+              <div className="relative shrink-0 w-16 h-16">
                 <ChatAvatar name={currentUser?.username || "?"} avatarUrl={currentUser?.avatarUrl} size={64} />
-                <div className="w-4 h-4 rounded-full border-2 border-white absolute bottom-0 right-0" style={{ background:STATUS_COLORS[myStatus] || STATUS_COLORS.Online }} />
+                <ProfileStatusBadge
+                  status={myStatus}
+                  C={C}
+                  disabled={savingProfile}
+                  onChange={applyPresenceStatus}
+                />
               </div>
-              <div>
-                <p className="font-medium text-sm" style={{ color:C.onSurface, fontFamily:"'Trade Winds', cursive" }}>{currentUser?.username || "Shinobi"}</p>
-                <p className="text-xs mt-0.5" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>
-                  {currentUser?.isTeamMember ? "Team Member" : currentUser?.isAdmin ? "Administrator" : "Member"}
-                  {currentUser?.memberSince ? ` · since ${currentUser.memberSince}` : ""}
-                </p>
+              <div className="min-w-0 flex-1">
+                <p className="font-medium text-sm truncate" style={{ color:C.onSurface, fontFamily:"'Trade Winds', cursive" }}>{currentUser?.username || "Shinobi"}</p>
+                <label className="block mt-1.5">
+                  <span className="sr-only">Mood</span>
+                  <input
+                    type="text"
+                    value={myMood}
+                    maxLength={128}
+                    onChange={e => setMyMood(e.target.value)}
+                    placeholder="Set a mood…"
+                    className="w-full px-0 py-0.5 bg-transparent border-0 border-b text-xs focus:outline-none focus-visible:ring-0"
+                    style={{ borderColor: C.outlineVar, color: C.onSurface, fontFamily: "Roboto" }}
+                  />
+                </label>
               </div>
             </div>
-            <p className="text-xs font-medium mb-2 uppercase tracking-widest" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>Status</p>
-            <div className="flex flex-col gap-1.5 mb-5">
-              {(["Online","Away","Do Not Disturb","Offline"] as const).map(s => {
-                const checked = myStatus === s;
-                return (
-                  <label key={s} className="flex items-center gap-3 px-3 py-2.5 rounded-2xl border cursor-pointer transition-all" style={{ borderColor:checked?STATUS_COLORS[s]:C.outlineVar, background:checked?`${STATUS_COLORS[s]}18`:"transparent" }}>
-                    <input type="radio" name="status" value={s} checked={checked} onChange={() => setMyStatus(s)} className="sr-only" />
-                    <span className="w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 transition-all" style={{ borderColor:STATUS_COLORS[s], background:checked?STATUS_COLORS[s]:"transparent" }}>
-                      {checked && <span className="w-1.5 h-1.5 rounded-full bg-white" />}
-                    </span>
-                    <span className="flex items-center gap-2 text-xs font-medium" style={{ color:checked?STATUS_COLORS[s]:C.onSurfaceVar, fontFamily:"Roboto" }}>
-                      <span className="w-2 h-2 rounded-full shrink-0" style={{ background:STATUS_COLORS[s] }} />{s}
-                    </span>
-                  </label>
-                );
-              })}
-            </div>
-            <p className="text-xs font-medium mb-2 uppercase tracking-widest" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>Bio</p>
-            <textarea rows={3} value={myBio} onChange={e => setMyBio(e.target.value)} className="w-full px-4 py-3 rounded-2xl border text-sm focus:outline-none resize-none mb-5" style={{ borderColor:C.outline, color:C.onSurface, background:C.surfaceVar, fontFamily:"Roboto" }} />
+            <p className="text-[11px] font-medium mb-2 uppercase tracking-widest" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>Bio</p>
+            <textarea
+              rows={3}
+              value={myBio}
+              onChange={e => setMyBio(e.target.value)}
+              className="w-full px-4 py-3 rounded-2xl border text-sm focus:outline-none resize-none mb-5"
+              style={{ borderColor: C.outline, color: C.onSurface, background: "transparent", fontFamily: "Roboto" }}
+            />
             <FilledBtn cls={`w-full justify-center ${savingProfile ? "opacity-60 pointer-events-none" : ""}`} onClick={saveMyProfile}><CheckIcon style={{ fontSize:16 }} />{savingProfile ? "Saving…" : "Save"}</FilledBtn>
           </div>
         </div>
@@ -1542,20 +1723,18 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
                                 <span className="text-sm font-medium truncate" style={{ color: C.onSurface, fontFamily: "Roboto" }}>{m.name}</span>
                                 {m.muted && <VolumeOffIcon style={{ fontSize: 14, color: C.onSurfaceVar }} titleAccess="Muted" />}
                               </div>
-                              <p className="text-xs truncate" style={{ color: C.onSurfaceVar }}>
-                                <MediaPreviewLine
-                                  text={m.msg}
-                                  previewKind={m.previewKind}
-                                  fileName={m.previewFileName}
-                                  color={C.onSurfaceVar}
-                                  iconSize={13}
-                                />
-                              </p>
+                              {(m.mood || "").trim() ? (
+                                <p className="text-xs truncate italic" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
+                                  {m.mood!.trim()}
+                                </p>
+                              ) : null}
                             </div>
-                            <div className="w-5 h-5 shrink-0 flex items-center justify-center">
-                              {m.unread > 0 && (
+                            <div className="w-5 h-5 shrink-0 flex items-center justify-center" title={m.isBlocked ? "Blocked" : undefined}>
+                              {m.isBlocked ? (
+                                <BlockIcon style={{ fontSize: 16, color: C.onSurfaceVar }} aria-label="Blocked" />
+                              ) : (m.unread > 0 && sel.id !== m.id) ? (
                                 <div className="unread-badge rounded-full flex items-center justify-center text-white text-[10px] font-bold" style={{ background: BADGE_BG }}>{m.unread > 9 ? "9+" : m.unread}</div>
-                              )}
+                              ) : null}
                             </div>
                           </button>
                         ))}
@@ -1580,23 +1759,19 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
                           <span className="text-sm font-medium truncate" style={{ color:C.onSurface, fontFamily:"Roboto" }}>{m.name}</span>
                           {m.muted && <VolumeOffIcon style={{ fontSize:14, color:C.onSurfaceVar }} titleAccess="Muted" />}
                         </div>
-                        {m.type === "dm" && (
-                          <p className="text-xs truncate" style={{ color:C.onSurfaceVar }}>
-                            <MediaPreviewLine
-                              text={m.msg}
-                              previewKind={m.previewKind}
-                              fileName={m.previewFileName}
-                              color={C.onSurfaceVar}
-                              iconSize={13}
-                            />
+                        {m.type === "dm" && (m.mood || "").trim() ? (
+                          <p className="text-xs truncate italic" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>
+                            {m.mood!.trim()}
                           </p>
-                        )}
+                        ) : null}
                       </div>
                       {m.type === "dm" && (
-                        <div className="w-5 h-5 shrink-0 flex items-center justify-center">
-                          {m.unread > 0 && (
+                        <div className="w-5 h-5 shrink-0 flex items-center justify-center" title={m.isBlocked ? "Blocked" : undefined}>
+                          {m.isBlocked ? (
+                            <BlockIcon style={{ fontSize: 16, color: C.onSurfaceVar }} aria-label="Blocked" />
+                          ) : (m.unread > 0 && sel.id !== m.id) ? (
                             <div className="unread-badge rounded-full flex items-center justify-center text-white text-[10px] font-bold" style={{ background:BADGE_BG }}>{m.unread > 9 ? "9+" : m.unread}</div>
-                          )}
+                          ) : null}
                         </div>
                       )}
                     </button>

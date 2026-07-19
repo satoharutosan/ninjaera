@@ -585,6 +585,16 @@ export function useMessageThread({
     });
   }, [conversationId]);
 
+  /** Drop an optimistic temp message entirely (e.g. blocked send rejected). */
+  const removeLocal = useCallback((tempId: number) => {
+    setMsgs(prev => {
+      const next = prev.filter(m => m.id !== tempId);
+      msgsRef.current = next;
+      messageCache.removeMessage(conversationId, tempId);
+      return next;
+    });
+  }, [conversationId]);
+
   const updateLocal = useCallback((messageId: number, patch: Partial<ChatMsg>) => {
     messageCache.patchMessage(conversationId, messageId, patch);
     setMsgs(prev => prev.map(m => (m.id === messageId ? { ...m, ...patch } : m)));
@@ -627,6 +637,7 @@ export function useMessageThread({
     replaceOptimistic,
     appendLocal,
     markLocalFailed,
+    removeLocal,
     updateLocal,
     openConversation,
   };

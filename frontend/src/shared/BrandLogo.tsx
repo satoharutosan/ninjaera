@@ -28,7 +28,6 @@ export function BrandLogo({
       height={size}
       decoding={priority ? "sync" : "async"}
       loading={priority ? "eager" : "lazy"}
-      fetchPriority={priority ? "high" : "auto"}
       draggable={false}
       className={`shrink-0 object-contain select-none ${elevated ? "shadow-md" : ""} ${className}`}
       style={{

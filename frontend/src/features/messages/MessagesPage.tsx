@@ -168,19 +168,38 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
 
   const {
     msgs, setMsgs, msgsRef,
-    hasMoreOlder, hasMoreNewer, loadingOlder, loadingNewer,
+    hasMoreOlder, hasMoreNewer, hasMoreNewerRef, loadingOlder, loadingNewer,
     threadReady, threadBootId, initialScrollIndex,
-    lastReadMessageId, setLastReadMessageId,
+    lastReadMessageId, lastReadMessageIdRef, markCaughtUpTo,
     firstItemIndex, firstItemIndexRef,
     showJumpBtn, setShowJumpBtn,
     unreadBelow, setUnreadBelow,
-    isNearBottomRef, pinToBottomRef, visibleStartDataIndexRef, suppressMarkReadUntilRef,
+    isNearBottomRef, pinToBottomRef, visibleStartDataIndexRef, suppressMarkReadUntilRef, markReadTimerRef,
     loadOlderMessages, loadNewerMessages,
     applyNewMessage, applyUpdatedMessage, applyDeletedMessage, applyReaction,
     jumpToLatest, appendLocal, replaceOptimistic, markLocalFailed, updateLocal,
   } = thread;
 
   useEffect(() => { selIdRef.current = sel.id; }, [sel.id]);
+
+  // When the live edge arrives after the user was already at the bottom of a
+  // historical window, atBottomStateChange does not re-fire — catch up here.
+  useEffect(() => {
+    if (!threadReady || hasMoreNewer || !sel.id) return;
+    if (!isNearBottomRef.current) return;
+    if (Date.now() < suppressMarkReadUntilRef.current) return;
+    const newest = [...msgsRef.current].reverse().find(m => m.id > 0)?.id
+      ?? msgsRef.current[msgsRef.current.length - 1]?.id
+      ?? null;
+    if (newest == null) return;
+    if (lastReadMessageIdRef.current != null && lastReadMessageIdRef.current >= newest) return;
+    markCaughtUpTo(newest, { atBottom: true });
+    scheduleMarkRead(sel.id);
+  }, [
+    threadReady, hasMoreNewer, sel.id, msgs.length,
+    markCaughtUpTo, scheduleMarkRead, isNearBottomRef, suppressMarkReadUntilRef,
+    msgsRef, lastReadMessageIdRef,
+  ]);
 
   const clearPendingPaste = useCallback(() => {
     setPendingPaste(prev => {
@@ -248,18 +267,23 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
   const persistConversation = useCallback((conversationId: number) => {
     const list = msgsRef.current;
     if (!conversationId || !list.length || !currentUserId) return;
-    const atBottom = isNearBottomRef.current;
+    const atBottom = isNearBottomRef.current && !hasMoreNewerRef.current;
     const start = Math.max(0, Math.min(list.length - 1, visibleStartDataIndexRef.current));
     const anchor = list[start]?.id ?? list[list.length - 1].id;
-    const newest = list[list.length - 1].id;
-    const prev = getConversationReadState(currentUserId, conversationId);
+    const newest = [...list].reverse().find(m => m.id > 0)?.id ?? list[list.length - 1].id;
+    // Never move the read cursor backwards when leaving a conversation.
+    const cursor = Math.max(
+      lastReadMessageIdRef.current ?? 0,
+      getConversationReadState(currentUserId, conversationId)?.lastReadMessageId ?? 0,
+      atBottom ? newest : 0,
+    );
     saveConversationReadState(currentUserId, conversationId, {
-      anchorMessageId: anchor,
+      anchorMessageId: atBottom ? newest : anchor,
       atBottom,
-      lastReadMessageId: atBottom ? newest : (prev?.lastReadMessageId ?? anchor),
+      lastReadMessageId: cursor > 0 ? cursor : null,
       lastOpenedAt: Date.now(),
     });
-  }, [currentUserId, msgsRef, isNearBottomRef, visibleStartDataIndexRef]);
+  }, [currentUserId, msgsRef, isNearBottomRef, visibleStartDataIndexRef, hasMoreNewerRef, lastReadMessageIdRef]);
 
   useEffect(() => {
     const convId = sel.id;
@@ -329,15 +353,10 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
             forceScrollToBottom("auto");
             if (!isSelf) {
               scheduleMarkRead(conversationId);
-              setLastReadMessageId(message.id);
-              if (currentUserId) {
-                saveConversationReadState(currentUserId, conversationId, {
-                  anchorMessageId: message.id,
-                  atBottom: true,
-                  lastReadMessageId: message.id,
-                  lastOpenedAt: Date.now(),
-                });
-              }
+              markCaughtUpTo(message.id, { atBottom: true });
+            } else if (message.id > 0) {
+              // Sending while viewing advances the cursor past our own message.
+              markCaughtUpTo(message.id, { atBottom: true });
             }
           } else if (!isSelf) {
             setUnreadBelow(n => n + 1);
@@ -465,7 +484,7 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
     };
   }, [
     currentUserId, applyNewMessage, applyUpdatedMessage, applyDeletedMessage, applyReaction,
-    forceScrollToBottom, refreshContacts, scheduleMarkRead, setContacts, setLastReadMessageId, setUnreadBelow,
+    forceScrollToBottom, refreshContacts, scheduleMarkRead, setContacts, markCaughtUpTo, setUnreadBelow,
     setShowJumpBtn, isNearBottomRef, pinToBottomRef, setMsgs, msgsRef,
   ]);
 
@@ -1550,31 +1569,34 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
                     clearTimeout(unpinGraceTimer.current);
                     unpinGraceTimer.current = null;
                   }
+                  const convId = selIdRef.current;
                   const applyCaughtUp = () => {
-                    if (!isNearBottomRef.current) return;
+                    // Abort if the user left this conversation or scrolled away.
+                    if (selIdRef.current !== convId || !isNearBottomRef.current) return;
                     pinToBottomRef.current = true;
                     setShowJumpBtn(false);
                     setUnreadBelow(0);
-                    if (sel.id && msgsRef.current.length && !hasMoreNewer) {
+                    // Use the ref — React state can be stale when atBottom fired before
+                    // loadNewerMessages cleared hasMoreNewer (Discord catch-up race).
+                    if (convId && msgsRef.current.length && !hasMoreNewerRef.current) {
                       const newest = [...msgsRef.current].reverse().find(m => m.id > 0)?.id
                         ?? msgsRef.current[msgsRef.current.length - 1].id;
-                      setLastReadMessageId(newest);
-                      scheduleMarkRead(sel.id);
-                      if (currentUserId) {
-                        saveConversationReadState(currentUserId, sel.id, {
-                          anchorMessageId: newest,
-                          atBottom: true,
-                          lastReadMessageId: newest,
-                          lastOpenedAt: Date.now(),
-                        });
-                      }
+                      markCaughtUpTo(newest, { atBottom: true });
+                      scheduleMarkRead(convId);
                     }
                   };
                   // Defer mark-read after open-at-unread so Virtuoso's first at-bottom
                   // pulse does not clear the NEW separator before layout settles.
                   const suppressUntil = suppressMarkReadUntilRef.current;
+                  if (markReadTimerRef.current) {
+                    clearTimeout(markReadTimerRef.current);
+                    markReadTimerRef.current = null;
+                  }
                   if (Date.now() < suppressUntil) {
-                    window.setTimeout(applyCaughtUp, suppressUntil - Date.now() + 16);
+                    markReadTimerRef.current = setTimeout(() => {
+                      markReadTimerRef.current = null;
+                      applyCaughtUp();
+                    }, suppressUntil - Date.now() + 16);
                     return;
                   }
                   applyCaughtUp();
@@ -1606,6 +1628,21 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
               rangeChanged={(range) => {
                 visibleStartDataIndexRef.current = Math.max(0, range.startIndex - firstItemIndexRef.current);
                 msgPerf.renderedRows(range.endIndex - range.startIndex + 1);
+                // Backup catch-up: atBottom may have fired while hasMoreNewer was still true.
+                // Require the live bottom flag so overscan (increaseViewportBy) cannot clear NEW early.
+                if (
+                  Date.now() >= suppressMarkReadUntilRef.current
+                  && isNearBottomRef.current
+                  && !hasMoreNewerRef.current
+                  && msgsRef.current.length
+                ) {
+                  const newest = [...msgsRef.current].reverse().find(m => m.id > 0)?.id
+                    ?? msgsRef.current[msgsRef.current.length - 1]?.id;
+                  if (newest != null && (lastReadMessageIdRef.current == null || newest > lastReadMessageIdRef.current)) {
+                    markCaughtUpTo(newest, { atBottom: true });
+                    if (selIdRef.current) scheduleMarkRead(selIdRef.current);
+                  }
+                }
               }}
               components={{
                 Header: () => (
@@ -1696,17 +1733,7 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
                       scheduleMarkRead(sel.id);
                       const newest = [...msgsRef.current].reverse().find(m => m.id > 0)?.id
                         ?? msgsRef.current[msgsRef.current.length - 1]?.id;
-                      if (newest != null) {
-                        setLastReadMessageId(newest);
-                        if (currentUserId) {
-                          saveConversationReadState(currentUserId, sel.id, {
-                            anchorMessageId: newest,
-                            atBottom: true,
-                            lastReadMessageId: newest,
-                            lastOpenedAt: Date.now(),
-                          });
-                        }
-                      }
+                      markCaughtUpTo(newest, { atBottom: true });
                     }
                   }}
                   className="w-12 h-12 rounded-full flex items-center justify-center hover:opacity-95 focus-visible:outline-none focus-visible:ring-2 transition-transform hover:scale-105"

@@ -53,6 +53,33 @@ export function saveConversationReadState(
   writeStore(userId, store);
 }
 
+/**
+ * Monotonic read-cursor update. Never moves lastReadMessageId backwards.
+ * Returns the effective lastReadMessageId after the write.
+ */
+export function advanceConversationReadState(
+  userId: number,
+  conversationId: number,
+  opts: {
+    lastReadMessageId: number;
+    atBottom?: boolean;
+    anchorMessageId?: number | null;
+  },
+): number {
+  const prev = getConversationReadState(userId, conversationId);
+  const nextLast = Math.max(
+    opts.lastReadMessageId,
+    prev?.lastReadMessageId ?? 0,
+  );
+  saveConversationReadState(userId, conversationId, {
+    anchorMessageId: opts.anchorMessageId ?? prev?.anchorMessageId ?? nextLast,
+    atBottom: opts.atBottom ?? prev?.atBottom ?? false,
+    lastReadMessageId: nextLast > 0 ? nextLast : null,
+    lastOpenedAt: Date.now(),
+  });
+  return nextLast > 0 ? nextLast : opts.lastReadMessageId;
+}
+
 export function markConversationOpened(userId: number, conversationId: number) {
   const prev = getConversationReadState(userId, conversationId);
   saveConversationReadState(userId, conversationId, {
@@ -81,4 +108,14 @@ export function ensureFirstOpenReadBaseline(
     lastReadMessageId: newestMessageId,
     lastOpenedAt: Date.now(),
   });
+}
+
+/** True when the stored cursor is at/ past the newest known message. */
+export function isConversationCaughtUp(
+  lastReadMessageId: number | null | undefined,
+  newestMessageId: number | null | undefined,
+): boolean {
+  if (newestMessageId == null || newestMessageId <= 0) return true;
+  if (lastReadMessageId == null || lastReadMessageId <= 0) return false;
+  return lastReadMessageId >= newestMessageId;
 }

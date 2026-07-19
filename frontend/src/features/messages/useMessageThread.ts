@@ -5,6 +5,8 @@ import {
   markConversationOpened,
   ensureFirstOpenReadBaseline,
   saveConversationReadState,
+  advanceConversationReadState,
+  isConversationCaughtUp,
 } from "@/features/messages/conversationState";
 import { joinConversation } from "@/app/realtime";
 import { messageCache } from "./messageCache";
@@ -47,7 +49,7 @@ export function useMessageThread({
   const [threadReady, setThreadReady] = useState(false);
   const [threadBootId, setThreadBootId] = useState(0);
   const [initialScrollIndex, setInitialScrollIndex] = useState<InitialScrollIndex | null>(null);
-  const [lastReadMessageId, setLastReadMessageId] = useState<number | null>(null);
+  const [lastReadMessageId, setLastReadMessageIdState] = useState<number | null>(null);
   const [firstItemIndex, setFirstItemIndex] = useState(VIRTUOSO_START_INDEX);
   const [showJumpBtn, setShowJumpBtn] = useState(false);
   const [unreadBelow, setUnreadBelow] = useState(0);
@@ -64,8 +66,31 @@ export function useMessageThread({
   const visibleStartDataIndexRef = useRef(0);
   const conversationIdRef = useRef(conversationId);
   const expectedUnreadRef = useRef(expectedUnread);
+  const lastReadMessageIdRef = useRef<number | null>(null);
   /** Ignore spurious at-bottom marks right after opening at the unread boundary. */
   const suppressMarkReadUntilRef = useRef(0);
+  const markReadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const setLastReadMessageId = useCallback((id: number | null) => {
+    lastReadMessageIdRef.current = id;
+    setLastReadMessageIdState(id);
+  }, []);
+
+  /**
+   * Advance the per-conversation read cursor (monotonic). Clears the NEW separator
+   * as soon as lastRead catches the newest loaded message.
+   */
+  const markCaughtUpTo = useCallback((messageId: number | null | undefined, opts?: { atBottom?: boolean }) => {
+    if (!conversationIdRef.current || !currentUserId || messageId == null || messageId <= 0) return null;
+    const next = advanceConversationReadState(currentUserId, conversationIdRef.current, {
+      lastReadMessageId: messageId,
+      atBottom: opts?.atBottom,
+      anchorMessageId: messageId,
+    });
+    lastReadMessageIdRef.current = next;
+    setLastReadMessageIdState(next);
+    return next;
+  }, [currentUserId]);
 
   useEffect(() => {
     conversationIdRef.current = conversationId;
@@ -78,6 +103,13 @@ export function useMessageThread({
   useEffect(() => {
     msgsRef.current = msgs;
   }, [msgs]);
+
+  useEffect(() => () => {
+    if (markReadTimerRef.current) {
+      clearTimeout(markReadTimerRef.current);
+      markReadTimerRef.current = null;
+    }
+  }, [conversationId]);
 
   const applyFlags = useCallback((older: boolean, newer: boolean) => {
     setHasMoreOlder(older);
@@ -115,8 +147,11 @@ export function useMessageThread({
     isNearBottomRef.current = opts.pinBottom;
     setShowJumpBtn(!!opts.showJump || !opts.pinBottom);
     setUnreadBelow(0);
-    if (opts.lastReadId !== undefined) setLastReadMessageId(opts.lastReadId);
-    suppressMarkReadUntilRef.current = opts.pinBottom ? 0 : Date.now() + 500;
+    if (opts.lastReadId !== undefined) {
+      lastReadMessageIdRef.current = opts.lastReadId;
+      setLastReadMessageIdState(opts.lastReadId);
+    }
+    suppressMarkReadUntilRef.current = opts.pinBottom ? 0 : Date.now() + 450;
     setThreadBootId(id => id + 1);
     setThreadReady(true);
   }, [applyFlags]);
@@ -130,7 +165,8 @@ export function useMessageThread({
 
     const saved = getConversationReadState(currentUserId, conversationId);
     setThreadReady(false);
-    setLastReadMessageId(saved?.lastReadMessageId ?? null);
+    lastReadMessageIdRef.current = saved?.lastReadMessageId ?? null;
+    setLastReadMessageIdState(saved?.lastReadMessageId ?? null);
 
     const finalizeOpen = (
       list: ChatMsg[],
@@ -145,12 +181,16 @@ export function useMessageThread({
       ensureFirstOpenReadBaseline(currentUserId, conversationId, newestId);
       const afterBaseline = getConversationReadState(currentUserId, conversationId);
       const lastReadId = afterBaseline?.lastReadMessageId ?? null;
-      const firstUnreadId = findFirstUnreadId(list, lastReadId);
-      const hasUnread = firstUnreadId != null
-        || (expectedUnreadRef.current > 0 && lastReadId != null && newestId != null && newestId > lastReadId);
 
-      if (hasUnread && firstUnreadId != null) {
+      // Authoritative: NEW only when the cursor is behind the newest message.
+      // Ignore stale atBottom/anchor flags once everything is already read.
+      const caughtUp = isConversationCaughtUp(lastReadId, newestId)
+        || (!flags.hasMoreNewer && findFirstUnreadId(list, lastReadId) == null);
+      const firstUnreadId = caughtUp ? null : findFirstUnreadId(list, lastReadId);
+
+      if (firstUnreadId != null) {
         // Open at the unread boundary — keep lastRead so a single NEW separator stays.
+        // Do not rewrite lastReadMessageId here (monotonic cursor stays put).
         saveConversationReadState(currentUserId, conversationId, {
           anchorMessageId: firstUnreadId,
           atBottom: false,
@@ -167,11 +207,10 @@ export function useMessageThread({
       } else {
         // Fully caught up — pin to bottom, clear NEW, mark server read.
         if (newestId != null) {
-          saveConversationReadState(currentUserId, conversationId, {
-            anchorMessageId: newestId,
-            atBottom: true,
+          advanceConversationReadState(currentUserId, conversationId, {
             lastReadMessageId: newestId,
-            lastOpenedAt: Date.now(),
+            atBottom: true,
+            anchorMessageId: newestId,
           });
         }
         bootThread(list, flags, {
@@ -385,6 +424,14 @@ export function useMessageThread({
       setMsgs(next);
       applyFlags(hasMoreOlderRef.current, hasNewer);
       messageCache.append(conversationId, unique, hasNewer);
+      // If we just reached the live edge while the user is already at the bottom,
+      // atBottomStateChange will not re-fire — advance the read cursor here.
+      if (!hasNewer && isNearBottomRef.current) {
+        const newest = unique.filter(m => m.id > 0).at(-1)?.id
+          ?? next.filter(m => m.id > 0).at(-1)?.id
+          ?? null;
+        markCaughtUpTo(newest, { atBottom: true });
+      }
       return unique.length;
     } catch {
       return 0;
@@ -392,7 +439,7 @@ export function useMessageThread({
       loadingNewerRef.current = false;
       setLoadingNewer(false);
     }
-  }, [conversationId, currentUserId, applyFlags]);
+  }, [conversationId, currentUserId, applyFlags, markCaughtUpTo]);
 
   const applyNewMessage = useCallback((message: ApiMessage) => {
     if (conversationIdRef.current !== conversationId) return;
@@ -482,9 +529,13 @@ export function useMessageThread({
           hasMoreNewer: false,
         };
         messageCache.setWindow(conversationId, mapped, flags, "merge");
+        const newestId = mapped.filter(m => m.id > 0).at(-1)?.id ?? mapped[mapped.length - 1]?.id ?? null;
+        if (newestId != null) {
+          markCaughtUpTo(newestId, { atBottom: true });
+        }
         bootThread(mapped, flags, {
           pinBottom: true,
-          lastReadId: mapped[mapped.length - 1]?.id ?? null,
+          lastReadId: newestId,
         });
       } catch {
         if (gen !== loadGenRef.current) return;
@@ -494,7 +545,7 @@ export function useMessageThread({
     }
 
     // Already on live edge — Virtuoso scroll handled by caller
-  }, [conversationId, currentUserId, bootThread]);
+  }, [conversationId, currentUserId, bootThread, markCaughtUpTo]);
 
   const replaceOptimistic = useCallback((tempId: number, real: ChatMsg) => {
     setMsgs(prev => {
@@ -545,6 +596,7 @@ export function useMessageThread({
     msgsRef,
     hasMoreOlder,
     hasMoreNewer,
+    hasMoreNewerRef,
     loadingOlder,
     loadingNewer,
     threadReady,
@@ -552,6 +604,8 @@ export function useMessageThread({
     initialScrollIndex,
     lastReadMessageId,
     setLastReadMessageId,
+    lastReadMessageIdRef,
+    markCaughtUpTo,
     firstItemIndex,
     firstItemIndexRef,
     showJumpBtn,
@@ -562,6 +616,7 @@ export function useMessageThread({
     pinToBottomRef,
     visibleStartDataIndexRef,
     suppressMarkReadUntilRef,
+    markReadTimerRef,
     loadOlderMessages,
     loadNewerMessages,
     applyNewMessage,

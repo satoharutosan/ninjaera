@@ -1,23 +1,29 @@
 # =============================================================================
-# Ninja Era Messenger — electron-builder (single source of packaging config)
-# Do not duplicate this in package.json "build". Activate Windows signing later
-# by following the comments under `win.sign` / scripts/skip-windows-sign.cjs.
+# Ninja Era Messenger — single authoritative electron-builder configuration.
+# Do not add a package.json "build" block or a second electron-builder.* file.
+#
+# Code signing: intentionally unsigned until Soft Future provides a certificate.
+# forceCodeSigning is false so missing credentials never fail the build.
+# Electron-builder may log: "no signing info identified, signing is skipped"
+# (signHook=false, cscInfo=null). That is expected and is not a project error.
+#
+# FUTURE Windows signing (no restructure required):
+#   1. Set WIN_CSC_LINK / WIN_CSC_KEY_PASSWORD (or CSC_LINK / CSC_KEY_PASSWORD)
+#   2. Optionally set forceCodeSigning: true in CI
+#   3. Set win.verifyUpdateCodeSignature: true once updates are signed
 # =============================================================================
 
 appId: com.softfuture.ninjaera.messenger
 productName: Ninja Era Messenger
-# Use ASCII "(c)" so Windows VERSIONINFO (rcedit) does not strip the glyph.
+# ASCII "(c)" survives Windows VERSIONINFO encoding reliably (© often becomes "c").
 copyright: Copyright (c) 2026 Soft Future. All rights reserved.
 
-# Never fail the build for missing certificates (signing is intentionally off).
 forceCodeSigning: false
 
-# Fills OriginalFilename after the sign step (electron-builder clears it during rcedit).
-# afterSign still runs when win.signtoolOptions.sign is our no-op hook.
+# electron-builder clears OriginalFilename during rcedit; restore after that pass.
+# (signApp still finishes resource editing when code signing is skipped, so afterSign runs.)
 afterSign: ./scripts/after-sign.cjs
 
-# npm package fields (name/version/description/author) also feed Windows version
-# resources. Keep them in sync with the values below.
 extraMetadata:
   name: ninja-era-messenger
   description: Official desktop messaging application for Ninja Era.
@@ -27,7 +33,6 @@ extraMetadata:
 
 directories:
   output: release
-  # Icons live here: build/icon.ico (Windows), build/icon.png (Linux/mac fallback)
   buildResources: build
 
 files:
@@ -42,39 +47,43 @@ extraResources:
   - from: build/icon.ico
     to: icon.ico
 
-# Auto-update feed (configure a real provider before shipping updates).
-# Unsigned updates: leave verifyUpdateCodeSignature false until signing is on.
 publish:
   - provider: generic
     url: https://ninjaera.up.railway.app/desktop-updates/
 
 # ── Windows ──────────────────────────────────────────────────────────────────
+# Primary installer: Squirrel.Windows (Postman-style Setup.exe + splash GIF).
+# Requires: electron-builder-squirrel-windows (dev) + electron-squirrel-startup (runtime).
 win:
-  # Stable filesystem name (no spaces) → NinjaEraMessenger.exe
   executableName: NinjaEraMessenger
-  # Multi-size ICO for EXE / installer / taskbar (not the Electron default).
   icon: build/icon.ico
-  # Still embed ProductName / CompanyName / FileDescription / FileVersion / Icon.
+  # Embed ProductName / CompanyName / FileDescription / versions / icon via rcedit.
   signAndEditExecutable: true
-  # Explicit opt-out of code signing (see scripts/skip-windows-sign.cjs).
-  # FUTURE: remove `signtoolOptions.sign` below and set:
-  #   WIN_CSC_LINK=<path-or-base64-of-pfx>
-  #   WIN_CSC_KEY_PASSWORD=<password>
-  # Optionally set forceCodeSigning: true so CI fails if signing is misconfigured.
-  signtoolOptions:
-    sign: ./scripts/skip-windows-sign.cjs
-  # No certificate yet — do not verify update signatures against a publisher.
+  # Unsigned builds: do not require publisher signature checks on updates yet.
   verifyUpdateCodeSignature: false
   legalTrademarks: Soft Future
   target:
-    - target: nsis
+    - target: squirrel
       arch:
         - x64
+    # Optional zip of the unpacked app (not the primary install path).
     - target: portable
       arch:
         - x64
   artifactName: NinjaEraMessenger-${version}-${arch}.${ext}
 
+# Squirrel.Windows — per-user install under %LocalAppData%, Setup.exe + RELEASES/nupkg updates.
+squirrelWindows:
+  # HTTPS icon for Programs & Features (local file paths are not accepted by Squirrel).
+  iconUrl: https://ninjaera.up.railway.app/favicon.png
+  # Splash shown while Setup.exe installs (regenerate: npm run desktop:squirrel-spinner).
+  # Also auto-picked if present at build/install-spinner.gif
+  loadingGif: build/install-spinner.gif
+  artifactName: NinjaEraMessenger-Setup-${version}.${ext}
+  # Prefer appId over npm package name for Squirrel identity.
+  useAppIdAsId: true
+
+# NSIS kept as optional alternate (not in win.target). Restore by adding target: nsis.
 nsis:
   oneClick: false
   perMachine: false
@@ -87,7 +96,12 @@ nsis:
   installerIcon: build/icon.ico
   uninstallerIcon: build/icon.ico
   installerHeaderIcon: build/icon.ico
-  artifactName: NinjaEraMessenger-Setup-${version}.${ext}
+  installerSidebar: build/installer/installerSidebar.bmp
+  uninstallerSidebar: build/installer/uninstallerSidebar.bmp
+  installerHeader: build/installer/header.bmp
+  include: build/installer/installer.nsh
+  runAfterFinish: true
+  artifactName: NinjaEraMessenger-NSIS-Setup-${version}.${ext}
 
 portable:
   artifactName: NinjaEraMessenger-${version}-portable.${ext}
@@ -96,8 +110,7 @@ portable:
 mac:
   icon: build/icon.png
   category: public.app-category.social-networking
-  # FUTURE macOS signing: set CSC_LINK / CSC_KEY_PASSWORD (or CSC_NAME) and
-  # remove `identity: null`. Leave null for now so no keychain search occurs.
+  # No keychain identity until a Mac signing cert is available.
   identity: null
   target:
     - dmg

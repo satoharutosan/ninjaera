@@ -109,6 +109,8 @@ export class ApiError extends Error {
 }
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 15000;
+/** Large admin/game/resource uploads (backend allows up to ~500MB) need far more than the JSON default. */
+const UPLOAD_REQUEST_TIMEOUT_MS = 30 * 60 * 1000;
 
 type RequestOptions = RequestInit & {
   timeoutMs?: number;
@@ -135,11 +137,14 @@ export function setToken(token: string | null, persist?: boolean) {
 }
 
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, signal, ...fetchOptions } = options;
+  const { timeoutMs: timeoutOverride, signal, ...fetchOptions } = options;
+  const isUpload = fetchOptions.body instanceof FormData;
+  const timeoutMs =
+    timeoutOverride ?? (isUpload ? UPLOAD_REQUEST_TIMEOUT_MS : DEFAULT_REQUEST_TIMEOUT_MS);
   const headers: Record<string, string> = { ...(fetchOptions.headers as Record<string, string>) };
   const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
-  if (!(fetchOptions.body instanceof FormData)) {
+  if (!isUpload) {
     headers["Content-Type"] = headers["Content-Type"] || "application/json";
   }
 
@@ -149,7 +154,11 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     if (signal.aborted) controller.abort();
     else signal.addEventListener("abort", onAbort, { once: true });
   }
-  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  let timedOut = false;
+  const timeout = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
 
   let res: Response;
   let data: unknown;
@@ -158,11 +167,25 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     data = await res.json().catch(() => ({}));
   } catch (e) {
     if (e instanceof DOMException && e.name === "AbortError") {
-      throw new ApiError(
-        "The verification service is temporarily unavailable. Please try again in a few minutes.",
-        408,
-        { code: "REQUEST_TIMEOUT" },
-      );
+      // Auth email/verification paths historically used a short timeout; keep that copy there only.
+      const isAuthVerificationPath =
+        path.startsWith("/auth/register")
+        || path.startsWith("/auth/verify")
+        || path.startsWith("/auth/resend")
+        || path.startsWith("/auth/forgot")
+        || path.startsWith("/auth/verification");
+      const message = !timedOut
+        ? "The request was cancelled."
+        : isUpload
+          ? "The upload timed out. Check your connection and try again (large files can take several minutes)."
+          : isAuthVerificationPath
+            ? "The verification service is temporarily unavailable. Please try again in a few minutes."
+            : "The request timed out. Please try again.";
+      throw new ApiError(message, 408, {
+        code: timedOut ? "REQUEST_TIMEOUT" : "REQUEST_CANCELLED",
+        path,
+        upload: isUpload,
+      });
     }
     throw e;
   } finally {

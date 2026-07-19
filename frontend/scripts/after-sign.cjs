@@ -1,6 +1,9 @@
 /**
- * afterSign hook: set OriginalFilename (electron-builder's rcedit pass clears it).
- * Icon / ProductName / Company / Copyright are already set via signAndEditExecutable.
+ * afterSign: restore OriginalFilename.
+ *
+ * electron-builder's Windows rcedit pass sets OriginalFilename to "" by design.
+ * This hook runs after that pass (signApp still completes for resource editing
+ * even when code signing is skipped). It does not alter signing behavior.
  */
 "use strict";
 

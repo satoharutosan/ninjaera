@@ -14,7 +14,11 @@ function webrtcLog(...args: unknown[]) {
   if (isDev) console.log("[WebRTC]", ...args);
 }
 
-/** Black canvas track so voice calls still negotiate a sendrecv video m-line. */
+function screenLog(...args: unknown[]) {
+  if (isDev) console.log("[ScreenShare]", ...args);
+}
+
+/** Tiny live track so voice calls still negotiate sendrecv video. */
 function createPlaceholderVideoTrack(): { track: MediaStreamTrack; dispose: () => void } {
   const canvas = document.createElement("canvas");
   canvas.width = 16;
@@ -26,10 +30,10 @@ function createPlaceholderVideoTrack(): { track: MediaStreamTrack; dispose: () =
     ctx.fillRect(0, 0, 16, 16);
   };
   paint();
-  const stream = canvas.captureStream(2);
+  const stream = canvas.captureStream(5);
   const track = stream.getVideoTracks()[0];
   if (!track) throw new Error("No placeholder track");
-  const timer = window.setInterval(paint, 1000);
+  const timer = window.setInterval(paint, 500);
   return {
     track,
     dispose: () => {
@@ -40,11 +44,10 @@ function createPlaceholderVideoTrack(): { track: MediaStreamTrack; dispose: () =
 }
 
 /**
- * 1:1 WebRTC peer — role-independent.
- *
- * One audio + one video m-line. Screen share swaps the *same* outbound video
- * sender via replaceTrack(camera ↔ screen). The remote video element already
- * bound to that RTP stream updates in place — no second m-line, no display switch.
+ * Single audio + single video transceiver.
+ * Screen share: replaceTrack on the video sender, then always renegotiate so
+ * both offerer and answerer transmit the new source (replaceTrack alone is not
+ * enough on many browser/role combinations).
  */
 export class CallPeer {
   pc: RTCPeerConnection;
@@ -55,19 +58,18 @@ export class CallPeer {
   private makingOffer = false;
   private polite: boolean;
   private closed = false;
+  private negotiateChain: Promise<void> = Promise.resolve();
 
   private audioTransceiver: RTCRtpTransceiver;
   private videoTransceiver: RTCRtpTransceiver;
-  private audioSender: RTCRtpSender;
-  private videoSender: RTCRtpSender;
 
   private remoteAudio: MediaStreamTrack | null = null;
   private remoteVideo: MediaStreamTrack | null = null;
 
   private placeholder: { track: MediaStreamTrack; dispose: () => void } | null = null;
   private sendingScreen = false;
-  /** Camera (or placeholder) restored when screen share ends. */
   private outboundBaseTrack: MediaStreamTrack | null = null;
+  private statsTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     private handlers: PeerHandlers,
@@ -78,8 +80,6 @@ export class CallPeer {
 
     this.audioTransceiver = this.pc.addTransceiver("audio", { direction: "sendrecv" });
     this.videoTransceiver = this.pc.addTransceiver("video", { direction: "sendrecv" });
-    this.audioSender = this.audioTransceiver.sender;
-    this.videoSender = this.videoTransceiver.sender;
 
     this.pc.onicecandidate = (e) => {
       if (e.candidate) {
@@ -91,24 +91,25 @@ export class CallPeer {
       const track = e.track;
       webrtcLog("Remote track received", {
         kind: track.kind,
-        id: track.id.slice(0, 10),
-        mid: e.transceiver.mid,
+        id: track.id.slice(0, 12),
+        mid: e.transceiver?.mid,
         muted: track.muted,
         readyState: track.readyState,
+        streams: e.streams.length,
       });
 
-      if (track.kind === "audio" || e.transceiver === this.audioTransceiver) {
-        if (track.kind === "audio") this.remoteAudio = track;
-      } else {
-        this.remoteVideo = track;
-      }
+      if (track.kind === "audio") this.remoteAudio = track;
+      else if (track.kind === "video") this.remoteVideo = track;
 
       this.emitRemote();
       track.onunmute = () => {
-        webrtcLog("Remote track unmute", track.kind);
+        webrtcLog("Remote track unmute", track.kind, track.id.slice(0, 12));
         this.emitRemote();
       };
-      track.onmute = () => this.emitRemote();
+      track.onmute = () => {
+        webrtcLog("Remote track mute", track.kind);
+        this.emitRemote();
+      };
       track.onended = () => {
         if (this.remoteVideo === track) this.remoteVideo = null;
         if (this.remoteAudio === track) this.remoteAudio = null;
@@ -120,14 +121,32 @@ export class CallPeer {
       webrtcLog("connectionState", this.pc.connectionState);
       this.handlers.onConnectionState?.(this.pc.connectionState);
     };
+
+    this.pc.onsignalingstatechange = () => {
+      webrtcLog("signalingState", this.pc.signalingState);
+    };
+  }
+
+  /** Resolve the live video RTCRtpSender — never assume getSenders()[0]. */
+  private findVideoSender(): RTCRtpSender {
+    const byTransceiver = this.videoTransceiver.sender;
+    if (byTransceiver) return byTransceiver;
+    const found = this.pc.getSenders().find(s => s.track?.kind === "video");
+    if (found) return found;
+    const emptyVideo = this.pc.getSenders().find(s => {
+      const params = s.getParameters?.();
+      return !!params && (!s.track || s.track.kind === "video");
+    });
+    if (emptyVideo) return emptyVideo;
+    throw new Error("Video sender unavailable");
   }
 
   private syncReceivers() {
     try {
       const a = this.audioTransceiver.receiver.track;
       const v = this.videoTransceiver.receiver.track;
-      if (a?.readyState === "live") this.remoteAudio = a;
-      if (v?.readyState === "live") this.remoteVideo = v;
+      if (a && a.readyState !== "ended") this.remoteAudio = a;
+      if (v && v.readyState !== "ended") this.remoteVideo = v;
     } catch { /* */ }
   }
 
@@ -136,13 +155,7 @@ export class CallPeer {
     const tracks = [this.remoteAudio, this.remoteVideo].filter(
       (t): t is MediaStreamTrack => !!t && t.readyState !== "ended",
     );
-    const stream = new MediaStream(tracks);
-    webrtcLog("Remote stream attached", {
-      audio: !!this.remoteAudio,
-      video: !!this.remoteVideo,
-      videoMuted: this.remoteVideo?.muted,
-    });
-    this.handlers.onRemoteStream(stream);
+    this.handlers.onRemoteStream(new MediaStream(tracks));
   }
 
   private assertCanMutateMedia() {
@@ -152,26 +165,109 @@ export class CallPeer {
     if (this.pc.connectionState === "closed" || this.pc.connectionState === "failed") {
       throw new Error("Call connection is not available");
     }
-    if (!this.videoSender) throw new Error("Video sender unavailable");
+  }
+
+  private async waitForStable(timeoutMs = 2500) {
+    if (this.pc.signalingState === "stable") return true;
+    return new Promise<boolean>((resolve) => {
+      const done = (ok: boolean) => {
+        this.pc.removeEventListener("signalingstatechange", onChange);
+        window.clearTimeout(timer);
+        resolve(ok);
+      };
+      const onChange = () => {
+        if (this.pc.signalingState === "stable") done(true);
+      };
+      const timer = window.setTimeout(() => done(this.pc.signalingState === "stable"), timeoutMs);
+      this.pc.addEventListener("signalingstatechange", onChange);
+    });
   }
 
   /**
-   * If the answerer never negotiated sending on video, replaceTrack alone won't
-   * transmit. Renegotiate once to flip the m-line to sendrecv.
+   * Always renegotiate after camera↔screen swap so RTP actually switches
+   * for both caller and callee (replaceTrack alone is insufficient in practice).
    */
-  private async ensureSendingAfterReplace() {
-    const dir = this.videoTransceiver.currentDirection;
-    webrtcLog("video currentDirection after replace", dir);
-    if (dir === "sendrecv" || dir === "sendonly") return;
-    if (this.pc.signalingState !== "stable") {
-      webrtcLog("skip renegotiate — not stable", this.pc.signalingState);
-      return;
-    }
+  private renegotiate(reason: string): Promise<void> {
+    this.negotiateChain = this.negotiateChain
+      .then(async () => {
+        if (this.closed) return;
+        webrtcLog("Renegotiation started", reason, {
+          signalingState: this.pc.signalingState,
+          direction: this.videoTransceiver.direction,
+          currentDirection: this.videoTransceiver.currentDirection,
+          polite: this.polite,
+        });
+        try {
+          this.videoTransceiver.direction = "sendrecv";
+        } catch { /* */ }
+
+        const stable = await this.waitForStable();
+        if (!stable || this.closed) {
+          webrtcLog("Renegotiation aborted — not stable");
+          return;
+        }
+        await this.createOffer();
+        webrtcLog("Renegotiation offer sent", reason);
+      })
+      .catch((err) => {
+        webrtcLog("Renegotiation failed", reason, err);
+      });
+    return this.negotiateChain;
+  }
+
+  private async logVideoStats(label: string) {
+    if (!isDev || this.closed) return;
     try {
-      this.videoTransceiver.direction = "sendrecv";
+      const stats = await this.pc.getStats();
+      stats.forEach((r) => {
+        if (r.type === "outbound-rtp" && (r as { kind?: string }).kind === "video") {
+          const o = r as unknown as {
+            framesSent?: number;
+            bytesSent?: number;
+            frameWidth?: number;
+            frameHeight?: number;
+          };
+          webrtcLog(`Stats outbound (${label})`, {
+            framesSent: o.framesSent,
+            bytesSent: o.bytesSent,
+            size: `${o.frameWidth || 0}x${o.frameHeight || 0}`,
+          });
+        }
+        if (r.type === "inbound-rtp" && (r as { kind?: string }).kind === "video") {
+          const o = r as unknown as {
+            framesReceived?: number;
+            bytesReceived?: number;
+            frameWidth?: number;
+            frameHeight?: number;
+            framesDecoded?: number;
+          };
+          webrtcLog(`Stats inbound (${label})`, {
+            framesReceived: o.framesReceived,
+            framesDecoded: o.framesDecoded,
+            bytesReceived: o.bytesReceived,
+            size: `${o.frameWidth || 0}x${o.frameHeight || 0}`,
+          });
+        }
+      });
     } catch { /* */ }
-    webrtcLog("Renegotiation started (activate send on video m-line)");
-    await this.createOffer();
+  }
+
+  private startStatsWatch() {
+    if (!isDev) return;
+    this.stopStatsWatch();
+    let n = 0;
+    this.statsTimer = setInterval(() => {
+      n += 1;
+      void this.logVideoStats(`t=${n}s`);
+      if (n >= 5) this.stopStatsWatch();
+    }, 1000);
+  }
+
+  private stopStatsWatch() {
+    if (this.statsTimer) {
+      clearInterval(this.statsTimer);
+      this.statsTimer = null;
+    }
   }
 
   async setLocalStream(stream: MediaStream, withVideo: boolean) {
@@ -180,16 +276,12 @@ export class CallPeer {
     const video = stream.getVideoTracks()[0] || null;
     this.cameraTrack = video;
 
-    if (audio) await this.audioSender.replaceTrack(audio);
+    const audioSender = this.audioTransceiver.sender;
+    if (audio) await audioSender.replaceTrack(audio);
 
-    // Always put a live track on the video sender before the first offer/answer
-    // so BOTH peers negotiate sendrecv (fixes callee screen share).
-    let outbound: MediaStreamTrack | null = null;
-    if (withVideo && video) {
-      video.enabled = true;
-      outbound = video;
-    } else if (video) {
-      video.enabled = false;
+    let outbound: MediaStreamTrack;
+    if (video) {
+      video.enabled = !!withVideo;
       outbound = video;
     } else {
       if (!this.placeholder) this.placeholder = createPlaceholderVideoTrack();
@@ -197,15 +289,17 @@ export class CallPeer {
     }
 
     this.outboundBaseTrack = outbound;
-    await this.videoSender.replaceTrack(outbound);
+    const videoSender = this.findVideoSender();
+    await videoSender.replaceTrack(outbound);
     try {
       this.videoTransceiver.direction = "sendrecv";
     } catch { /* */ }
 
     webrtcLog("Local video sender ready", {
-      trackId: outbound?.id.slice(0, 10),
+      trackId: outbound.id.slice(0, 12),
+      enabled: outbound.enabled,
       withVideo,
-      hasCamera: !!video,
+      senders: this.pc.getSenders().map(s => s.track?.kind || "empty"),
     });
   }
 
@@ -213,8 +307,8 @@ export class CallPeer {
     if (this.closed) return;
     this.makingOffer = true;
     try {
-      webrtcLog("Creating offer", { polite: this.polite });
-      await this.pc.setLocalDescription(await this.pc.createOffer());
+      const offer = await this.pc.createOffer();
+      await this.pc.setLocalDescription(offer);
       if (this.pc.localDescription) {
         this.handlers.onSignal({ kind: "offer", sdp: this.pc.localDescription });
       }
@@ -243,6 +337,7 @@ export class CallPeer {
         webrtcLog("Ignore colliding offer (impolite)");
         return;
       }
+      webrtcLog("Glare — polite rollback");
       await Promise.all([
         this.pc.setLocalDescription({ type: "rollback" }),
         this.pc.setRemoteDescription(description),
@@ -253,7 +348,8 @@ export class CallPeer {
 
     if (signal.kind === "offer") {
       webrtcLog("Receiving offer → creating answer");
-      await this.pc.setLocalDescription(await this.pc.createAnswer());
+      const answer = await this.pc.createAnswer();
+      await this.pc.setLocalDescription(answer);
       if (this.pc.localDescription) {
         this.handlers.onSignal({ kind: "answer", sdp: this.pc.localDescription });
       }
@@ -262,20 +358,22 @@ export class CallPeer {
     }
 
     this.emitRemote();
+    // After renegotiation answer, refresh remote binding for peers
+    window.setTimeout(() => this.emitRemote(), 100);
   }
 
   setMicEnabled(on: boolean) {
     this.localStream?.getAudioTracks().forEach(t => { t.enabled = on; });
-    if (this.audioSender.track) this.audioSender.track.enabled = on;
+    const t = this.audioTransceiver.sender.track;
+    if (t) t.enabled = on;
   }
 
   setCamEnabled(on: boolean) {
     if (this.cameraTrack) this.cameraTrack.enabled = on;
     if (!this.sendingScreen) {
       this.localStream?.getVideoTracks().forEach(t => { t.enabled = on; });
-      if (this.videoSender.track && this.videoSender.track === this.cameraTrack) {
-        this.videoSender.track.enabled = on;
-      }
+      const t = this.findVideoSender().track;
+      if (t && t === this.cameraTrack) t.enabled = on;
     }
   }
 
@@ -287,7 +385,7 @@ export class CallPeer {
     });
     const newTrack = next.getAudioTracks()[0];
     const old = this.localStream.getAudioTracks()[0];
-    if (newTrack) await this.audioSender.replaceTrack(newTrack);
+    if (newTrack) await this.audioTransceiver.sender.replaceTrack(newTrack);
     if (old) {
       this.localStream.removeTrack(old);
       old.stop();
@@ -308,7 +406,7 @@ export class CallPeer {
       this.cameraTrack = newTrack;
       this.outboundBaseTrack = newTrack;
       if (!this.sendingScreen) {
-        await this.videoSender.replaceTrack(newTrack);
+        await this.findVideoSender().replaceTrack(newTrack);
       }
     }
     if (old && old !== this.screenTrack && old !== this.placeholder?.track) {
@@ -319,10 +417,6 @@ export class CallPeer {
     next.getAudioTracks().forEach(t => t.stop());
   }
 
-  /**
-   * Replace the outbound video sender track with the screen capture.
-   * Same code path for caller and callee.
-   */
   async startScreenShare(): Promise<MediaStreamTrack> {
     this.assertCanMutateMedia();
 
@@ -332,16 +426,16 @@ export class CallPeer {
       throw err;
     }
 
-    webrtcLog("ScreenShare started", { polite: this.polite });
+    screenLog("Started by local user", { polite: this.polite, role: this.polite ? "answerer" : "offerer" });
 
     let display: MediaStream;
     try {
       display = await navigator.mediaDevices.getDisplayMedia({
         video: {
-          frameRate: { ideal: 15 },
+          frameRate: { ideal: 30, max: 30 },
           width: { ideal: 1920 },
           height: { ideal: 1080 },
-        },
+        } as MediaTrackConstraints,
         audio: false,
       });
     } catch (e) {
@@ -355,21 +449,28 @@ export class CallPeer {
     }
 
     const track = display.getVideoTracks()[0];
-    if (!track || track.readyState !== "live") {
-      throw new Error("No active screen track");
+    if (!track) throw new Error("No screen track");
+
+    screenLog("Track created", {
+      kind: track.kind,
+      id: track.id,
+      readyState: track.readyState,
+      enabled: track.enabled,
+      muted: track.muted,
+    });
+
+    if (track.readyState !== "live") {
+      try { track.stop(); } catch { /* */ }
+      throw new Error("Screen track is not live");
     }
+
     track.enabled = true;
     try {
       track.contentHint = "detail";
     } catch { /* */ }
-
-    webrtcLog("Created track", {
-      id: track.id.slice(0, 10),
-      readyState: track.readyState,
-      enabled: track.enabled,
-      muted: track.muted,
-      settings: track.getSettings?.(),
-    });
+    try {
+      await track.applyConstraints({ frameRate: 30 });
+    } catch { /* optional */ }
 
     if (this.screenTrack) {
       try {
@@ -378,48 +479,60 @@ export class CallPeer {
       } catch { /* */ }
     }
 
-    // Keep camera/placeholder as restore target; do not stop camera.
+    const sender = this.findVideoSender();
+    const beforeId = sender.track?.id ?? null;
+    webrtcLog("Before replaceTrack:", beforeId);
+
     this.screenTrack = track;
     this.sendingScreen = true;
 
-    webrtcLog("Replacing sender track", {
-      sender: "video",
-      prev: this.videoSender.track?.id?.slice(0, 10) ?? null,
-      next: track.id.slice(0, 10),
-      direction: this.videoTransceiver.currentDirection,
-    });
-
     try {
-      await this.videoSender.replaceTrack(track);
+      await sender.replaceTrack(track);
     } catch (e) {
       this.sendingScreen = false;
       this.screenTrack = null;
       try { track.stop(); } catch { /* */ }
-      webrtcLog("replaceTrack failed", e);
+      webrtcLog("replaceTrack failed", {
+        error: e,
+        connectionState: this.pc.connectionState,
+        signalingState: this.pc.signalingState,
+        senderTrack: sender.track?.id,
+      });
       throw new Error("Could not switch to screen share.");
     }
 
-    // Verify attachment
-    if (this.videoSender.track !== track) {
-      webrtcLog("WARNING: sender.track !== screen track after replace");
+    const afterId = this.findVideoSender().track?.id ?? null;
+    webrtcLog("After replaceTrack:", afterId);
+    if (afterId !== track.id) {
+      webrtcLog("ERROR: sender.track was not updated to screen track");
+      this.sendingScreen = false;
+      this.screenTrack = null;
+      try { track.stop(); } catch { /* */ }
+      throw new Error("Screen track was not attached to the video sender.");
     }
 
-    await this.ensureSendingAfterReplace();
+    // Critical: force SDP renegotiation so remote actually receives screen RTP.
+    await this.renegotiate("screen-share-start");
 
     track.onended = () => {
-      webrtcLog("Screen track ended by browser UI");
+      screenLog("Track ended (browser UI stop)");
       void this.stopScreenShare();
     };
 
-    webrtcLog("Screen share active", {
-      senderTrack: this.videoSender.track?.id?.slice(0, 10),
-      direction: this.videoTransceiver.currentDirection,
+    this.startStatsWatch();
+    window.setTimeout(() => void this.logVideoStats("post-share"), 800);
+
+    screenLog("Active — sender verified", {
+      senderTrack: afterId?.slice(0, 12),
+      currentDirection: this.videoTransceiver.currentDirection,
+      connectionState: this.pc.connectionState,
     });
     return track;
   }
 
   async stopScreenShare(): Promise<void> {
-    webrtcLog("ScreenShare stopped");
+    screenLog("Stopped");
+    this.stopStatsWatch();
     if (this.screenTrack) {
       this.screenTrack.onended = null;
       try { this.screenTrack.stop(); } catch { /* */ }
@@ -442,9 +555,11 @@ export class CallPeer {
         this.outboundBaseTrack = restore;
       }
       try {
-        await this.videoSender.replaceTrack(restore);
-        webrtcLog("Camera track restored", restore?.id.slice(0, 10));
-        await this.ensureSendingAfterReplace();
+        const sender = this.findVideoSender();
+        webrtcLog("Before restore replaceTrack:", sender.track?.id);
+        await sender.replaceTrack(restore);
+        webrtcLog("After restore replaceTrack:", sender.track?.id);
+        await this.renegotiate("screen-share-stop");
       } catch (e) {
         webrtcLog("restore camera failed", e);
       }
@@ -466,26 +581,37 @@ export class CallPeer {
   }
 
   getLocalScreenStream(): MediaStream | null {
-    if (!this.sendingScreen || !this.screenTrack || this.screenTrack.readyState !== "live") {
+    if (!this.sendingScreen || !this.screenTrack || this.screenTrack.readyState === "ended") {
       return null;
     }
     const audio = this.localStream?.getAudioTracks() || [];
     return new MediaStream([this.screenTrack, ...audio]);
   }
 
-  /** Always the remote camera/video m-line — screen frames arrive on the same track via replaceTrack. */
-  buildRemoteViewStream(_prefer: "auto" | "camera" | "screen"): MediaStream | null {
+  /** Remote camera/screen share the same receiver track after replaceTrack. */
+  buildRemoteViewStream(_prefer?: "auto" | "camera" | "screen"): MediaStream | null {
     this.syncReceivers();
-    const audio = this.remoteAudio ? [this.remoteAudio] : [];
-    if (this.remoteVideo && this.remoteVideo.readyState === "live") {
+    const audio = this.remoteAudio && this.remoteAudio.readyState !== "ended" ? [this.remoteAudio] : [];
+    if (this.remoteVideo && this.remoteVideo.readyState !== "ended") {
       return new MediaStream([...audio, this.remoteVideo]);
     }
     if (audio.length) return new MediaStream(audio);
     return null;
   }
 
+  /** Force a fresh MediaStream wrapper (for video element rebind). */
+  cloneRemoteViewStream(): MediaStream | null {
+    return this.buildRemoteViewStream("auto");
+  }
+
+  getRemoteVideoTrackId(): string | null {
+    this.syncReceivers();
+    return this.remoteVideo?.id ?? null;
+  }
+
   close() {
     this.closed = true;
+    this.stopStatsWatch();
     try {
       if (this.screenTrack) {
         this.screenTrack.onended = null;
@@ -499,9 +625,6 @@ export class CallPeer {
       this.localStream?.getTracks().forEach(t => t.stop());
       this.localStream = null;
       this.cameraTrack = null;
-      this.pc.getSenders().forEach(s => {
-        try { s.track?.stop(); } catch { /* */ }
-      });
       this.pc.close();
     } catch { /* */ }
   }

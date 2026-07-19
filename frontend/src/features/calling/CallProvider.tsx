@@ -42,6 +42,8 @@ type CallContextValue = {
   connectionState: string;
   localStream: MediaStream | null;
   remoteStream: MediaStream | null;
+  /** Increments when peer screen-share signaling arrives — forces video rebind. */
+  remoteBindEpoch: number;
   audioInputs: MediaDeviceInfo[];
   videoInputs: MediaDeviceInfo[];
   audioOutputs: MediaDeviceInfo[];
@@ -110,6 +112,8 @@ export function CallProvider({ children }: { children: ReactNode }) {
   const [videoInputs, setVideoInputs] = useState<MediaDeviceInfo[]>([]);
   const [audioOutputs, setAudioOutputs] = useState<MediaDeviceInfo[]>([]);
   const [selectedOutputId, setSelectedOutputId] = useState("");
+  /** Bumps when peer screen-share state changes to force <video> rebind. */
+  const [remoteBindEpoch, setRemoteBindEpoch] = useState(0);
 
   const peerRef = useRef<CallPeer | null>(null);
   const callIdRef = useRef<string | null>(null);
@@ -153,9 +157,8 @@ export function CallProvider({ children }: { children: ReactNode }) {
   const refreshRemotePreview = useCallback(() => {
     const peer = peerRef.current;
     if (!peer) return;
-    // Screen share uses replaceTrack on the same video m-line — always bind
-    // the remote video receiver; media-state only updates labels.
-    setRemoteStream(peer.buildRemoteViewStream("auto"));
+    // Fresh MediaStream wrapper each time so React + <video> see a new srcObject.
+    setRemoteStream(peer.cloneRemoteViewStream());
   }, []);
 
   const stopRingTimer = useCallback(() => {
@@ -187,6 +190,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
     setScreenSharing(false);
     setPeerScreenSharing(false);
     peerAnnouncedScreenRef.current = false;
+    setRemoteBindEpoch(0);
     setPeerMicOn(true);
     setPeerCamOn(true);
     setLocalView("auto");
@@ -590,13 +594,20 @@ export function CallProvider({ children }: { children: ReactNode }) {
         if (typeof data.screenSharing === "boolean") {
           peerAnnouncedScreenRef.current = data.screenSharing;
           setPeerScreenSharing(data.screenSharing);
+          setRemoteBindEpoch(e => e + 1);
           if (import.meta.env.DEV) {
-            console.log("[ScreenShare] peer status", data.screenSharing);
+            console.log("[ScreenShare] peer status", data.screenSharing, {
+              remoteTrackId: peerRef.current?.getRemoteVideoTrackId(),
+            });
           }
-          // Same remote video track — refresh binding so the element paints new frames.
+          // Renegotiation may still be in flight — rebind several times.
           refreshRemotePreview();
-          window.setTimeout(() => refreshRemotePreview(), 150);
-          window.setTimeout(() => refreshRemotePreview(), 500);
+          window.setTimeout(() => refreshRemotePreview(), 200);
+          window.setTimeout(() => {
+            refreshRemotePreview();
+            setRemoteBindEpoch(e => e + 1);
+          }, 600);
+          window.setTimeout(() => refreshRemotePreview(), 1200);
         }
       }),
       onRealtimeEvent<{ error: string; code?: string; callId?: string }>("call:error", ({ error, code }) => {
@@ -629,7 +640,8 @@ export function CallProvider({ children }: { children: ReactNode }) {
   const value = useMemo<CallContextValue>(() => ({
     phase, invite, callId, callType, elapsedSec, ringingSec, micOn, camOn,
     screenSharing, peerScreenSharing, peerMicOn, peerCamOn, localView, remoteView,
-    connectionState, localStream, remoteStream, audioInputs, videoInputs, audioOutputs, selectedOutputId,
+    connectionState, localStream, remoteStream, remoteBindEpoch,
+    audioInputs, videoInputs, audioOutputs, selectedOutputId,
     startCall: (opts) => { void startCall(opts); },
     acceptIncoming: () => { void acceptIncoming(); },
     declineIncoming, ignoreIncoming, hangup,
@@ -640,7 +652,8 @@ export function CallProvider({ children }: { children: ReactNode }) {
   }), [
     phase, invite, callId, callType, elapsedSec, ringingSec, micOn, camOn,
     screenSharing, peerScreenSharing, peerMicOn, peerCamOn, localView, remoteView,
-    connectionState, localStream, remoteStream, audioInputs, videoInputs, audioOutputs, selectedOutputId,
+    connectionState, localStream, remoteStream, remoteBindEpoch,
+    audioInputs, videoInputs, audioOutputs, selectedOutputId,
     startCall, acceptIncoming, declineIncoming, ignoreIncoming, hangup,
     toggleMic, toggleCam, switchMic, switchCam, setAudioOutput,
     shareScreen, stopScreenShare, setLocalViewMode, setRemoteViewMode,

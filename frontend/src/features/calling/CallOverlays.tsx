@@ -67,7 +67,7 @@ function VideoTile({
   muted,
   label,
   sinkId,
-  /** Bump when remote media source changes (e.g. screen share) to force rebind. */
+  /** Changes when screen share toggles or remote track identity changes. */
   bindKey,
 }: {
   stream: MediaStream | null;
@@ -77,28 +77,38 @@ function VideoTile({
   bindKey?: string | number;
 }) {
   const ref = useRef<HTMLVideoElement>(null);
-  const videoTracks = stream?.getVideoTracks() ?? [];
-  const hasLiveVideo = videoTracks.some(t => t.enabled && t.readyState === "live");
-  const trackSig = videoTracks.map(t => `${t.id}:${t.readyState}:${t.muted}`).join("|");
+  const videoTrack = stream?.getVideoTracks()[0] ?? null;
+  const hasLiveVideo = !!videoTrack && videoTrack.readyState === "live";
+  const trackId = videoTrack?.id ?? "none";
 
+  // Always keep a <video> mounted for remote so we can rebind without unmount races.
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    // Always reassign — replaceTrack updates frames on the same track, but
-    // switching MediaStream instances or remounting needs an explicit bind.
-    if (el.srcObject !== stream) {
+
+    // Force clear → attach so browsers paint new RTP after replaceTrack/renegotiate.
+    el.srcObject = null;
+    if (stream) {
       el.srcObject = stream;
       if (import.meta.env.DEV) {
-        console.log("[Video] stream attached", {
-          local: !!muted,
-          tracks: stream?.getTracks().map(t => ({ kind: t.kind, id: t.id.slice(0, 8), live: t.readyState })),
+        console.log("[Video] Remote stream attached", {
+          localPreview: !!muted,
+          bindKey,
+          trackId: trackId.slice(0, 12),
+          mutedTrack: videoTrack?.muted,
+          readyState: videoTrack?.readyState,
         });
       }
+      const play = () => { void el.play().catch(() => {}); };
+      play();
+      // replaceTrack can leave the element paused until unmute
+      videoTrack?.addEventListener("unmute", play);
+      return () => {
+        videoTrack?.removeEventListener("unmute", play);
+      };
     }
-    if (stream && el.paused) {
-      void el.play().catch(() => {});
-    }
-  }, [stream, bindKey, trackSig, muted]);
+    return undefined;
+  }, [stream, bindKey, trackId, muted, videoTrack]);
 
   useEffect(() => {
     const el = ref.current as HTMLVideoElement & { setSinkId?: (id: string) => Promise<void> } | null;
@@ -116,7 +126,6 @@ function VideoTile({
 
   return (
     <video
-      key={bindKey != null ? `v-${bindKey}` : undefined}
       ref={ref}
       autoPlay
       playsInline
@@ -352,7 +361,7 @@ export function CallOverlays() {
             <VideoTile
               stream={call.remoteStream}
               sinkId={call.selectedOutputId || undefined}
-              bindKey={call.peerScreenSharing ? "remote-screen" : "remote-camera"}
+              bindKey={`${call.remoteBindEpoch}-${call.peerScreenSharing ? "screen" : "cam"}-${call.remoteStream?.getVideoTracks()[0]?.id ?? "x"}`}
               label={
                 call.phase === "connecting"
                   ? "Connecting…"
@@ -390,7 +399,7 @@ export function CallOverlays() {
             <VideoTile
               stream={call.localStream}
               muted
-              bindKey={call.screenSharing ? "local-screen" : "local-camera"}
+              bindKey={`local-${call.screenSharing ? "screen" : "cam"}-${call.localStream?.getVideoTracks()[0]?.id ?? "x"}`}
               label={
                 call.screenSharing
                   ? "You are sharing your screen"

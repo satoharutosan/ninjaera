@@ -342,11 +342,15 @@ export function CallProvider({ children }: { children: ReactNode }) {
   }, [invite, reset]);
 
   const ignoreIncoming = useCallback(() => {
-    if (!invite?.callId) return;
-    emitCallIgnore(invite.callId);
-    setPhase("ignored");
-    toast.message("Call ignored — open the conversation to Accept or Decline.");
-  }, [invite]);
+    const id = (invite?.callId || callIdRef.current || "").trim();
+    if (!id) {
+      reset();
+      return;
+    }
+    // Server ends the ring for both sides; call:ended / call:declined clear UIs.
+    emitCallIgnore(id);
+    reset();
+  }, [invite, reset]);
 
   const hangup = useCallback(() => {
     cancelledRef.current = true;
@@ -428,7 +432,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
     const unsubs = [
       onRealtimeEvent<CallInvite>("call:incoming", (data) => {
         if (!data?.callId) return;
-        if (phaseRef.current !== "idle" && phaseRef.current !== "ignored") {
+        if (phaseRef.current !== "idle") {
           emitCallBusy(data.callId);
           return;
         }
@@ -492,7 +496,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
           pendingStreamRef.current.getTracks().forEach(t => t.stop());
           pendingStreamRef.current = null;
         }
-        toast.message("Call declined");
+        // Toast comes from call:ended (authoritative) to avoid duplicates.
         resetRef.current();
       }),
       onRealtimeEvent<{ callId: string; reason?: string }>("call:ended", (data) => {
@@ -506,9 +510,10 @@ export function CallProvider({ children }: { children: ReactNode }) {
         const reason = data?.reason;
         if (reason === "declined") toast.message("Call declined");
         else if (reason === "timeout") toast.message("Missed call");
-        else if (reason === "cancelled") toast.message("Call cancelled");
+        else if (reason === "cancelled") toast.message("Call canceled");
         else if (reason === "busy") toast.message("User is busy");
-        else if (reason === "disconnect") toast.message("Call disconnected");
+        else if (reason === "failed") toast.error("Call failed");
+        else if (reason === "disconnect") toast.message("Connection lost");
         else if (reason === "offline") toast.message("User is offline");
         resetRef.current();
       }),
@@ -520,9 +525,13 @@ export function CallProvider({ children }: { children: ReactNode }) {
         resetRef.current();
       }),
       onRealtimeEvent<{ callId: string }>("call:ignored", ({ callId: id }) => {
-        if (callIdRef.current === id && phaseRef.current === "incoming") {
-          setPhase("ignored");
+        if (phaseRef.current === "idle") return;
+        if (callIdRef.current && id && callIdRef.current !== id) return;
+        if (pendingStreamRef.current) {
+          pendingStreamRef.current.getTracks().forEach(t => t.stop());
+          pendingStreamRef.current = null;
         }
+        resetRef.current();
       }),
       onRealtimeEvent<{ callId: string; signal: IceSignal }>("call:signal", async ({ callId: id, signal }) => {
         if (callIdRef.current && callIdRef.current !== id) return;
@@ -544,14 +553,24 @@ export function CallProvider({ children }: { children: ReactNode }) {
           refreshRemotePreview();
         }
       }),
-      onRealtimeEvent<{ error: string; code?: string }>("call:error", ({ error, code }) => {
+      onRealtimeEvent<{ error: string; code?: string; callId?: string }>("call:error", ({ error, code }) => {
         if (pendingStreamRef.current) {
           pendingStreamRef.current.getTracks().forEach(t => t.stop());
           pendingStreamRef.current = null;
         }
+        // Always clear modals — never leave caller/callee stuck after a signaling error.
+        const raw = (error || "").toLowerCase();
         if (code === "busy") toast.message("User is busy");
         else if (code === "offline") toast.message("User is offline");
-        else toast.error(error || "Call failed");
+        else if (code === "forbidden" || raw.includes("not authorized") || raw.includes("not a participant")) {
+          toast.error("Call failed");
+        } else if (code === "not_found" || code === "invalid_state") {
+          toast.message("Call is no longer available");
+        } else if (code === "rate_limited") {
+          toast.message("Too many call attempts — try again shortly");
+        } else {
+          toast.error(error || "Call failed");
+        }
         resetRef.current();
       }),
     ];

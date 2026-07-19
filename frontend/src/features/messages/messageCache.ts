@@ -13,9 +13,13 @@ export type ConversationCacheEntry = {
 
 const store = new Map<number, ConversationCacheEntry>();
 
+function cid(conversationId: number): number {
+  return Number(conversationId);
+}
+
 function touch(conversationId: number, entry: ConversationCacheEntry) {
   entry.lastAccessAt = Date.now();
-  store.set(conversationId, entry);
+  store.set(cid(conversationId), entry);
   evictLru();
 }
 
@@ -44,7 +48,7 @@ function mergeById(existing: ChatMsg[], incoming: ChatMsg[]): ChatMsg[] {
 
 export const messageCache = {
   get(conversationId: number): ConversationCacheEntry | null {
-    const entry = store.get(conversationId);
+    const entry = store.get(cid(conversationId));
     if (!entry) return null;
     entry.lastAccessAt = Date.now();
     return entry;
@@ -52,13 +56,13 @@ export const messageCache = {
 
   /** True if the cache has a continuous window containing `messageId`. */
   hasMessage(conversationId: number, messageId: number): boolean {
-    const entry = store.get(conversationId);
+    const entry = store.get(cid(conversationId));
     return !!entry?.messages.some(m => m.id === messageId);
   },
 
   /** True when we already have a newest-page window (no newer history to fetch). */
   hasNewestWindow(conversationId: number): boolean {
-    const entry = store.get(conversationId);
+    const entry = store.get(cid(conversationId));
     return !!(entry && entry.messages.length > 0 && !entry.hasMoreNewer);
   },
 
@@ -68,6 +72,7 @@ export const messageCache = {
     flags: { hasMoreOlder: boolean; hasMoreNewer: boolean },
     mode: "replace" | "merge" = "merge",
   ) {
+    conversationId = cid(conversationId);
     const prev = store.get(conversationId);
     const merged = mode === "replace" || !prev
       ? [...messages].sort((a, b) => a.id - b.id)
@@ -103,6 +108,7 @@ export const messageCache = {
     older: ChatMsg[],
     hasMoreOlder: boolean,
   ) {
+    conversationId = cid(conversationId);
     const prev = store.get(conversationId);
     if (!prev) {
       return this.setWindow(conversationId, older, { hasMoreOlder, hasMoreNewer: true }, "replace");
@@ -123,6 +129,7 @@ export const messageCache = {
     newer: ChatMsg[],
     hasMoreNewer: boolean,
   ) {
+    conversationId = cid(conversationId);
     const prev = store.get(conversationId);
     if (!prev) {
       return this.setWindow(conversationId, newer, { hasMoreOlder: true, hasMoreNewer }, "replace");
@@ -139,6 +146,8 @@ export const messageCache = {
   },
 
   upsertMessage(conversationId: number, msg: ChatMsg) {
+    conversationId = Number(conversationId);
+    if (!Number.isFinite(conversationId)) return;
     const prev = store.get(conversationId);
     if (!prev) {
       // Cold insert from WS only — do NOT claim a complete newest window or openConversation
@@ -179,6 +188,7 @@ export const messageCache = {
   },
 
   patchMessage(conversationId: number, messageId: number, patch: Partial<ChatMsg>) {
+    conversationId = cid(conversationId);
     const prev = store.get(conversationId);
     if (!prev) return null;
     const idx = prev.messages.findIndex(m => m.id === messageId);
@@ -213,6 +223,7 @@ export const messageCache = {
   },
 
   removeMessage(conversationId: number, messageId: number) {
+    conversationId = cid(conversationId);
     const prev = store.get(conversationId);
     if (!prev) return null;
     const messages = prev.messages.filter(m => m.id !== messageId);

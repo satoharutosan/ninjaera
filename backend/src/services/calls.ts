@@ -30,12 +30,24 @@ export function setCallEndedHandler(handler: EndHandler) {
 const callsById = new Map<string, ActiveCall>();
 const callByUser = new Map<number, string>();
 
+/** Coerce DB/socket IDs — Postgres BIGINT often arrives as string from node-pg. */
+export function asUserId(value: unknown): number {
+  const n = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(n) ? n : NaN;
+}
+
+function sameUser(a: unknown, b: unknown): boolean {
+  const na = asUserId(a);
+  const nb = asUserId(b);
+  return Number.isFinite(na) && Number.isFinite(nb) && na === nb;
+}
+
 export function getCall(callId: string) {
   return callsById.get(callId);
 }
 
 export function getUserCall(userId: number) {
-  const id = callByUser.get(userId);
+  const id = callByUser.get(asUserId(userId));
   return id ? callsById.get(id) : undefined;
 }
 
@@ -46,12 +58,16 @@ export function isPrivilegedMember(user: { is_team_member?: number; is_admin?: n
 
 /** At least one participant must be a team member (or admin). User↔User is blocked. */
 export async function canParticipantsCall(callerId: number, calleeId: number): Promise<{ ok: boolean; error?: string }> {
-  if (callerId === calleeId) return { ok: false, error: "Invalid call target" };
+  const a = asUserId(callerId);
+  const b = asUserId(calleeId);
+  if (!Number.isFinite(a) || !Number.isFinite(b) || a === b) {
+    return { ok: false, error: "Invalid call target" };
+  }
   const caller = await qGet<{ is_team_member: number; is_admin: number; is_deleted: number }>(
-    "SELECT is_team_member, is_admin, is_deleted FROM users WHERE id = ?", callerId,
+    "SELECT is_team_member, is_admin, is_deleted FROM users WHERE id = ?", a,
   );
   const callee = await qGet<{ is_team_member: number; is_admin: number; is_deleted: number }>(
-    "SELECT is_team_member, is_admin, is_deleted FROM users WHERE id = ?", calleeId,
+    "SELECT is_team_member, is_admin, is_deleted FROM users WHERE id = ?", b,
   );
   if (!caller || !callee) return { ok: false, error: "User not found" };
   if (caller.is_deleted === 1 || callee.is_deleted === 1) {
@@ -85,31 +101,38 @@ export async function startCall(opts: {
   callerId: number;
   calleeId: number;
 }): Promise<{ ok: true; call: ActiveCall } | { ok: false; error: string; code?: string }> {
-  const perm = await canParticipantsCall(opts.callerId, opts.calleeId);
+  const callerId = asUserId(opts.callerId);
+  const calleeId = asUserId(opts.calleeId);
+  const conversationId = asUserId(opts.conversationId);
+  if (!Number.isFinite(callerId) || !Number.isFinite(calleeId) || !Number.isFinite(conversationId)) {
+    return { ok: false, error: "Invalid call", code: "invalid" };
+  }
+
+  const perm = await canParticipantsCall(callerId, calleeId);
   if (!perm.ok) return { ok: false, error: perm.error || "Not allowed", code: "forbidden" };
 
-  if (await usersAreBlocked(opts.callerId, opts.calleeId)) {
+  if (await usersAreBlocked(callerId, calleeId)) {
     return { ok: false, error: "You cannot call this user", code: "blocked" };
   }
 
-  if (getUserCall(opts.callerId)) {
+  if (getUserCall(callerId)) {
     return { ok: false, error: "You are already in a call.", code: "busy" };
   }
-  if (getUserCall(opts.calleeId)) {
+  if (getUserCall(calleeId)) {
     return { ok: false, error: "User is busy", code: "busy" };
   }
 
-  const access = await assertCanAccessConversation(opts.callerId, opts.conversationId);
+  const access = await assertCanAccessConversation(callerId, conversationId);
   if (!access.ok) return { ok: false, error: access.error, code: "forbidden" };
-  const peerAccess = await assertCanAccessConversation(opts.calleeId, opts.conversationId);
+  const peerAccess = await assertCanAccessConversation(calleeId, conversationId);
   if (!peerAccess.ok) return { ok: false, error: "Not a participant", code: "forbidden" };
 
   const call: ActiveCall = {
     id: randomUUID(),
     type: opts.type,
-    conversationId: opts.conversationId,
-    callerId: opts.callerId,
-    calleeId: opts.calleeId,
+    conversationId,
+    callerId,
+    calleeId,
     state: "ringing",
     createdAt: Date.now(),
   };
@@ -122,17 +145,19 @@ export async function startCall(opts: {
   }, RING_TIMEOUT_MS);
 
   callsById.set(call.id, call);
-  callByUser.set(opts.callerId, call.id);
-  callByUser.set(opts.calleeId, call.id);
+  callByUser.set(callerId, call.id);
+  callByUser.set(calleeId, call.id);
 
   return { ok: true, call };
 }
 
-export function acceptCall(callId: string, userId: number): { ok: true; call: ActiveCall } | { ok: false; error: string } {
+export function acceptCall(callId: string, userId: number): { ok: true; call: ActiveCall } | { ok: false; error: string; code?: string } {
   const call = callsById.get(callId);
-  if (!call) return { ok: false, error: "Call not found" };
-  if (call.calleeId !== userId) return { ok: false, error: "Not authorized" };
-  if (call.state !== "ringing") return { ok: false, error: "Call is not ringing" };
+  if (!call) return { ok: false, error: "Call not found", code: "not_found" };
+  if (!sameUser(call.calleeId, userId)) {
+    return { ok: false, error: "This call is no longer available", code: "forbidden" };
+  }
+  if (call.state !== "ringing") return { ok: false, error: "Call is not ringing", code: "invalid_state" };
   if (call.ringTimer) {
     clearTimeout(call.ringTimer);
     call.ringTimer = undefined;
@@ -141,56 +166,91 @@ export function acceptCall(callId: string, userId: number): { ok: true; call: Ac
   return { ok: true, call };
 }
 
-export async function declineCall(callId: string, userId: number): Promise<{ ok: true } | { ok: false; error: string }> {
+export async function declineCall(callId: string, userId: number): Promise<{ ok: true; call: ActiveCall } | { ok: false; error: string; code?: string }> {
   const call = callsById.get(callId);
-  if (!call) return { ok: false, error: "Call not found" };
-  if (call.calleeId !== userId && call.callerId !== userId) return { ok: false, error: "Not authorized" };
+  if (!call) return { ok: false, error: "Call not found", code: "not_found" };
+  if (!sameUser(call.calleeId, userId) && !sameUser(call.callerId, userId)) {
+    return { ok: false, error: "This call is no longer available", code: "forbidden" };
+  }
+  const snapshot = { ...call };
   await endCallInternal(call, "declined", false);
-  return { ok: true };
+  return { ok: true, call: snapshot };
 }
 
-export async function hangupCall(callId: string, userId: number): Promise<{ ok: true } | { ok: false; error: string }> {
+export async function hangupCall(callId: string, userId: number): Promise<{ ok: true } | { ok: false; error: string; code?: string }> {
   const call = callsById.get(callId);
-  if (!call) return { ok: false, error: "Call not found" };
-  if (call.calleeId !== userId && call.callerId !== userId) return { ok: false, error: "Not authorized" };
+  if (!call) return { ok: false, error: "Call not found", code: "not_found" };
+  if (!sameUser(call.calleeId, userId) && !sameUser(call.callerId, userId)) {
+    return { ok: false, error: "This call is no longer available", code: "forbidden" };
+  }
   let reason = "hangup";
   if (call.state === "ringing") {
-    reason = userId === call.callerId ? "cancelled" : "declined";
+    reason = sameUser(userId, call.callerId) ? "cancelled" : "declined";
   }
   await endCallInternal(call, reason, false);
   return { ok: true };
 }
 
-/** Callee already in another call — end ringing invite as busy. */
-export async function busyCall(callId: string, userId: number): Promise<{ ok: true; call: ActiveCall } | { ok: false; error: string }> {
+/** End a ringing/active call as a connection/auth failure (both sides clear UI). */
+export async function failCall(callId: string, userId: number): Promise<{ ok: true } | { ok: false; error: string; code?: string }> {
   const call = callsById.get(callId);
-  if (!call) return { ok: false, error: "Call not found" };
-  if (call.calleeId !== userId) return { ok: false, error: "Not authorized" };
-  if (call.state !== "ringing") return { ok: false, error: "Call is not ringing" };
+  if (!call) return { ok: false, error: "Call not found", code: "not_found" };
+  if (!sameUser(call.calleeId, userId) && !sameUser(call.callerId, userId)) {
+    return { ok: false, error: "This call is no longer available", code: "forbidden" };
+  }
+  await endCallInternal(call, "failed", false);
+  return { ok: true };
+}
+
+/** Callee already in another call — end ringing invite as busy. */
+export async function busyCall(callId: string, userId: number): Promise<{ ok: true; call: ActiveCall } | { ok: false; error: string; code?: string }> {
+  const call = callsById.get(callId);
+  if (!call) return { ok: false, error: "Call not found", code: "not_found" };
+  if (!sameUser(call.calleeId, userId)) {
+    return { ok: false, error: "This call is no longer available", code: "forbidden" };
+  }
+  if (call.state !== "ringing") return { ok: false, error: "Call is not ringing", code: "invalid_state" };
+  const snapshot = { ...call };
   await endCallInternal(call, "busy", false);
-  return { ok: true, call };
+  return { ok: true, call: snapshot };
+}
+
+/**
+ * Recipient dismissed the incoming UI — end the ring for both sides so the
+ * caller is never stuck on "Calling…". Persists as declined/rejected.
+ */
+export async function ignoreCall(callId: string, userId: number): Promise<{ ok: true; call: ActiveCall } | { ok: false; error: string; code?: string }> {
+  const call = callsById.get(callId);
+  if (!call) return { ok: false, error: "Call not found", code: "not_found" };
+  if (!sameUser(call.calleeId, userId)) {
+    return { ok: false, error: "This call is no longer available", code: "forbidden" };
+  }
+  if (call.state !== "ringing") return { ok: false, error: "Call is not ringing", code: "invalid_state" };
+  const snapshot = { ...call };
+  await endCallInternal(call, "declined", false);
+  return { ok: true, call: snapshot };
 }
 
 export function assertCallParticipant(callId: string, userId: number) {
   const call = callsById.get(callId);
   if (!call) return null;
-  if (call.callerId !== userId && call.calleeId !== userId) return null;
+  if (!sameUser(call.callerId, userId) && !sameUser(call.calleeId, userId)) return null;
   return call;
 }
 
 export function peerIdFor(call: ActiveCall, userId: number) {
-  return call.callerId === userId ? call.calleeId : call.callerId;
+  return sameUser(call.callerId, userId) ? call.calleeId : call.callerId;
 }
 
 export async function cleanupUserCalls(userId: number) {
-  const call = getUserCall(userId);
+  const uid = asUserId(userId);
+  const call = getUserCall(uid);
   if (!call) return;
-  if (call.state === "ringing" && userId === call.callerId) {
+  if (call.state === "ringing" && sameUser(uid, call.callerId)) {
     await endCallInternal(call, "cancelled", false);
     return;
   }
-  if (call.state === "ringing" && userId === call.calleeId) {
-    // Callee vanished mid-ring — treat as missed for notification
+  if (call.state === "ringing" && sameUser(uid, call.calleeId)) {
     await endCallInternal(call, "timeout", true);
     return;
   }

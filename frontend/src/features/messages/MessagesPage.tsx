@@ -25,7 +25,6 @@ import CheckIcon from "@mui/icons-material/Check";
 import CircularProgress from "@mui/material/CircularProgress";
 import Badge from "@mui/material/Badge";
 import CallIcon from "@mui/icons-material/Call";
-import CallEndIcon from "@mui/icons-material/CallEnd";
 import VideocamIcon from "@mui/icons-material/Videocam";
 import { toast } from "sonner";
 import { VoiceRecorderButton } from "@/features/messages/VoiceRecorder";
@@ -499,9 +498,9 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
   useEffect(() => {
     const unsubs = [
       onRealtimeEvent<{ conversationId: number; message: ApiMessage }>("message:new", ({ conversationId, message }) => {
-        if (conversationId === selIdRef.current) {
+        if (Number(conversationId) === Number(selIdRef.current)) {
           applyNewMessage(message);
-          const isSelf = message.userId === currentUserId;
+          const isSelf = Number(message.userId) === Number(currentUserId);
           // While Messages is hidden (keep-alive on another page), do not auto-read
           // or scroll — returning should use unread positioning if needed.
           if (!isActiveRef.current) {
@@ -532,16 +531,16 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
         refreshContacts();
       }),
       onRealtimeEvent<{ conversationId: number; message: ApiMessage }>("message:updated", ({ conversationId, message }) => {
-        if (conversationId === selIdRef.current) applyUpdatedMessage(message);
+        if (Number(conversationId) === Number(selIdRef.current)) applyUpdatedMessage(message);
         else messageCache.upsertMessage(conversationId, toChatMsg(message, currentUserId));
       }),
       onRealtimeEvent<{ conversationId: number; messageId: number }>("message:deleted", ({ conversationId, messageId }) => {
-        if (conversationId === selIdRef.current) applyDeletedMessage(messageId);
+        if (Number(conversationId) === Number(selIdRef.current)) applyDeletedMessage(messageId);
         else messageCache.removeMessage(conversationId, messageId);
         refreshContacts();
       }),
       onRealtimeEvent<{ conversationId: number; messageId: number; reactions: Record<string, string[]> }>("message:reaction", ({ conversationId, messageId, reactions }) => {
-        if (conversationId === selIdRef.current) applyReaction(messageId, reactions);
+        if (Number(conversationId) === Number(selIdRef.current)) applyReaction(messageId, reactions);
         else messageCache.patchMessage(conversationId, messageId, { reactions });
       }),
       // conversation:update is owned by App shell — avoid a second list fetch here
@@ -550,7 +549,7 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
         refreshContacts();
       }),
       onRealtimeEvent<{ conversationId: number; userId: number; username: string; typing: boolean }>("typing", ({ conversationId, userId, username, typing }) => {
-        if (conversationId !== selIdRef.current || userId === currentUserId) return;
+        if (Number(conversationId) !== Number(selIdRef.current) || Number(userId) === Number(currentUserId)) return;
         setTypingUsers(prev => {
           const filtered = prev.filter(u => u.userId !== userId);
           return typing ? [...filtered, { userId, username }] : filtered;
@@ -1678,50 +1677,6 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
             )}
           </div>
         </div>
-        {/* Transient ignored-call banner — session-only, not persisted */}
-        {callApi?.phase === "ignored"
-          && callApi.invite
-          && callApi.invite.conversationId === sel.id
-          && (
-          <div
-            className="shrink-0 mx-4 mt-3 mb-1 px-4 py-3 rounded-2xl border flex flex-col sm:flex-row sm:items-center gap-3"
-            style={{ background: C.surface, borderColor: C.primary, boxShadow: SH1 }}
-            role="status"
-            aria-label="Incoming call request"
-          >
-            <div className="flex items-center gap-3 min-w-0 flex-1">
-              <ChatAvatar name={callApi.invite.callerName} avatarUrl={callApi.invite.callerAvatar} size={40} />
-              <div className="min-w-0">
-                <p className="text-sm font-medium truncate" style={{ color: C.onSurface, fontFamily: "Roboto" }}>
-                  Incoming {callApi.invite.type === "video" ? "video" : "voice"} call from {callApi.invite.callerName}
-                </p>
-                <p className="text-xs" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
-                  Still ringing — accept or decline
-                </p>
-              </div>
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
-              <button
-                type="button"
-                aria-label="Decline call"
-                onClick={() => callApi.declineIncoming()}
-                className="w-10 h-10 rounded-full flex items-center justify-center text-white"
-                style={{ background: C.error }}
-              >
-                <CallEndIcon style={{ fontSize: 18 }} />
-              </button>
-              <button
-                type="button"
-                aria-label="Accept call"
-                onClick={() => void callApi.acceptIncoming()}
-                className="w-10 h-10 rounded-full flex items-center justify-center text-white"
-                style={{ background: "#386A20" }}
-              >
-                <CallIcon style={{ fontSize: 18 }} />
-              </button>
-            </div>
-          </div>
-        )}
         {/* Message list */}
         <div className="flex-1 relative min-h-0 min-w-0 flex flex-col overflow-hidden" style={{ background:C.surfaceVar }} onClick={closeAll}>
           {threadReady && msgs.length > 0 ? (

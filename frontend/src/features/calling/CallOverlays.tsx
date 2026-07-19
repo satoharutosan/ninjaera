@@ -109,15 +109,14 @@ export function CallOverlays() {
   const C = useC();
   const call = useCall();
 
-  // Incoming modal — not shown when ignored (banner handles that)
   if (call.phase === "incoming" && call.invite) {
     return (
       <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 p-4" role="dialog" aria-modal="true" aria-label="Incoming call">
         <div className="w-full max-w-sm rounded-3xl p-6 text-center relative" style={{ background: C.surface, boxShadow: SH2 }}>
           <button
             type="button"
-            aria-label="Ignore call"
-            title="Ignore"
+            aria-label="Dismiss call"
+            title="Dismiss"
             onClick={call.ignoreIncoming}
             className="absolute top-3 right-3 w-9 h-9 rounded-full flex items-center justify-center hover:bg-black/5"
             style={{ color: C.onSurfaceVar }}

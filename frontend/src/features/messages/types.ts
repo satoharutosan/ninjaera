@@ -44,11 +44,13 @@ export function sortChatMessages(msgs: ChatMsg[]): ChatMsg[] {
 }
 
 export function toChatMsg(m: ApiMessage, viewerId: number): ChatMsg {
-  const isSelf = m.userId === viewerId;
+  const userId = Number(m.userId);
+  const viewer = Number(viewerId);
+  const isSelf = Number.isFinite(userId) && userId === viewer;
   const isDeleted = !!m.isDeleted;
   return {
-    id: m.id,
-    userId: m.userId,
+    id: Number(m.id),
+    userId,
     user: isSelf ? "You" : displayUserName(m.user, isDeleted),
     msg: m.msg,
     time: m.time,

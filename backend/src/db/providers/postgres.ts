@@ -8,7 +8,16 @@ import type {
 } from "../adapter.js";
 import { rewriteSqlForPostgres, toPostgresParams } from "../adapter.js";
 
-const { Pool } = pg;
+const { Pool, types } = pg;
+
+// BIGINT/BIGSERIAL (OID 20) arrive as strings by default — coerce to number so
+// call auth, socket rooms, and message IDs compare correctly with JS numbers.
+// Safe while primary keys stay within Number.MAX_SAFE_INTEGER.
+types.setTypeParser(types.builtins.INT8, (v) => {
+  if (v == null) return v;
+  const n = Number(v);
+  return Number.isSafeInteger(n) ? n : v;
+});
 
 export type PostgresProviderOptions = {
   connectionString: string;

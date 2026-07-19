@@ -7,17 +7,17 @@ export function callEventLabel(type: CallType, event: CallTimelineEvent): string
   const kind = type === "video" ? "Video" : "Voice";
   switch (event) {
     case "started":
-      return `${kind} call started`;
+      return `${kind} call started.`;
     case "ended":
-      return `${kind} call ended`;
+      return `${kind} call ended.`;
     case "rejected":
-      return `${kind} call rejected`;
+      return `${kind} call declined.`;
     case "cancelled":
-      return `${kind} call cancelled`;
+      return `${kind} call canceled.`;
     case "missed":
-      return `Missed ${type === "video" ? "video" : "voice"} call`;
+      return `${kind} call missed.`;
     default:
-      return `${kind} call`;
+      return `${kind} call.`;
   }
 }
 
@@ -29,7 +29,7 @@ export function reasonToTimelineEvent(
   if (reason === "busy") return null;
   if (reason === "timeout") return "missed";
   if (reason === "declined") return "rejected";
-  if (reason === "cancelled") return "cancelled";
+  if (reason === "cancelled" || reason === "failed") return "cancelled";
   if (reason === "hangup" || reason === "disconnect") {
     return wasActive ? "ended" : "cancelled";
   }
@@ -57,7 +57,8 @@ export async function insertCallTimelineMessage(
     `, createdAt, content.slice(0, 200), call.conversationId);
 
     return { id: Number(result.lastInsertRowid), createdAt, content };
-  } catch {
+  } catch (err) {
+    console.error("[calls] insertCallTimelineMessage failed:", err);
     return null;
   }
 }

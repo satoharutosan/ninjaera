@@ -5,11 +5,15 @@ import { verifyToken, getUserById } from "../middleware/auth.js";
 import { isUserActive } from "../middleware/admin.js";
 import {
   acceptCall,
+  asUserId,
   assertCallParticipant,
   busyCall,
   cleanupUserCalls,
   declineCall,
+  getCall,
+  failCall,
   hangupCall,
+  ignoreCall,
   insertMissedCallNotification,
   peerIdFor,
   setCallEndedHandler,
@@ -33,7 +37,7 @@ let io: Server | null = null;
 const typingTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 function userRoom(userId: number) {
-  return `user:${userId}`;
+  return `user:${asUserId(userId)}`;
 }
 
 function isUserSocketOnline(userId: number): boolean {
@@ -42,41 +46,49 @@ function isUserSocketOnline(userId: number): boolean {
 }
 
 function formatCallMessageForViewer(raw: Record<string, unknown>, viewerId: number) {
+  const userId = asUserId(raw.user_id);
   return {
-    id: raw.id as number,
-    userId: raw.user_id as number,
+    id: asUserId(raw.id),
+    userId,
     user: raw.username as string,
     msg: raw.content as string,
     time: formatTime(raw.created_at as string),
-    self: (raw.user_id as number) === viewerId,
+    self: userId === asUserId(viewerId),
     avatarUrl: (raw.avatar_url as string | null) || undefined,
     mediaUrl: (raw.media_url as string | null) || undefined,
     mediaType: (raw.media_type as string | null) || undefined,
     fileName: (raw.file_name as string | null) || undefined,
-    fileSize: (raw.file_size as number | null) || undefined,
+    fileSize: raw.file_size != null ? Number(raw.file_size) : undefined,
     edited: !!raw.edited_at,
   };
 }
 
 async function publishCallTimeline(call: ActiveCall, event: CallTimelineEvent) {
   const inserted = await insertCallTimelineMessage(call, event);
-  if (!inserted) return;
+  if (!inserted) {
+    console.error(`[calls] failed to persist timeline event=${event} callId=${call.id}`);
+    return;
+  }
   const raw = await loadMessageRow(inserted.id);
-  if (!raw) return;
-  await emitMessageToParticipants(call.conversationId, "message:new", (viewerId) => ({
-    conversationId: call.conversationId,
+  if (!raw) {
+    console.error(`[calls] timeline message missing after insert id=${inserted.id}`);
+    return;
+  }
+  const conversationId = asUserId(call.conversationId);
+  await emitMessageToParticipants(conversationId, "message:new", (viewerId) => ({
+    conversationId,
     message: formatCallMessageForViewer(raw, viewerId),
   }));
-  await emitConversationUpdate(call.conversationId);
+  await emitConversationUpdate(conversationId);
 }
 
 function convRoom(convId: number) {
-  return `conv:${convId}`;
+  return `conv:${asUserId(convId)}`;
 }
 
 export async function getConversationParticipantIds(convId: number): Promise<number[]> {
-  const rows = await qAll<{ user_id: number }>("SELECT user_id FROM conversation_participants WHERE conversation_id = ?", convId);
-  return rows.map(r => r.user_id);
+  const rows = await qAll<{ user_id: number }>("SELECT user_id FROM conversation_participants WHERE conversation_id = ?", asUserId(convId));
+  return rows.map(r => asUserId(r.user_id)).filter(Number.isFinite);
 }
 
 export function initRealtime(httpServer: HttpServer, corsOrigin: string) {
@@ -111,7 +123,7 @@ export function initRealtime(httpServer: HttpServer, corsOrigin: string) {
     }
     try {
       const payload = verifyToken(token);
-      const user = await getUserById(payload.userId);
+      const user = await getUserById(asUserId(payload.userId));
       if (!user || !isUserActive(user)) {
         next(new Error("Invalid user"));
         return;
@@ -122,7 +134,8 @@ export function initRealtime(httpServer: HttpServer, corsOrigin: string) {
         next(new Error("Invalid token"));
         return;
       }
-      socket.data.userId = user.id;
+      // Always numeric — Postgres may return BIGINT user ids as strings.
+      socket.data.userId = asUserId(user.id);
       socket.data.username = user.username;
       socket.data.isAdmin = (user as { is_admin?: number }).is_admin === 1;
       socket.data.avatarUrl = (user as { avatar_url?: string | null }).avatar_url ?? null;
@@ -133,7 +146,7 @@ export function initRealtime(httpServer: HttpServer, corsOrigin: string) {
   });
 
   io.on("connection", async (socket: Socket) => {
-    const userId = socket.data.userId as number;
+    const userId = asUserId(socket.data.userId);
     const isAdmin = socket.data.isAdmin as boolean;
 
     socket.join(userRoom(userId));
@@ -143,7 +156,8 @@ export function initRealtime(httpServer: HttpServer, corsOrigin: string) {
       "SELECT conversation_id FROM conversation_participants WHERE user_id = ?", userId,
     );
     for (const { conversation_id } of convIds) {
-      socket.join(convRoom(conversation_id));
+      const cid = asUserId(conversation_id);
+      if (Number.isFinite(cid)) socket.join(convRoom(cid));
     }
 
     if (isAdmin) socket.join("admin");
@@ -235,9 +249,33 @@ export function initRealtime(httpServer: HttpServer, corsOrigin: string) {
     });
 
     socket.on("call:accept", async (data: { callId: string }) => {
-      const result = await acceptCall(String(data?.callId || ""), userId);
+      const callId = String(data?.callId || "").trim();
+      if (!callId) {
+        socket.emit("call:error", { error: "Call failed", code: "invalid", callId: "" });
+        return;
+      }
+      const result = acceptCall(callId, userId);
       if (!result.ok) {
-        socket.emit("call:error", { error: result.error });
+        const existing = getCall(callId);
+        const isCallee = !!existing && asUserId(existing.calleeId) === userId;
+        // Legitimate callee failed while still ringing — end for both so caller isn't stuck.
+        // Do not tear down the call if a non-participant hit this handler.
+        if (isCallee && existing.state === "ringing") {
+          await failCall(callId, userId).catch(() => {});
+          // call:ended (reason=failed) clears both UIs; avoid a second error toast.
+          return;
+        }
+        socket.emit("call:ended", {
+          callId,
+          reason: "failed",
+          type: existing?.type,
+          conversationId: existing?.conversationId,
+        });
+        socket.emit("call:error", {
+          error: result.error || "Call failed",
+          code: result.code || "accept_failed",
+          callId,
+        });
         return;
       }
       const call = result.call;
@@ -255,23 +293,29 @@ export function initRealtime(httpServer: HttpServer, corsOrigin: string) {
     socket.on("call:decline", async (data: { callId: string }) => {
       const callId = String(data?.callId || "").trim();
       if (!callId) {
-        socket.emit("call:error", { error: "Invalid call", code: "invalid" });
+        socket.emit("call:error", { error: "Call failed", code: "invalid" });
         return;
       }
-      const call = assertCallParticipant(callId, userId);
-      if (!call) {
-        // Call already ended elsewhere — ack so the declining client UI stays consistent.
+      const existing = getCall(callId) || assertCallParticipant(callId, userId);
+      if (!existing) {
+        // Already ended — ack both sides so no modal stays open.
         socket.emit("call:declined", { callId, by: userId });
+        socket.emit("call:ended", { callId, reason: "declined" });
         return;
       }
-      const peerId = peerIdFor(call, userId);
+      const peerId = peerIdFor(existing, userId);
       const result = await declineCall(callId, userId);
       if (!result.ok) {
-        socket.emit("call:error", { error: result.error || "Could not decline call" });
+        emitToUser(existing.callerId, "call:ended", {
+          callId, reason: "failed", type: existing.type, conversationId: existing.conversationId,
+        });
+        emitToUser(existing.calleeId, "call:ended", {
+          callId, reason: "failed", type: existing.type, conversationId: existing.conversationId,
+        });
+        socket.emit("call:error", { error: result.error || "Call failed", code: result.code, callId });
         return;
       }
-      // call:ended is already emitted inside declineCall → endCallInternal.
-      // Emit call:declined immediately so the caller closes the outgoing modal + toast.
+      // call:ended is emitted inside declineCall → endCallInternal.
       emitToUser(peerId, "call:declined", { callId, by: userId });
       socket.emit("call:declined", { callId, by: userId });
     });
@@ -280,22 +324,46 @@ export function initRealtime(httpServer: HttpServer, corsOrigin: string) {
       const callId = String(data?.callId || "");
       const snapshot = assertCallParticipant(callId, userId);
       const result = await busyCall(callId, userId);
-      if (!result.ok || !snapshot) return;
+      if (!result.ok || !snapshot) {
+        if (callId) {
+          socket.emit("call:ended", { callId, reason: "busy" });
+        }
+        return;
+      }
       const peerId = peerIdFor(snapshot, userId);
       emitToUser(peerId, "call:busy", { callId, by: userId });
       socket.emit("call:busy", { callId, by: userId });
     });
 
-    /** Ignore = dismiss UI only; call keeps ringing. Ephemeral — not persisted. */
-    socket.on("call:ignore", (data: { callId: string }) => {
-      const callId = String(data?.callId || "");
-      const call = assertCallParticipant(callId, userId);
-      if (!call || call.state !== "ringing" || call.calleeId !== userId) return;
-      emitToUser(userId, "call:ignored", { callId, conversationId: call.conversationId, by: userId });
+    /** Ignore ends the ring for both sides so the caller is never stuck. */
+    socket.on("call:ignore", async (data: { callId: string }) => {
+      const callId = String(data?.callId || "").trim();
+      if (!callId) return;
+      const result = await ignoreCall(callId, userId);
+      if (!result.ok) {
+        socket.emit("call:ended", { callId, reason: "declined" });
+        socket.emit("call:ignored", { callId, by: userId });
+        return;
+      }
+      const call = result.call;
+      const peerId = peerIdFor(call, userId);
+      // call:ended already broadcast via endCallInternal; also send declined for caller toast/UI.
+      emitToUser(peerId, "call:declined", { callId, by: userId });
+      socket.emit("call:ignored", { callId, conversationId: call.conversationId, by: userId });
+      socket.emit("call:declined", { callId, by: userId });
     });
 
     socket.on("call:hangup", async (data: { callId: string }) => {
-      await hangupCall(String(data?.callId || ""), userId);
+      const callId = String(data?.callId || "").trim();
+      if (!callId) {
+        socket.emit("call:ended", { callId: "", reason: "cancelled" });
+        return;
+      }
+      const result = await hangupCall(callId, userId);
+      if (!result.ok) {
+        // Still clear local UI if the call is already gone.
+        socket.emit("call:ended", { callId, reason: "ended" });
+      }
     });
 
     socket.on("call:signal", (data: { callId: string; signal: unknown }) => {
@@ -350,7 +418,9 @@ export function initRealtime(httpServer: HttpServer, corsOrigin: string) {
 }
 
 export function emitToUser(userId: number, event: string, data: unknown) {
-  io?.to(userRoom(userId)).emit(event, data);
+  const uid = asUserId(userId);
+  if (!Number.isFinite(uid)) return;
+  io?.to(userRoom(uid)).emit(event, data);
 }
 
 /** Force a user's sockets out of a conversation room (e.g. after private-channel revoke). */

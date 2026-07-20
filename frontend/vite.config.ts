@@ -2,6 +2,7 @@ import { defineConfig } from 'vite'
 import path from 'path'
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
+import { devProxyTarget } from './electron/shared/backendEnv'
 
 
 function figmaAssetResolver() {
@@ -32,10 +33,10 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/api': { target: 'http://localhost:3001', changeOrigin: true },
-      '/uploads': { target: 'http://localhost:3001', changeOrigin: true },
-      '/externals': { target: 'http://localhost:3001', changeOrigin: true },
-      '/socket.io': { target: 'http://localhost:3001', ws: true, changeOrigin: true },
+      '/api': { target: devProxyTarget(), changeOrigin: true },
+      '/uploads': { target: devProxyTarget(), changeOrigin: true },
+      '/externals': { target: devProxyTarget(), changeOrigin: true },
+      '/socket.io': { target: devProxyTarget(), ws: true, changeOrigin: true },
     },
   },
   build: {

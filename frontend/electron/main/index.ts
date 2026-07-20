@@ -12,6 +12,7 @@ import { initUpdater, checkForUpdates } from './updater'
 import { getToken, getSettings } from './store'
 import { IPC } from '@shared-electron/ipc'
 import { BRAND } from './brand'
+import { BACKEND_URL, IS_PRODUCTION_BACKEND } from './config'
 
 // Squirrel.Windows install/update/uninstall events — handle and exit before bootstrapping UI.
 const require = createRequire(import.meta.url)
@@ -52,6 +53,9 @@ if (squirrelEvent) {
     registerAppScheme()
 
     app.whenReady().then(() => {
+      console.info(
+        `[ninja] Backend ${IS_PRODUCTION_BACKEND ? 'production' : 'development'} → ${BACKEND_URL}`,
+      )
       handleAppProtocol()
 
       initSocketManager((channel, payload) => broadcastToRenderer(channel, payload))

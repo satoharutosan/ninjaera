@@ -133,6 +133,7 @@ import {
   clearAuthCredentials,
   isAuthPersistent,
 } from "@/shared/authStorage";
+import { CONNECTION_ERROR_MESSAGE } from "@/shared/networkMessages";
 
 export function getToken(): string | null {
   return getStoredToken();
@@ -145,6 +146,13 @@ export function setToken(token: string | null, persist?: boolean) {
     return;
   }
   setStoredToken(token, persist ?? isAuthPersistent());
+}
+
+function networkErrorMessage(isUpload: boolean): string {
+  if (isUpload) {
+    return "Network error during upload. Check your connection and try again.";
+  }
+  return CONNECTION_ERROR_MESSAGE;
 }
 
 function abortErrorMessage(path: string, isUpload: boolean, timedOut: boolean): string {
@@ -249,7 +257,7 @@ function requestWithUploadProgress<T>(path: string, options: RequestOptions): Pr
       });
     };
     xhr.onerror = () => {
-      finish(() => reject(new ApiError("Network error during upload. Check your connection and try again.", 0, { code: "NETWORK_ERROR", path })));
+      finish(() => reject(new ApiError(networkErrorMessage(true), 0, { code: "NETWORK_ERROR", path })));
     };
     xhr.ontimeout = () => {
       timedOut = true;
@@ -314,7 +322,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
         upload: false,
       });
     }
-    throw e;
+    throw new ApiError(networkErrorMessage(false), 0, { code: "NETWORK_ERROR", path });
   } finally {
     window.clearTimeout(timeout);
     signal?.removeEventListener("abort", onAbort);
@@ -322,7 +330,11 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 
   if (!res.ok) {
     const body = typeof data === "object" && data ? data as Record<string, unknown> : {};
-    throw new ApiError(String(body.error || res.statusText), res.status, body);
+    const offline = body.offline === true || res.status === 503;
+    const message = offline
+      ? CONNECTION_ERROR_MESSAGE
+      : String(body.error || res.statusText);
+    throw new ApiError(message, res.status, body);
   }
   return data as T;
 }

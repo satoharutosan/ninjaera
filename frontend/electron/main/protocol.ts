@@ -8,6 +8,7 @@
 import { protocol, net, app } from 'electron'
 import fs from 'fs'
 import path from 'path'
+import { CONNECTION_ERROR_MESSAGE } from '@shared-electron/backendEnv'
 import { APP_SCHEME, APP_ORIGIN, BACKEND_URL, PROXY_PREFIXES } from './config'
 import { getToken } from './store'
 
@@ -98,8 +99,8 @@ export function handleAppProtocol(): void {
           redirect: 'follow',
         })
         return await net.fetch(proxied)
-      } catch (err) {
-        return new Response(JSON.stringify({ error: 'Network error', offline: true }), {
+      } catch {
+        return new Response(JSON.stringify({ error: CONNECTION_ERROR_MESSAGE, offline: true }), {
           status: 503,
           headers: { 'Content-Type': 'application/json' },
         })

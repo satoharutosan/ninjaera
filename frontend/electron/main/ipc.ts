@@ -1,7 +1,8 @@
 /** Registers all validated IPC handlers exposed to the renderer via the preload bridge. */
 import { ipcMain, dialog, shell, session, app, BrowserWindow } from 'electron'
 import { IPC, type AppInfo } from '@shared-electron/ipc'
-import { BACKEND_URL, SIGNUP_URL } from './config'
+import { CONNECTION_ERROR_MESSAGE } from '@shared-electron/backendEnv'
+import { BACKEND_URL, IS_PRODUCTION_BACKEND, SIGNUP_URL } from './config'
 import {
   getToken,
   getUser,
@@ -156,14 +157,14 @@ export function registerIpc(): void {
         socket: getSocketStatus(),
         backendUrl: BACKEND_URL,
       }
-    } catch (err) {
+    } catch {
       return {
         ok: false,
         status: 0,
         latencyMs: Date.now() - start,
         socket: getSocketStatus(),
         backendUrl: BACKEND_URL,
-        error: String(err),
+        error: CONNECTION_ERROR_MESSAGE,
       }
     }
   })
@@ -184,6 +185,7 @@ export function registerIpc(): void {
     version: app.getVersion(),
     platform: process.platform,
     isPackaged: app.isPackaged,
+    isProductionBackend: IS_PRODUCTION_BACKEND,
     backendUrl: BACKEND_URL,
     signupUrl: SIGNUP_URL,
   }))

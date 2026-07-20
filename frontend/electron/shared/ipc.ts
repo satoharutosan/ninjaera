@@ -109,6 +109,7 @@ export type AppInfo = {
   version: string
   platform: NodeJS.Platform
   isPackaged: boolean
+  isProductionBackend: boolean
   backendUrl: string
   signupUrl: string
 }

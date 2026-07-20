@@ -34,6 +34,7 @@ export type NinjaAppInfo = {
   version: string
   platform: string
   isPackaged: boolean
+  isProductionBackend: boolean
   backendUrl: string
   signupUrl: string
 }

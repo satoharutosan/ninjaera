@@ -61,7 +61,7 @@ export default function DesktopApp() {
   const [systemDark, setSystemDark] = useState(() =>
     typeof window !== "undefined" ? window.matchMedia("(prefers-color-scheme: dark)").matches : false,
   );
-  const [signupUrl, setSignupUrl] = useState("https://ninjaera.up.railway.app/#/signup");
+  const [signupUrl, setSignupUrl] = useState("");
 
   useEffect(() => {
     ninja?.settings.getAll().then((s) => setSettings(s as DesktopSettings)).catch(() => {});

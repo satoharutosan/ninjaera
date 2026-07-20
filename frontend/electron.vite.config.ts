@@ -2,6 +2,7 @@ import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import path from 'path'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import { devProxyTarget } from './electron/shared/backendEnv'
 
 /** Mirrors the web build's figma:asset resolver so reused feature modules resolve identically. */
 function figmaAssetResolver() {
@@ -57,9 +58,9 @@ export default defineConfig({
       fs: { allow: [path.resolve(__dirname)] },
       // Dev: same-origin proxy to the existing backend (no CORS, mirrors production app:// proxy).
       proxy: {
-        '/api': { target: 'http://localhost:3001', changeOrigin: true },
-        '/uploads': { target: 'http://localhost:3001', changeOrigin: true },
-        '/externals': { target: 'http://localhost:3001', changeOrigin: true },
+        '/api': { target: devProxyTarget(), changeOrigin: true },
+        '/uploads': { target: devProxyTarget(), changeOrigin: true },
+        '/externals': { target: devProxyTarget(), changeOrigin: true },
       },
     },
     build: {

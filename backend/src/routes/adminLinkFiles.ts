@@ -5,7 +5,10 @@ import { qAll, qGet, qRun } from "../db/query.js";
 import { logActivitySync } from "../services/activityLog.js";
 import { validateUpload } from "../services/uploadValidation.js";
 import { deleteStoredUrl } from "../storage/index.js";
+import type { PutObjectResult } from "../storage/types.js";
 import { cleanupTempFile, createTempDiskUploader, persistMulterFile } from "../storage/multerUpload.js";
+import { mapClientUploadError } from "../middleware/error.js";
+import { clientIp } from "../middleware/rateLimit.js";
 import {
   aliasTaken,
   normalizeAlias,
@@ -69,13 +72,15 @@ function mapLinkFile(r: LinkFileRow & { uploaderName?: string | null }) {
 }
 
 router.get("/link-files", requireSuperAdmin, async (_req, res) => {
-  const rows = await qAll<LinkFileRow & { uploaderName: string | null }>(`
-    SELECT lf.*, u.username as uploaderName
+  const rows = await qAll<LinkFileRow & { uploader_name: string | null }>(`
+    SELECT lf.*, u.username as uploader_name
     FROM link_files lf
     LEFT JOIN users u ON u.id = lf.uploader_id
     ORDER BY lf.created_at DESC, lf.id DESC
   `);
-  res.json({ files: rows.map(mapLinkFile) });
+  res.json({
+    files: rows.map((r) => mapLinkFile({ ...r, uploaderName: r.uploader_name })),
+  });
 });
 
 // Static paths before /link-files/:id
@@ -115,7 +120,7 @@ router.get("/link-files/logs", requireSuperAdmin, async (req, res) => {
 
   if (search.trim()) {
     const q = `%${search.trim()}%`;
-    where.push("(alias LIKE ? OR original_filename LIKE ? OR visitor_label LIKE ? OR ip_address LIKE ? OR browser LIKE ? OR platform LIKE ? OR country LIKE ? OR country_code LIKE ?)");
+    where.push("(LOWER(alias) LIKE LOWER(?) OR LOWER(original_filename) LIKE LOWER(?) OR LOWER(visitor_label) LIKE LOWER(?) OR LOWER(ip_address) LIKE LOWER(?) OR LOWER(browser) LIKE LOWER(?) OR LOWER(platform) LIKE LOWER(?) OR LOWER(country) LIKE LOWER(?) OR LOWER(country_code) LIKE LOWER(?))");
     params.push(q, q, q, q, q, q, q, q);
   }
   if (alias.trim()) {
@@ -202,9 +207,11 @@ router.post("/link-files/logs/bulk-delete", requireSuperAdmin, async (req, res) 
 router.post("/link-files", requireSuperAdmin, (req, res) => {
   linkUpload.single("file")(req, res, async (err) => {
     if (err) {
-      res.status(400).json({ error: err instanceof Error ? err.message : "Upload failed" });
+      const mapped = mapClientUploadError(err);
+      res.status(mapped?.status || 400).json({ error: mapped?.error || (err instanceof Error ? err.message : "Upload failed") });
       return;
     }
+    let stored: PutObjectResult | null = null;
     try {
       if (!req.file) {
         res.status(400).json({ error: "File is required" });
@@ -229,7 +236,7 @@ router.post("/link-files", requireSuperAdmin, (req, res) => {
         return;
       }
 
-      const stored = await persistMulterFile(req.file, "external", { contentType: validated.contentType });
+      stored = await persistMulterFile(req.file, "external", { contentType: validated.contentType });
       const ts = now();
       const active = req.body.active === "false" || req.body.active === false ? 0 : 1;
       const result = await qRun(`
@@ -258,11 +265,46 @@ router.post("/link-files", requireSuperAdmin, (req, res) => {
         description: `Uploaded link file alias ${aliasCheck.display}`,
         affectedObject: `link_file:${result.lastInsertRowid}`,
       });
+      console.info("[admin-upload]", JSON.stringify({
+        ok: true,
+        uploadType: "link_file",
+        adminId: req.user!.id,
+        username: req.user!.username,
+        filename: req.file.originalname,
+        fileSize: stored.size,
+        status: "success",
+        ipAddress: clientIp(req),
+        completedAt: now(),
+      }));
 
       res.status(201).json({ id: result.lastInsertRowid });
     } catch (e) {
       cleanupTempFile(req.file);
-      res.status(500).json({ error: e instanceof Error ? e.message : "Upload failed" });
+      if (stored?.url) await deleteStoredUrl(stored.url);
+      console.info("[admin-upload]", JSON.stringify({
+        ok: false,
+        uploadType: "link_file",
+        adminId: req.user?.id,
+        username: req.user?.username,
+        filename: req.file?.originalname ?? null,
+        fileSize: req.file?.size ?? null,
+        status: "failure",
+        reason: e instanceof Error ? e.message : String(e),
+        ipAddress: clientIp(req),
+        completedAt: now(),
+      }));
+      const mapped = mapClientUploadError(e);
+      if (mapped) {
+        res.status(mapped.status).json({ error: mapped.error });
+        return;
+      }
+      const msg = e instanceof Error ? e.message : "Upload failed";
+      const isDb = /constraint|null value|insert|database|sql/i.test(msg);
+      res.status(500).json({
+        error: isDb
+          ? "Upload failed because the database record could not be created."
+          : "Upload failed because the storage write operation was unsuccessful.",
+      });
     }
   });
 });
@@ -270,9 +312,11 @@ router.post("/link-files", requireSuperAdmin, (req, res) => {
 router.patch("/link-files/:id", requireSuperAdmin, (req, res) => {
   linkUpload.single("file")(req, res, async (err) => {
     if (err) {
-      res.status(400).json({ error: err instanceof Error ? err.message : "Upload failed" });
+      const mapped = mapClientUploadError(err);
+      res.status(mapped?.status || 400).json({ error: mapped?.error || (err instanceof Error ? err.message : "Upload failed") });
       return;
     }
+    let stored: PutObjectResult | null = null;
     try {
       const id = Number(req.params.id);
       const existing = await qGet<LinkFileRow>("SELECT * FROM link_files WHERE id = ?", id);
@@ -315,7 +359,7 @@ router.patch("/link-files/:id", requireSuperAdmin, (req, res) => {
           res.status(400).json({ error: validated.error });
           return;
         }
-        const stored = await persistMulterFile(req.file, "external", { contentType: validated.contentType });
+        stored = await persistMulterFile(req.file, "external", { contentType: validated.contentType });
         fields.push("file_url = ?", "mime_type = ?", "file_size = ?", "original_filename = ?");
         vals.push(stored.url, validated.contentType, stored.size, req.file.originalname);
         replacedUrl = existing.file_url;
@@ -337,7 +381,19 @@ router.patch("/link-files/:id", requireSuperAdmin, (req, res) => {
       res.json({ ok: true });
     } catch (e) {
       cleanupTempFile(req.file);
-      res.status(500).json({ error: e instanceof Error ? e.message : "Update failed" });
+      if (stored?.url) await deleteStoredUrl(stored.url);
+      const mapped = mapClientUploadError(e);
+      if (mapped) {
+        res.status(mapped.status).json({ error: mapped.error });
+        return;
+      }
+      res.status(500).json({
+        error: e instanceof Error
+          ? (/constraint|null value|insert|database|sql/i.test(e.message)
+            ? "Upload failed because the database record could not be created."
+            : "Upload failed because the storage write operation was unsuccessful.")
+          : "Update failed",
+      });
     }
   });
 });

@@ -1,6 +1,14 @@
 /**
  * Thin query helpers that work on both providers.
  * Prefer these over raw better-sqlite3 for new / migrated code.
+ *
+ * Portability rules (SQLite + PostgreSQL):
+ * - Prefer snake_case column/alias names in SQL (`avatar_url`, `job_title`).
+ * - Never use camelCase SQL aliases (`as avatarUrl`) — Postgres lowercases unquoted
+ *   identifiers, so the result key becomes `avatarurl` and JS mappings silently break.
+ * - Map to camelCase only in JavaScript when building API responses.
+ * - Prefer `LOWER(col) LIKE LOWER(?)` over `COLLATE NOCASE` (SQLite-only).
+ * - Prefer ISO timestamp cutoffs over SQLite `date('now', …)`.
  */
 import { db, dbAsync } from "./index.js";
 import type { RunResult } from "./adapter.js";

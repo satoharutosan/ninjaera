@@ -59,7 +59,7 @@ async function afterDmMessageSent(conversationId: number, senderId: number) {
 
 const upload = createMemoryUploader({ limits: { fileSize: MESSAGE_MAX_FILE_BYTES } });
 
-/** Multer wrapper with a clear 50MB rejection message for Messages uploads. */
+/** Multer wrapper with a clear 20 MB rejection message for Messages uploads. */
 function uploadMessageFile(req: import("express").Request, res: import("express").Response, next: import("express").NextFunction) {
   upload.single("file")(req, res, (err: unknown) => {
     if (err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE") {

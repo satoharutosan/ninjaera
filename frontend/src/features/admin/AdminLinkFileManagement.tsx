@@ -301,16 +301,18 @@ export function AdminLinkFileManagement({
       const onUploadProgress = (p: UploadProgress) => {
         if (p.total > 0) setUploadBytes({ loaded: p.loaded, total: p.total });
         if (p.transferComplete || p.percent >= 100) {
-          setUploadProgress({ filename, percent: 100, phase: "processing" });
+          setUploadProgress({ filename, percent: 95, phase: "processing" });
           return;
         }
-        setUploadProgress({ filename, percent: p.percent, phase: "uploading" });
+        setUploadProgress({ filename, percent: Math.min(99, p.percent), phase: "uploading" });
       };
       if (isNew) {
         await api.admin.createLinkFile(form, { onUploadProgress });
+        setUploadProgress({ filename, percent: 100, phase: "complete" });
         toast.success("Link file uploaded");
       } else {
         await api.admin.updateLinkFile(edit.id!, form, { onUploadProgress });
+        setUploadProgress({ filename, percent: 100, phase: "complete" });
         toast.success("Link file updated");
       }
       setEdit(null);

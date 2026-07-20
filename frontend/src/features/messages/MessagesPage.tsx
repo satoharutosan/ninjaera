@@ -37,7 +37,7 @@ import {
   Page, AppSettings, Contact, useC, useWide, SH1, FilledBtn, OutlinedBtn, Field, ChatAvatar, BADGE_BG,
 } from "@/app/shared";
 import { api, ApiError, type ApiMessage } from "@/app/api";
-import { isMessageFileWithinLimit, MESSAGE_MAX_FILE_ERROR } from "@/shared/messageUpload";
+import { isMessageFileWithinLimit, MESSAGE_MAX_FILE_ERROR, MESSAGE_MAX_FILE_LABEL } from "@/shared/messageUpload";
 import { imageFileFromClipboard } from "@/features/messages/utils/clipboardImage";
 import { formatBytes } from "@/features/messages/utils/formatBytes";
 import { onRealtimeEvent, emitTyping, joinConversation } from "@/app/realtime";
@@ -2347,7 +2347,7 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
               }}
             >
               {!voiceBusy && (
-                <button type="button" className="shrink-0 self-center" onClick={() => fileRef.current?.click()} style={{ color:C.onSurfaceVar }} title="Attach any file" aria-label="Attach file"><AttachFileIcon style={{ fontSize:20 }} /></button>
+                <button type="button" className="shrink-0 self-center" onClick={() => fileRef.current?.click()} style={{ color:C.onSurfaceVar }} title={`Attach a file (max ${MESSAGE_MAX_FILE_LABEL})`} aria-label={`Attach file, maximum ${MESSAGE_MAX_FILE_LABEL}`}><AttachFileIcon style={{ fontSize:20 }} /></button>
               )}
               <VoiceRecorderButton disabled={!sel.id || uploadingPaste} onSend={sendVoiceFile} onBusyChange={setVoiceBusy} />
               {!voiceBusy && (

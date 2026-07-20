@@ -10,6 +10,7 @@ import { validatePortableBackup, restorePortableBackup } from "../db/backup/rest
 import { createNativeBackup } from "../db/backup/native.js";
 import { requireAuth, publicUser, timeAgo, formatTime, bumpTokenVersion } from "../middleware/auth.js";
 import { requireAdmin, requireSuperAdmin } from "../middleware/admin.js";
+import { clientIp } from "../middleware/rateLimit.js";
 import { canManageTargetUser, canSelectTargetUser, isSuperAdmin } from "../services/adminPermissions.js";
 import { normalizeEmail } from "../services/emailVerification.js";
 import { assertTrustedRegistrationEmail } from "../config/trustedEmailProviders.js";
@@ -36,6 +37,7 @@ import {
   updateTableRow,
 } from "../services/adminDatabaseConsole.js";
 import { tombstoneSenderFields, DELETED_USER_DISPLAY_NAME } from "../services/deletedUser.js";
+import type { PutObjectResult } from "../storage/types.js";
 import { deleteStoredUrl, getStorage } from "../storage/index.js";
 import { createMemoryUploader, createTempDiskUploader, cleanupTempFile, persistMulterFile } from "../storage/multerUpload.js";
 import { validateUpload } from "../services/uploadValidation.js";
@@ -59,6 +61,7 @@ function logAdminUpload(event: {
   durationMs: number;
   reason?: string;
   resourceId?: number | null;
+  ipAddress?: string | null;
 }) {
   const completedAt = now();
   const startedAt = new Date(Date.now() - Math.max(0, event.durationMs)).toISOString();
@@ -79,6 +82,10 @@ function logAdminUpload(event: {
       status: event.ok ? "success" : "failure",
     }));
   }
+}
+
+async function rollbackStoredFile(stored: PutObjectResult | null | undefined): Promise<void> {
+  if (stored?.url) await deleteStoredUrl(stored.url);
 }
 
 // Resources / game builds: disk-backed multer + streamed storage (no full-file RAM buffer).
@@ -444,6 +451,7 @@ router.get("/stats", async (req, res) => {
       totalUsers,
       onlineUsers,
       pendingApplications,
+      pendingJobApplications,
       unreadContacts,
       notifications,
       totalDownloads,
@@ -508,6 +516,7 @@ router.get("/stats", async (req, res) => {
       totalUsers: 0,
       onlineUsers: asInt(countOnlineUsers(), 0),
       pendingApplications: 0,
+      pendingJobApplications: 0,
       unreadContacts: 0,
       notifications: 0,
       totalDownloads: 0,
@@ -542,7 +551,10 @@ async function formatAdminUser(row: Record<string, unknown>) {
     origin_ip: string | null; origin_country_code: string | null; origin_country_name: string | null;
   }>("SELECT * FROM user_locations WHERE user_id = ?", row.id as number);
 
-  const activities = await qAll("SELECT description, created_at as createdAt FROM activity_log WHERE user_id = ? ORDER BY created_at DESC LIMIT 10", row.id);
+  const activities = await qAll<{ description: string; created_at: string }>(
+    "SELECT description, created_at FROM activity_log WHERE user_id = ? ORDER BY created_at DESC LIMIT 10",
+    row.id,
+  );
   const recentLogins = await qAll<{ timestamp: string; description: string }>(`
     SELECT timestamp, description FROM activity_logs
     WHERE user_id = ? AND event_type IN ('login', 'register')
@@ -550,7 +562,10 @@ async function formatAdminUser(row: Record<string, unknown>) {
   `, row.id);
 
   const stats = await qGet<Record<string, unknown>>("SELECT * FROM game_stats WHERE user_id = ?", row.id as number);
-  const achievements = await qAll("SELECT title, description, icon, earned_at as earnedAt FROM achievements WHERE user_id = ? ORDER BY earned_at DESC", row.id);
+  const achievements = await qAll<{ title: string; description: string; icon: string; earned_at: string }>(
+    "SELECT title, description, icon, earned_at FROM achievements WHERE user_id = ? ORDER BY earned_at DESC",
+    row.id,
+  );
   const inventory = await qAll("SELECT name, rarity, quantity, icon FROM inventory_items WHERE user_id = ?", row.id);
 
   const online = isUserOnline({
@@ -599,7 +614,7 @@ async function formatAdminUser(row: Record<string, unknown>) {
       originCountryCode: loc.origin_country_code,
       originCountryName: loc.origin_country_name,
     } : null,
-    activities,
+    activities: activities.map((a) => ({ description: a.description, createdAt: a.created_at })),
     recentLogins,
     gameStats: stats ? {
       missionsComplete: stats.missions_complete,
@@ -613,7 +628,12 @@ async function formatAdminUser(row: Record<string, unknown>) {
       senjutsu: stats.senjutsu,
       kenjutsu: stats.kenjutsu,
     } : null,
-    achievements,
+    achievements: achievements.map((a) => ({
+      title: a.title,
+      description: a.description,
+      icon: a.icon,
+      earnedAt: a.earned_at,
+    })),
     inventory,
   };
 }
@@ -630,7 +650,7 @@ router.get("/users", async (req, res) => {
   else sql += " AND is_deleted = 0";
 
   if (search) {
-    sql += " AND (username LIKE ? OR email LIKE ?)";
+    sql += " AND (LOWER(username) LIKE LOWER(?) OR LOWER(email) LIKE LOWER(?))";
     const q = `%${search}%`;
     params.push(q, q);
   }
@@ -1208,8 +1228,8 @@ router.delete("/channels/:id", async (req, res) => {
 
 // ── Contact Management ───────────────────────────────────────────────────────
 async function formatContactTicket(row: Record<string, unknown>) {
-  const replies = await qAll<{ id: number; body: string; createdAt: string; adminUsername: string }>(`
-    SELECT cr.id, cr.body, cr.created_at as createdAt, u.username as adminUsername
+  const replies = await qAll<Record<string, unknown>>(`
+    SELECT cr.id, cr.body, cr.created_at, u.username as admin_username
     FROM contact_replies cr
     LEFT JOIN users u ON u.id = cr.admin_id
     WHERE cr.ticket_id = ?
@@ -1234,7 +1254,12 @@ async function formatContactTicket(row: Record<string, unknown>) {
     createdAt: row.created_at,
     updatedAt: row.updated_at || row.created_at,
     time: timeAgo(row.created_at as string),
-    replies,
+    replies: replies.map(r => ({
+      id: r.id,
+      body: r.body,
+      createdAt: r.created_at,
+      adminUsername: r.admin_username,
+    })),
   };
 }
 
@@ -1327,7 +1352,7 @@ router.delete("/contacts/:id", async (req, res) => {
 // ── Teamwork Applications ────────────────────────────────────────────────────
 router.get("/applications", async (_req, res) => {
   const apps = await qAll<Record<string, unknown>>(`
-    SELECT ja.*, u.username, u.email, u.avatar_url as avatarUrl, jp.title as jobTitle
+    SELECT ja.*, u.username, u.email, u.avatar_url, jp.title as job_title
     FROM job_applications ja
     JOIN users u ON u.id = ja.user_id
     JOIN job_postings jp ON jp.id = ja.job_id
@@ -1336,7 +1361,12 @@ router.get("/applications", async (_req, res) => {
   res.json({
     applications: apps.map(a => ({
       id: a.id,
-      applicant: { id: a.user_id, username: a.username, email: a.email, avatarUrl: a.avatarUrl },
+      applicant: {
+        id: a.user_id,
+        username: a.username,
+        email: a.email,
+        avatarUrl: a.avatar_url,
+      },
       fullName: a.full_name,
       gender: a.gender,
       dateOfBirth: a.date_of_birth,
@@ -1346,7 +1376,7 @@ router.get("/applications", async (_req, res) => {
       cvUrl: a.cv_url,
       portfolioUrl: a.portfolio_url,
       message: a.message,
-      jobTitle: a.jobTitle,
+      jobTitle: a.job_title,
       status: a.status,
       createdAt: a.created_at,
       time: timeAgo(a.created_at as string),
@@ -1356,10 +1386,21 @@ router.get("/applications", async (_req, res) => {
 
 router.post("/applications/:id/approve", async (req, res) => {
   const id = Number(req.params.id);
-  const app = await qGet<{ user_id: number; full_name: string; status: string }>("SELECT * FROM job_applications WHERE id = ?", id);
+  const app = await qGet<{
+    user_id: number;
+    full_name: string;
+    status: string;
+    job_id: number;
+    country: string | null;
+    city: string | null;
+  }>("SELECT * FROM job_applications WHERE id = ?", id);
   if (!app) { res.status(404).json({ error: "Application not found" }); return; }
   if (app.status !== "pending") { res.status(400).json({ error: "Application already processed" }); return; }
 
+  const job = await qGet<{ title: string; department: string }>(
+    "SELECT title, department FROM job_postings WHERE id = ?",
+    app.job_id,
+  );
   const ts = now();
   await qRun("UPDATE job_applications SET status = 'approved' WHERE id = ?", id);
   await qRun("UPDATE users SET is_team_member = 1, updated_at = ? WHERE id = ?", ts, app.user_id);
@@ -1367,20 +1408,42 @@ router.post("/applications/:id/approve", async (req, res) => {
 
   const user = (await qGet<{ username: string; country: string; city: string | null }>("SELECT username, country, city FROM users WHERE id = ?", app.user_id))!;
   const existing = await qGet<{ id: number }>("SELECT id FROM team_members WHERE user_id = ? OR name = ?", app.user_id, app.full_name);
+  const roleTitle = job?.title || "Team Member";
+  const department = job?.department || "General";
+  const country = app.country || user.country || "Japan";
+  const city = app.city || user.city || "Tokyo";
   if (!existing) {
     const maxOrder = (await qGet<{ m: number | null }>("SELECT MAX(sort_order) as m FROM team_members"))!.m || 0;
     await qRun(`
       INSERT INTO team_members (name, role, department, country, city, status_label, status_color, sort_order, user_id)
-      VALUES (?, 'Team Member', 'General', ?, ?, 'New', '#006688', ?, ?)
-    `, app.full_name || user.username, user.country || "Japan", user.city || "Tokyo", maxOrder + 1, app.user_id);
+      VALUES (?, ?, ?, ?, ?, 'New', '#006688', ?, ?)
+    `, app.full_name || user.username, roleTitle, department, country, city, maxOrder + 1, app.user_id);
   } else {
-    await qRun("UPDATE team_members SET user_id = ? WHERE id = ?", app.user_id, existing.id);
+    await qRun(
+      "UPDATE team_members SET user_id = ?, role = ?, department = ?, country = ?, city = ? WHERE id = ?",
+      app.user_id,
+      roleTitle,
+      department,
+      country,
+      city,
+      existing.id,
+    );
   }
 
   await qRun(`
     INSERT INTO notifications (title, body, source, page, user_id, notif_type, created_at)
     VALUES ('Application Approved', ?, 'Teamwork', 'teamwork', ?, 'announcement', ?)
   `, `Your teamwork application has been approved. Welcome to the team!`, app.user_id, ts);
+
+  logActivitySync({
+    req,
+    userId: req.user!.id,
+    eventType: "application_approve",
+    eventCategory: "teamwork",
+    description: `Approved teamwork application #${id} from @${user.username} for ${roleTitle}`,
+    affectedObject: `job_application:${id}`,
+    metadata: { applicationId: id, userId: app.user_id, jobTitle: roleTitle },
+  });
 
   emitToUser(app.user_id, "notification:new", {});
   emitToAdmins("admin:applications", {});
@@ -1393,7 +1456,7 @@ router.post("/applications/:id/approve", async (req, res) => {
 
 router.post("/applications/:id/reject", async (req, res) => {
   const id = Number(req.params.id);
-  const app = await qGet<{ user_id: number; status: string }>("SELECT * FROM job_applications WHERE id = ?", id);
+  const app = await qGet<{ user_id: number; status: string; full_name: string }>("SELECT * FROM job_applications WHERE id = ?", id);
   if (!app) { res.status(404).json({ error: "Application not found" }); return; }
   if (app.status !== "pending") { res.status(400).json({ error: "Application already processed" }); return; }
 
@@ -1403,6 +1466,16 @@ router.post("/applications/:id/reject", async (req, res) => {
     INSERT INTO notifications (title, body, source, page, user_id, notif_type, created_at)
     VALUES ('Application Update', ?, 'Teamwork', 'teamwork', ?, 'announcement', ?)
   `, `Your teamwork application was not approved at this time.`, app.user_id, ts);
+
+  logActivitySync({
+    req,
+    userId: req.user!.id,
+    eventType: "application_reject",
+    eventCategory: "teamwork",
+    description: `Rejected teamwork application #${id} from ${app.full_name}`,
+    affectedObject: `job_application:${id}`,
+    metadata: { applicationId: id, userId: app.user_id },
+  });
 
   emitToUser(app.user_id, "notification:new", {});
   emitToAdmins("admin:applications", {});
@@ -1444,7 +1517,7 @@ router.delete("/applications/:id", async (req, res) => {
 // ── Resources ────────────────────────────────────────────────────────────────
 router.get("/resources", async (_req, res) => {
   const rows = await qAll<Record<string, unknown>>(`
-    SELECT r.*, u.username as uploaderName
+    SELECT r.*, u.username as uploader_name
     FROM resources r LEFT JOIN users u ON u.id = r.uploader_id
     ORDER BY r.sort_order, r.published_at DESC
   `);
@@ -1458,7 +1531,7 @@ router.get("/resources", async (_req, res) => {
       publishedAt: r.published_at,
       enabled: r.enabled !== 0,
       uploaderId: r.uploader_id,
-      uploaderName: r.uploaderName,
+      uploaderName: r.uploader_name,
       fileSize: r.file_size,
       version: r.version,
       sortOrder: r.sort_order,
@@ -1481,9 +1554,10 @@ router.post("/resources", extendUploadSocketTimeouts, resourceFileUpload, async 
     res.status(400).json({ error: RESOURCE_CATEGORY_ERROR });
     return;
   }
+  let stored: PutObjectResult | null = null;
   try {
     const ts = now();
-    const stored = req.file ? await persistMulterFile(req.file, "resource") : null;
+    if (req.file) stored = await persistMulterFile(req.file, "resource");
     const fileUrl = stored?.url ?? null;
     const fileSize = stored?.size ?? null;
     const vis = String(visibility || "PUBLIC").toUpperCase() === "PRIVATE" ? "PRIVATE" : "PUBLIC";
@@ -1500,6 +1574,7 @@ router.post("/resources", extendUploadSocketTimeouts, resourceFileUpload, async 
       fileSize,
       durationMs: Date.now() - started,
       resourceId: Number(result.lastInsertRowid),
+      ipAddress: clientIp(req),
     });
     logActivitySync({
       req,
@@ -1513,6 +1588,7 @@ router.post("/resources", extendUploadSocketTimeouts, resourceFileUpload, async 
     res.status(201).json({ id: result.lastInsertRowid });
   } catch (err) {
     cleanupTempFile(req.file);
+    await rollbackStoredFile(stored);
     logAdminUpload({
       ok: false,
       uploadType: "resource",
@@ -1522,6 +1598,7 @@ router.post("/resources", extendUploadSocketTimeouts, resourceFileUpload, async 
       fileSize: req.file?.size ?? null,
       durationMs: Date.now() - started,
       reason: err instanceof Error ? err.message : String(err),
+      ipAddress: clientIp(req),
     });
     throw err;
   }
@@ -1558,10 +1635,11 @@ router.patch("/resources/:id", extendUploadSocketTimeouts, resourceFileUpload, a
     vals.push(String(visibility).toUpperCase() === "PRIVATE" ? "PRIVATE" : "PUBLIC");
   }
   const started = Date.now();
+  let stored: PutObjectResult | null = null;
   try {
     let replacedFile: string | null = null;
     if (req.file) {
-      const stored = await persistMulterFile(req.file, "resource");
+      stored = await persistMulterFile(req.file, "resource");
       fields.push("content_url = ?"); vals.push(stored.url);
       fields.push("file_size = ?"); vals.push(stored.size);
       replacedFile = existing.content_url;
@@ -1580,12 +1658,14 @@ router.patch("/resources/:id", extendUploadSocketTimeouts, resourceFileUpload, a
         fileSize: req.file.size,
         durationMs: Date.now() - started,
         resourceId: id,
+        ipAddress: clientIp(req),
       });
     }
     scheduleAdminStatsRefresh();
     res.json({ ok: true });
   } catch (err) {
     cleanupTempFile(req.file);
+    await rollbackStoredFile(stored);
     if (req.file) {
       logAdminUpload({
         ok: false,
@@ -1597,6 +1677,7 @@ router.patch("/resources/:id", extendUploadSocketTimeouts, resourceFileUpload, a
         durationMs: Date.now() - started,
         reason: err instanceof Error ? err.message : String(err),
         resourceId: id,
+        ipAddress: clientIp(req),
       });
     }
     throw err;
@@ -1615,7 +1696,7 @@ router.delete("/resources/:id", async (req, res) => {
 // ── Game Downloads ─────────────────────────────────────────────────────────────
 router.get("/game-downloads", async (_req, res) => {
   const rows = await qAll<Record<string, unknown>>(`
-    SELECT g.*, u.username as uploaderName
+    SELECT g.*, u.username as uploader_name
     FROM game_downloads g LEFT JOIN users u ON u.id = g.uploader_id
     ORDER BY g.platform, g.published_at DESC
   `);
@@ -1629,7 +1710,7 @@ router.get("/game-downloads", async (_req, res) => {
       fileSize: r.file_size,
       published: r.published === 1,
       publishedAt: r.published_at,
-      uploaderName: r.uploaderName,
+      uploaderName: r.uploader_name,
     })),
   });
 });
@@ -1642,9 +1723,10 @@ router.post("/game-downloads", extendUploadSocketTimeouts, gameFileUpload, async
     res.status(400).json({ error: "Platform and version are required" });
     return;
   }
+  let stored: PutObjectResult | null = null;
   try {
     const ts = now();
-    const stored = req.file ? await persistMulterFile(req.file, "game") : null;
+    if (req.file) stored = await persistMulterFile(req.file, "game");
     const fileUrl = stored?.url ?? null;
     const result = await qRun(`
       INSERT INTO game_downloads (platform, version, release_notes, file_url, file_size, published, published_at, uploader_id, created_at, updated_at)
@@ -1659,11 +1741,13 @@ router.post("/game-downloads", extendUploadSocketTimeouts, gameFileUpload, async
       fileSize: stored?.size ?? req.file?.size ?? null,
       durationMs: Date.now() - started,
       resourceId: Number(result.lastInsertRowid),
+      ipAddress: clientIp(req),
     });
     logActivitySync({ req, userId: req.user!.id, eventType: "game_build_upload", eventCategory: "downloads", description: `Uploaded ${platform} build v${version}`, affectedObject: `game_download:${result.lastInsertRowid}` });
     res.status(201).json({ id: result.lastInsertRowid });
   } catch (err) {
     cleanupTempFile(req.file);
+    await rollbackStoredFile(stored);
     logAdminUpload({
       ok: false,
       uploadType: "game",
@@ -1673,6 +1757,7 @@ router.post("/game-downloads", extendUploadSocketTimeouts, gameFileUpload, async
       fileSize: req.file?.size ?? null,
       durationMs: Date.now() - started,
       reason: err instanceof Error ? err.message : String(err),
+      ipAddress: clientIp(req),
     });
     throw err;
   }
@@ -1692,10 +1777,11 @@ router.patch("/game-downloads/:id", extendUploadSocketTimeouts, gameFileUpload, 
     fields.push("published_at = ?"); vals.push(isPub ? now() : null);
   }
   const started = Date.now();
+  let stored: PutObjectResult | null = null;
   try {
     let replacedFile: string | null = null;
     if (req.file) {
-      const stored = await persistMulterFile(req.file, "game");
+      stored = await persistMulterFile(req.file, "game");
       fields.push("file_url = ?"); vals.push(stored.url);
       fields.push("file_size = ?"); vals.push(stored.size);
       replacedFile = existing?.file_url ?? null;
@@ -1713,12 +1799,14 @@ router.patch("/game-downloads/:id", extendUploadSocketTimeouts, gameFileUpload, 
         fileSize: req.file.size,
         durationMs: Date.now() - started,
         resourceId: id,
+        ipAddress: clientIp(req),
       });
     }
     logActivitySync({ req, userId: req.user!.id, eventType: "game_build_update", eventCategory: "downloads", description: `Updated game build #${id}`, affectedObject: `game_download:${id}` });
     res.json({ ok: true });
   } catch (err) {
     cleanupTempFile(req.file);
+    await rollbackStoredFile(stored);
     if (req.file) {
       logAdminUpload({
         ok: false,
@@ -1730,6 +1818,7 @@ router.patch("/game-downloads/:id", extendUploadSocketTimeouts, gameFileUpload, 
         durationMs: Date.now() - started,
         reason: err instanceof Error ? err.message : String(err),
         resourceId: id,
+        ipAddress: clientIp(req),
       });
     }
     throw err;
@@ -1747,15 +1836,16 @@ router.delete("/game-downloads/:id", async (req, res) => {
 
 // ── Activity Logs ──────────────────────────────────────────────────────────────
 router.get("/activity-logs/meta", async (_req, res) => {
+  // LOWER(...) is portable — COLLATE NOCASE is SQLite-only and fails on PostgreSQL.
   const eventTypes = (await qAll<{ v: string }>(`
     SELECT DISTINCT event_type as v FROM activity_logs
     WHERE event_type IS NOT NULL AND event_type != ''
-    ORDER BY event_type COLLATE NOCASE
+    ORDER BY LOWER(event_type)
   `)).map((r) => r.v);
   const eventCategories = (await qAll<{ v: string }>(`
     SELECT DISTINCT event_category as v FROM activity_logs
     WHERE event_category IS NOT NULL AND event_category != ''
-    ORDER BY event_category COLLATE NOCASE
+    ORDER BY LOWER(event_category)
   `)).map((r) => r.v);
   res.json({ eventTypes, eventCategories });
 });
@@ -1796,22 +1886,22 @@ router.get("/activity-logs", async (req, res) => {
   if (eventCategory) { sql += " AND event_category = ?"; params.push(eventCategory); }
   if (req.query.eventType) { sql += " AND event_type = ?"; params.push(String(req.query.eventType)); }
   if (result) { sql += " AND result = ?"; params.push(result); }
-  if (country) { sql += " AND country LIKE ?"; params.push(`%${country}%`); }
+  if (country) { sql += " AND LOWER(country) LIKE LOWER(?)"; params.push(`%${country}%`); }
   if (isVpn === "1") sql += " AND is_vpn = 1";
   if (isVpn === "0") sql += " AND (is_vpn = 0 OR is_vpn IS NULL)";
   if (deviceType) { sql += " AND LOWER(device_type) = ?"; params.push(String(deviceType).toLowerCase()); }
-  if (browser) { sql += " AND browser LIKE ?"; params.push(`%${browser}%`); }
-  if (os) { sql += " AND os LIKE ?"; params.push(`%${os}%`); }
+  if (browser) { sql += " AND LOWER(browser) LIKE LOWER(?)"; params.push(`%${browser}%`); }
+  if (os) { sql += " AND LOWER(os) LIKE LOWER(?)"; params.push(`%${os}%`); }
   if (userId) { sql += " AND user_id = ?"; params.push(Number(userId)); }
   if (username) {
-    sql += " AND (username LIKE ? OR display_name LIKE ?)";
+    sql += " AND (LOWER(username) LIKE LOWER(?) OR LOWER(display_name) LIKE LOWER(?))";
     params.push(`%${username}%`, `%${username}%`);
   }
   if (search) {
     sql += ` AND (
-      username LIKE ? OR display_name LIKE ? OR ip_address LIKE ? OR description LIKE ?
-      OR event_category LIKE ? OR event_type LIKE ? OR affected_object LIKE ?
-      OR browser LIKE ? OR os LIKE ? OR device_type LIKE ? OR request_path LIKE ?
+      LOWER(username) LIKE LOWER(?) OR LOWER(display_name) LIKE LOWER(?) OR LOWER(ip_address) LIKE LOWER(?) OR LOWER(description) LIKE LOWER(?)
+      OR LOWER(event_category) LIKE LOWER(?) OR LOWER(event_type) LIKE LOWER(?) OR LOWER(affected_object) LIKE LOWER(?)
+      OR LOWER(browser) LIKE LOWER(?) OR LOWER(os) LIKE LOWER(?) OR LOWER(device_type) LIKE LOWER(?) OR LOWER(request_path) LIKE LOWER(?)
     )`;
     const q = `%${search}%`;
     params.push(q, q, q, q, q, q, q, q, q, q, q);
@@ -2502,7 +2592,7 @@ router.get("/conversations/:id/messages", requireSuperAdmin, async (req, res) =>
     }
   }
   if (q) {
-    where += " AND (m.content LIKE ? OR m.file_name LIKE ? OR u.username LIKE ?)";
+    where += " AND (LOWER(m.content) LIKE LOWER(?) OR LOWER(m.file_name) LIKE LOWER(?) OR LOWER(u.username) LIKE LOWER(?))";
     const like = `%${q}%`;
     params.push(like, like, like);
   }

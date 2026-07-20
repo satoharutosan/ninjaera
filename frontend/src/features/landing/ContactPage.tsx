@@ -27,14 +27,29 @@ function ContactPage() {
 
   const handleSubmit = async () => {
     setError("");
-    if (!name || !email || !subject || !message) {
+    if (!name.trim() || !email.trim() || !subject.trim() || !message.trim()) {
       setError("Please fill in all fields");
       return;
     }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      setError("Please enter a valid email address");
+      return;
+    }
+    if (loading) return;
     setLoading(true);
     try {
-      await api.contact.submit({ name, email, subject, category, message });
+      await api.contact.submit({
+        name: name.trim(),
+        email: email.trim(),
+        subject: subject.trim(),
+        category,
+        message: message.trim(),
+      });
       setSent(true);
+      setName("");
+      setEmail("");
+      setSubject("");
+      setMessage("");
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Failed to send message");
     } finally {

@@ -21,6 +21,7 @@ export const EMPTY_STATS: DashboardStats = {
   totalUsers: 0,
   onlineUsers: 0,
   pendingApplications: 0,
+  pendingJobApplications: 0,
   unreadContacts: 0,
   notifications: 0,
   totalDownloads: 0,

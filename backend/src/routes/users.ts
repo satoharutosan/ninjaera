@@ -327,19 +327,29 @@ router.patch("/me/settings", requireAuth, async (req, res) => {
 
 router.get("/me/stats", requireAuth, async (req, res) => {
   const stats = await qGet("SELECT * FROM game_stats WHERE user_id = ?", req.user!.id);
-  const activities = await qAll(
-    "SELECT description, created_at as createdAt FROM activity_log WHERE user_id = ? ORDER BY created_at DESC LIMIT 10",
+  const activities = await qAll<{ description: string; created_at: string }>(
+    "SELECT description, created_at FROM activity_log WHERE user_id = ? ORDER BY created_at DESC LIMIT 10",
     req.user!.id,
   );
-  res.json({ stats, activities });
+  res.json({
+    stats,
+    activities: activities.map((a) => ({ description: a.description, createdAt: a.created_at })),
+  });
 });
 
 router.get("/me/achievements", requireAuth, async (req, res) => {
-  const items = await qAll(
-    "SELECT title, description, icon, earned_at as earnedAt FROM achievements WHERE user_id = ? ORDER BY earned_at DESC",
+  const items = await qAll<{ title: string; description: string; icon: string; earned_at: string }>(
+    "SELECT title, description, icon, earned_at FROM achievements WHERE user_id = ? ORDER BY earned_at DESC",
     req.user!.id,
   );
-  res.json({ achievements: items });
+  res.json({
+    achievements: items.map((a) => ({
+      title: a.title,
+      description: a.description,
+      icon: a.icon,
+      earnedAt: a.earned_at,
+    })),
+  });
 });
 
 router.get("/me/inventory", requireAuth, async (req, res) => {

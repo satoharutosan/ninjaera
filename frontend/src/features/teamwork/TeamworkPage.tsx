@@ -14,7 +14,8 @@ import {
   Page, useC, SH1, COUNTRIES, citiesFor, ChatAvatar,
   FilledBtn, TonalBtn, Chip, FlagImg,
 } from "@/app/shared";
-import { api } from "@/app/api";
+import { api, ApiError } from "@/app/api";
+import { toast } from "sonner";
 import { onRealtimeEvent } from "@/app/realtime";
 
 const ALL_ROLES = [
@@ -56,8 +57,10 @@ function TeamworkPage({ loggedIn, setPage, onAddDM }: { loggedIn:boolean; setPag
   const [applyMsg, setApplyMsg] = useState("");
   const [applyPhotoFile, setApplyPhotoFile] = useState<File | null>(null);
   const [applyCvFile, setApplyCvFile] = useState<File | null>(null);
-  const [jobs, setJobs] = useState<{ id: number; title: string; department: string; type: string }[]>(ALL_ROLES.map((r, i) => ({ id: i + 1, title: r.title, department: r.dept, type: r.type })));
+  const [jobs, setJobs] = useState<{ id: number; title: string; department: string; type: string }[]>([]);
   const [applySubmitted, setApplySubmitted] = useState(false);
+  const [applySubmitting, setApplySubmitting] = useState(false);
+  const [applyError, setApplyError] = useState("");
   const applyPhotoRef = useRef<HTMLInputElement>(null);
   const applyCvRef = useRef<HTMLInputElement>(null);
 
@@ -134,9 +137,13 @@ function TeamworkPage({ loggedIn, setPage, onAddDM }: { loggedIn:boolean; setPag
   }, []);
 
   const submitApplication = async () => {
-    if (!applyRole || !applyName) return;
+    if (!applyRole || !applyName || applySubmitting) return;
+    setApplyError("");
     const job = jobs.find(j => j.title === applyRole.title);
-    if (!job) { setApplySubmitted(true); return; }
+    if (!job) {
+      setApplyError("This position is not currently accepting applications. Please try again later.");
+      return;
+    }
     const form = new FormData();
     form.append("fullName", applyName);
     form.append("gender", applyGender);
@@ -149,15 +156,24 @@ function TeamworkPage({ loggedIn, setPage, onAddDM }: { loggedIn:boolean; setPag
     form.append("message", applyMsg);
     if (applyPhotoFile) form.append("photo", applyPhotoFile);
     if (applyCvFile) form.append("cv", applyCvFile);
+    setApplySubmitting(true);
     try {
       await api.jobs.apply(job.id, form);
-    } catch { /* show success UI anyway for demo */ }
-    setApplySubmitted(true);
+      setApplySubmitted(true);
+    } catch (e) {
+      const msg = e instanceof ApiError ? e.message : "Failed to submit application. Please try again.";
+      setApplyError(msg);
+      toast.error(msg);
+    } finally {
+      setApplySubmitting(false);
+    }
   };
 
   const handleApplyClick = (role: typeof ALL_ROLES[0]) => {
     if (!loggedIn) { setPage("login"); return; }
-    setApplyRole(role); setApplySubmitted(false);
+    setApplyRole(role);
+    setApplySubmitted(false);
+    setApplyError("");
   };
 
   return (
@@ -286,7 +302,10 @@ function TeamworkPage({ loggedIn, setPage, onAddDM }: { loggedIn:boolean; setPag
                     <textarea rows={4} value={applyMsg} onChange={e => setApplyMsg(e.target.value)} placeholder="Tell us why you'd be a great fit..." className="w-full px-4 pt-4 pb-2 rounded-[4px] border text-sm focus:outline-none resize-none" style={{ borderColor:C.outline, color:C.onSurface, background:C.surface, fontFamily:"Roboto" }} />
                     <span className="absolute left-3 -top-2 px-1 text-xs" style={{ color:C.primary, background:C.surface, fontFamily:"Roboto" }}>Application Message</span>
                   </div>
-                  <FilledBtn onClick={submitApplication} cls="w-full justify-center"><SendIcon style={{ fontSize:16 }} />Submit Application</FilledBtn>
+                  <FilledBtn onClick={submitApplication} cls="w-full justify-center" disabled={applySubmitting}>
+                    <SendIcon style={{ fontSize:16 }} />{applySubmitting ? "Submitting…" : "Submit Application"}
+                  </FilledBtn>
+                  {applyError && <p className="text-sm text-center" style={{ color: C.error, fontFamily: "Roboto" }}>{applyError}</p>}
                 </div>
               </>
             )}

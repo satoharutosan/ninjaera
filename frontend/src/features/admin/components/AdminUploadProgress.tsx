@@ -1,7 +1,7 @@
 import LinearProgress from "@mui/material/LinearProgress";
 import { useC } from "@/app/shared";
 
-export type AdminUploadPhase = "uploading" | "processing";
+export type AdminUploadPhase = "uploading" | "processing" | "complete";
 
 export type AdminUploadProgressState = {
   filename: string;
@@ -29,15 +29,23 @@ export function AdminUploadProgress({
   total?: number;
 }) {
   const C = useC();
-  const indeterminate = state.phase === "processing" || state.percent < 0;
-  const value = state.phase === "processing" ? 100 : Math.max(0, Math.min(100, state.percent));
+  const isProcessing = state.phase === "processing";
+  const isComplete = state.phase === "complete";
+  const indeterminate = isProcessing || state.percent < 0;
+  // During server processing, keep the bar visually below 100% so "100%" means success only.
+  const value = isComplete
+    ? 100
+    : isProcessing
+      ? 95
+      : Math.max(0, Math.min(99, state.percent));
   const bytesLabel =
     typeof loaded === "number" && typeof total === "number" && total > 0
       ? `${formatBytes(loaded)} / ${formatBytes(total)}`
       : null;
-  const status =
-    state.phase === "processing"
-      ? "Processing on server…"
+  const status = isComplete
+    ? "Upload complete"
+    : isProcessing
+      ? "Processing on server… (saving file & database record)"
       : indeterminate
         ? "Uploading…"
         : `${value}% uploaded`;
@@ -48,12 +56,16 @@ export function AdminUploadProgress({
       style={{ borderColor: C.outlineVar, background: C.surfaceVar }}
       role="status"
       aria-live="polite"
-      aria-busy="true"
+      aria-busy={!isComplete}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-sm font-medium truncate" style={{ color: C.onSurface, fontFamily: "Roboto" }}>
-            {state.phase === "processing" ? "Finishing upload…" : `Uploading ${state.filename}`}
+            {isComplete
+              ? `Uploaded ${state.filename}`
+              : isProcessing
+                ? "Finishing upload…"
+                : `Uploading ${state.filename}`}
           </p>
           {bytesLabel && state.phase === "uploading" && (
             <p className="text-sm mt-0.5 tabular-nums" style={{ color: C.onSurface, fontFamily: "Roboto" }}>
@@ -71,7 +83,7 @@ export function AdminUploadProgress({
         )}
       </div>
       <LinearProgress
-        variant={indeterminate && state.phase !== "processing" ? "indeterminate" : "determinate"}
+        variant={indeterminate ? "indeterminate" : "determinate"}
         value={value}
         sx={{
           height: 8,
@@ -79,7 +91,7 @@ export function AdminUploadProgress({
           backgroundColor: C.outlineVar,
           "& .MuiLinearProgress-bar": {
             borderRadius: 999,
-            backgroundColor: C.primary,
+            backgroundColor: isComplete ? "#386A20" : C.primary,
             transition: "transform 160ms linear",
           },
         }}

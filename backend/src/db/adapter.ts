@@ -78,5 +78,7 @@ export function rewriteSqlForPostgres(sql: string): string {
   }
   // SQLite AUTOINCREMENT is not valid in PG DDL (handled in migrations).
   s = s.replace(/\bAUTOINCREMENT\b/gi, "");
+  // COLLATE NOCASE is SQLite-only — approximate with LOWER(...) when used in ORDER BY.
+  s = s.replace(/\bORDER\s+BY\s+([a-zA-Z0-9_."]+)\s+COLLATE\s+NOCASE\b/gi, "ORDER BY LOWER($1)");
   return s;
 }

@@ -97,7 +97,7 @@ const RULES: Record<UploadKind, Rule> = {
       ".mp3", ".wav", ".ogg", ".m4a",
       ".pdf", ".zip", ".txt",
     ]),
-    maxBytes: 50 * 1024 * 1024,
+    maxBytes: 20 * 1024 * 1024,
   },
   jobPhoto: {
     mimes: new Set(["image/png", "image/jpeg", "image/jpg", "image/webp"]),
@@ -209,7 +209,11 @@ export function validateUpload(opts: {
   const size = opts.size ?? opts.buffer?.length ?? 0;
 
   if (rule.maxBytes && size > rule.maxBytes) {
-    return { ok: false, error: `File exceeds maximum size of ${Math.round(rule.maxBytes / (1024 * 1024))}MB` };
+    const mb = Math.round(rule.maxBytes / (1024 * 1024));
+    return {
+      ok: false,
+      error: `This file exceeds the maximum size of ${mb} MB. Please choose a file that is ${mb} MB or smaller.`,
+    };
   }
 
   if (!ext || !rule.exts.has(ext)) {

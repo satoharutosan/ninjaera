@@ -77,7 +77,14 @@ export function sanitizeUsernameHint(raw: string): string {
 export function isUsernameConstraintError(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
   const e = err as { code?: string; message?: string };
-  if (e.code !== "SQLITE_CONSTRAINT_UNIQUE" && e.code !== "SQLITE_CONSTRAINT") return false;
+  const code = String(e.code || "");
+  // SQLite: SQLITE_CONSTRAINT_UNIQUE / SQLITE_CONSTRAINT
+  // PostgreSQL: 23505 (unique_violation)
+  const isUnique =
+    code === "SQLITE_CONSTRAINT_UNIQUE"
+    || code === "SQLITE_CONSTRAINT"
+    || code === "23505";
+  if (!isUnique) return false;
   const msg = (e.message || "").toLowerCase();
   return msg.includes("username") || msg.includes("idx_users_username_lower");
 }

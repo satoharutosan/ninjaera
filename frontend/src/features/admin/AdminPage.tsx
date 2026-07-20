@@ -189,7 +189,7 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
 
   const sidebarBadge = (id: Section): number => {
     if (id === "contacts") return stats.unreadContacts || 0;
-    if (id === "applications") return stats.pendingApplications || 0;
+    if (id === "applications") return stats.pendingJobApplications ?? stats.pendingApplications ?? 0;
     return 0;
   };
 
@@ -447,13 +447,14 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
     setBytes: (b: { loaded: number; total: number } | null) => void,
   ) => (p: UploadProgress) => {
     if (p.total > 0) setBytes({ loaded: p.loaded, total: p.total });
+    // Transfer finished ≠ upload succeeded — stay in processing until the API resolves.
     if (p.transferComplete || p.percent >= 100) {
-      setProgress({ filename, percent: 100, phase: "processing" });
+      setProgress({ filename, percent: 95, phase: "processing" });
       return;
     }
     setProgress({
       filename,
-      percent: p.percent,
+      percent: Math.min(99, p.percent),
       phase: "uploading",
     });
   };
@@ -487,6 +488,7 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
       } else {
         await api.admin.createResource(form, { onUploadProgress });
       }
+      setResourceUploadProgress({ filename, percent: 100, phase: "complete" });
       toast.success(editResource.id ? "Updated" : "Uploaded");
       setEditResource(null);
       setResourceFile(null);
@@ -530,6 +532,7 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
       } else {
         await api.admin.createGameDownload(form, { onUploadProgress });
       }
+      setGameUploadProgress({ filename, percent: 100, phase: "complete" });
       toast.success(editGameBuild.id ? "Updated" : "Uploaded");
       setEditGameBuild(null);
       setGameBuildFile(null);
@@ -1213,13 +1216,45 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                   {applications.map(app => (
                     <div key={app.id} className="rounded-2xl p-5" style={{ background: C.surface, boxShadow: SH1 }}>
                       <div className="flex flex-wrap items-start justify-between gap-4">
-                        <div>
-                          <h3 className="font-medium" style={{ color: C.onSurface, fontFamily: "Roboto" }}>{app.fullName}</h3>
-                          <p className="text-sm" style={{ color: C.primary }}>@{app.applicant.username} · {app.jobTitle}</p>
-                          <p className="text-xs mt-1 flex items-center gap-1" style={{ color: C.onSurfaceVar }}>
-                            {app.country && <FlagImg country={app.country} size={14} />}{app.country}{app.city ? ` · ${app.city}` : ""} · {app.time}
-                          </p>
-                          {app.message && <p className="text-sm mt-2" style={{ color: C.onSurfaceVar }}>{app.message}</p>}
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-start gap-3">
+                            {app.photoUrl ? (
+                              <img src={app.photoUrl} alt="" className="w-12 h-12 rounded-full object-cover shrink-0" />
+                            ) : null}
+                            <div className="min-w-0">
+                              <h3 className="font-medium" style={{ color: C.onSurface, fontFamily: "Roboto" }}>{app.fullName}</h3>
+                              <p className="text-sm" style={{ color: C.primary }}>@{app.applicant.username} · {app.jobTitle}</p>
+                              <p className="text-xs mt-1 flex items-center gap-1" style={{ color: C.onSurfaceVar }}>
+                                {app.country && <FlagImg country={app.country} size={14} />}{app.country}{app.city ? ` · ${app.city}` : ""} · {app.time}
+                              </p>
+                              {(app.gender || app.dateOfBirth) && (
+                                <p className="text-xs mt-1" style={{ color: C.onSurfaceVar }}>
+                                  {[app.gender, app.dateOfBirth].filter(Boolean).join(" · ")}
+                                </p>
+                              )}
+                              {app.message && <p className="text-sm mt-2" style={{ color: C.onSurfaceVar }}>{app.message}</p>}
+                              <div className="flex flex-wrap gap-2 mt-3">
+                                {app.cvUrl && (
+                                  <a href={app.cvUrl} target="_blank" rel="noopener noreferrer" className="text-xs font-medium underline" style={{ color: C.primary }}>
+                                    View CV
+                                  </a>
+                                )}
+                                {app.portfolioUrl && (
+                                  <a href={app.portfolioUrl} target="_blank" rel="noopener noreferrer" className="text-xs font-medium underline" style={{ color: C.primary }}>
+                                    Portfolio
+                                  </a>
+                                )}
+                                {app.photoUrl && (
+                                  <a href={app.photoUrl} target="_blank" rel="noopener noreferrer" className="text-xs font-medium underline" style={{ color: C.primary }}>
+                                    Photo
+                                  </a>
+                                )}
+                                {app.applicant.email && (
+                                  <span className="text-xs" style={{ color: C.onSurfaceVar }}>{app.applicant.email}</span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
                         </div>
                         <Chip label={app.status} color={app.status === "approved" ? "#386A20" : app.status === "rejected" ? C.error : C.primary} filled={app.status !== "pending"} />
                       </div>

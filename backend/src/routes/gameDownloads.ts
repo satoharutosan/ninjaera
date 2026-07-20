@@ -13,10 +13,10 @@ const PLATFORMS = ["windows", "android", "ios"] as const;
 router.get("/game-downloads", async (_req, res) => {
   const downloads = await Promise.all(PLATFORMS.map(async platform => {
     const row = await qGet<{
-      id: number; platform: string; version: string; releaseNotes: string;
-      fileSize: number | null; publishedAt: string;
+      id: number; platform: string; version: string; release_notes: string;
+      file_size: number | null; published_at: string;
     }>(`
-      SELECT id, platform, version, release_notes as releaseNotes, file_size as fileSize, published_at as publishedAt
+      SELECT id, platform, version, release_notes, file_size, published_at
       FROM game_downloads
       WHERE platform = ? AND published = 1
       ORDER BY published_at DESC, id DESC
@@ -28,9 +28,9 @@ router.get("/game-downloads", async (_req, res) => {
       available: !!row?.id,
       id: row?.id ?? null,
       version: row?.version ?? null,
-      releaseNotes: row?.releaseNotes ?? null,
-      fileSize: row?.fileSize ?? null,
-      publishedAt: row?.publishedAt ?? null,
+      releaseNotes: row?.release_notes ?? null,
+      fileSize: row?.file_size ?? null,
+      publishedAt: row?.published_at ?? null,
     };
   }));
   res.json({ downloads });

@@ -3,6 +3,8 @@ import { qGet, qAll, qRun } from "../db/query.js";
 import { requireAuth } from "../middleware/auth.js";
 import { rateLimit } from "../middleware/rateLimit.js";
 import { logActivitySync } from "../services/activityLog.js";
+import { createAdminSystemNotification } from "../services/adminNotifications.js";
+import { emitToAdmins, scheduleAdminStatsRefresh } from "../services/realtime.js";
 import { createMemoryUploader, persistMulterFile } from "../storage/multerUpload.js";
 import { validateUpload } from "../services/uploadValidation.js";
 
@@ -34,6 +36,16 @@ router.post("/:id/apply", requireAuth, rateLimit({
   const { fullName, gender, dateOfBirth, country, city, portfolioUrl, message } = req.body;
   if (!fullName) {
     res.status(400).json({ error: "Full name is required" });
+    return;
+  }
+
+  const existingPending = await qGet<{ id: number }>(
+    "SELECT id FROM job_applications WHERE user_id = ? AND job_id = ? AND status = 'pending'",
+    req.user!.id,
+    jobId,
+  );
+  if (existingPending) {
+    res.status(409).json({ error: "You already have a pending application for this position" });
     return;
   }
 
@@ -80,6 +92,17 @@ router.post("/:id/apply", requireAuth, rateLimit({
   `, jobId, req.user!.id, fullName, gender || null, dateOfBirth || null, country || null, city || null, photoUrl, cvUrl, portfolioUrl || null, message || null, now());
 
   logActivitySync({ req, userId: req.user!.id, eventType: "application_submitted", eventCategory: "teamwork", description: `Submitted teamwork application for job #${jobId}`, affectedObject: `job_application:${jobId}` });
+
+  emitToAdmins("admin:applications", {});
+  scheduleAdminStatsRefresh();
+  await createAdminSystemNotification({
+    title: "New Teamwork Application",
+    body: `${fullName} submitted an application`,
+    source: "Teamwork",
+    page: "applications",
+    notifType: "application",
+    metadata: { jobId, userId: req.user!.id },
+  });
 
   res.status(201).json({ ok: true, message: "Application submitted" });
 });

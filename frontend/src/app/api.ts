@@ -626,6 +626,7 @@ export const api = {
       totalUsers: number;
       onlineUsers: number;
       pendingApplications: number;
+      pendingJobApplications?: number;
       unreadContacts: number;
       notifications: number;
       totalDownloads: number;
@@ -939,6 +940,8 @@ export type TeamApplication = {
   id: number;
   applicant: { id: number; username: string; email: string; avatarUrl?: string };
   fullName: string;
+  gender?: string;
+  dateOfBirth?: string;
   country?: string;
   city?: string;
   message?: string;
@@ -947,6 +950,7 @@ export type TeamApplication = {
   time: string;
   photoUrl?: string;
   cvUrl?: string;
+  portfolioUrl?: string;
 };
 
 export type AdminResource = {

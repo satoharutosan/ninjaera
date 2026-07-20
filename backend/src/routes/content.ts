@@ -80,14 +80,14 @@ router.get("/resources", optionalAuth, async (req, res) => {
   let rows;
   if (category) {
     rows = await qAll(`
-      SELECT id, title, category, description, published_at as publishedAt,
-             file_size as fileSize, version, enabled, visibility
+      SELECT id, title, category, description, published_at,
+             file_size, version, enabled, visibility
       FROM resources WHERE category = ? AND enabled = 1 ORDER BY sort_order, published_at DESC
     `, category);
   } else {
     rows = await qAll(`
-      SELECT id, title, category, description, published_at as publishedAt,
-             file_size as fileSize, version, enabled, visibility
+      SELECT id, title, category, description, published_at,
+             file_size, version, enabled, visibility
       FROM resources WHERE enabled = 1 ORDER BY sort_order, published_at DESC
     `);
   }
@@ -98,8 +98,8 @@ router.get("/resources", optionalAuth, async (req, res) => {
       title: r.title,
       category: r.category,
       description: r.description,
-      publishedAt: r.publishedAt,
-      fileSize: r.fileSize,
+      publishedAt: r.published_at,
+      fileSize: r.file_size,
       version: r.version,
       enabled: r.enabled,
       visibility: normalizeResourceVisibility(r.visibility),

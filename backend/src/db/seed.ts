@@ -107,6 +107,30 @@ export async function ensureSuperAdmin(): Promise<void> {
 }
 
 /**
+ * Ensure default job postings exist (production and dev).
+ * Teamwork applications require matching rows in job_postings.
+ */
+export async function ensureJobPostings(): Promise<void> {
+  const row = await qGet<{ c: number }>("SELECT COUNT(*) as c FROM job_postings");
+  const count = typeof row?.c === "number" ? row.c : Number(row?.c ?? 0);
+  if (count > 0) return;
+
+  const jobs = [
+    ["Senior 3D Artist", "Art", "Remote · Full-time", "Create stunning 3D assets for the Ninja Era world."],
+    ["Backend Engineer", "Engineering", "Remote · Full-time", "Build scalable server infrastructure for our MMORPG."],
+    ["Game Developer", "Game", "Remote · Part-time", "Help shape the game experience across platforms."],
+    ["Blockchain Developer", "Blockchain", "Remote · Full-time", "Develop in-game NFT and token systems."],
+    ["AI/ML Engineer", "AI", "Remote · Full-time", "Create intelligent NPC behavior and procedural content."],
+    ["UI/UX Designer", "Design", "Remote · Full-time", "Design intuitive interfaces for web and in-game HUD."],
+  ];
+  const insertJobSql = "INSERT INTO job_postings (title, department, employment_type, description) VALUES (?, ?, ?, ?)";
+  for (const [title, dept, type, desc] of jobs) {
+    await qRun(insertJobSql, title, dept, type, desc);
+  }
+  console.log("[seed] Job postings bootstrapped (6 roles)");
+}
+
+/**
  * Seed empty databases.
  * Production: only create an admin when SEED_ADMIN_EMAIL + SEED_ADMIN_PASSWORD are set
  * (never a hardcoded password). Development: keep the demo dataset for local UX.
@@ -116,12 +140,14 @@ export async function seedDatabase() {
   const userCount = await qGet<{ c: number }>("SELECT COUNT(*) as c FROM users");
   if (userCount!.c > 0) {
     await ensureSuperAdmin();
+    await ensureJobPostings();
     return;
   }
 
   if (isProd()) {
     // Production empty DB: ensureSuperAdmin handles the SA account.
     await ensureSuperAdmin();
+    await ensureJobPostings();
     return;
   }
 

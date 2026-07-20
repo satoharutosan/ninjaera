@@ -4,6 +4,7 @@ import { qRun } from "../db/query.js";
 import { optionalAuth } from "../middleware/auth.js";
 import { rateLimit, clientIp } from "../middleware/rateLimit.js";
 import { lookupGeo } from "../services/geoip.js";
+import { createAdminSystemNotification } from "../services/adminNotifications.js";
 import { emitToAdmins, scheduleAdminStatsRefresh } from "../services/realtime.js";
 
 const router = Router();
@@ -17,6 +18,10 @@ router.post("/", optionalAuth, rateLimit({
   const { name, email, subject, category, message } = req.body;
   if (!name || !email || !subject || !category || !message) {
     res.status(400).json({ error: "All fields are required" });
+    return;
+  }
+  if (typeof email !== "string" || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+    res.status(400).json({ error: "Please enter a valid email address" });
     return;
   }
 
@@ -44,6 +49,14 @@ router.post("/", optionalAuth, rateLimit({
 
   emitToAdmins("admin:contact", { contactId: result.lastInsertRowid });
   scheduleAdminStatsRefresh();
+  await createAdminSystemNotification({
+    title: "New Contact Message",
+    body: `${name} — ${subject}`,
+    source: "Contact",
+    page: "contacts",
+    notifType: "contact",
+    metadata: { contactId: result.lastInsertRowid, email },
+  });
 
   res.status(201).json({ ok: true, message: "Message sent successfully", id: result.lastInsertRowid });
 });

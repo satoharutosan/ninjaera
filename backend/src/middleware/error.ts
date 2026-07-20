@@ -2,7 +2,7 @@ import type { Request, Response, NextFunction } from "express";
 import multer from "multer";
 
 /** Map storage/provider failures to accurate client messages (no secrets). */
-function clientErrorForUnknown(err: unknown): { status: number; error: string } | null {
+export function mapClientUploadError(err: unknown): { status: number; error: string } | null {
   const msg = err instanceof Error ? err.message : String(err);
   const lower = msg.toLowerCase();
   if (lower.includes("storage_provider=cloudinary requires") || lower.includes("storage_provider=s3")) {
@@ -46,7 +46,17 @@ function clientErrorForUnknown(err: unknown): { status: number; error: string } 
     return { status: 500, error: "Upload failed: temporary upload file was lost before storage completed. Please retry." };
   }
   if (lower.includes("storeuploadedfile") || lower.includes("cloudinary upload") || lower.includes("putobject") || lower.includes("upload_large")) {
-    return { status: 500, error: "Upload failed: could not write the file to storage. Please retry." };
+    return { status: 500, error: "Upload failed because the storage write operation was unsuccessful." };
+  }
+  if (
+    lower.includes("unique constraint")
+    || lower.includes("not null")
+    || lower.includes("foreign key")
+    || lower.includes("duplicate key")
+    || lower.includes("violates")
+    || lower.includes("insert into")
+  ) {
+    return { status: 500, error: "Upload failed because the database record could not be created." };
   }
   return null;
 }
@@ -68,7 +78,7 @@ export function errorHandler(err: unknown, _req: Request, res: Response, _next: 
     res.status(409).json({ error: "Resource already exists" });
     return;
   }
-  const mapped = clientErrorForUnknown(err);
+  const mapped = mapClientUploadError(err);
   if (mapped) {
     res.status(mapped.status).json({ error: mapped.error });
     return;

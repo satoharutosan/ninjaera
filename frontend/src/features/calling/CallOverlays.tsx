@@ -156,22 +156,24 @@ function RemoteAudioSink({
 }) {
   const ref = useRef<HTMLAudioElement>(null);
   const trackId = stream?.getAudioTracks()[0]?.id ?? "none";
+  const [needsGesture, setNeedsGesture] = useState(false);
 
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
     if (!stream || !stream.getAudioTracks().length) {
       el.srcObject = null;
+      setNeedsGesture(false);
       return;
     }
     const attached = el.srcObject instanceof MediaStream ? el.srcObject : null;
     const attachedId = attached?.getAudioTracks()[0]?.id;
     if (attachedId === stream.getAudioTracks()[0]?.id && el.srcObject) {
-      void el.play().catch(() => {});
+      void el.play().then(() => setNeedsGesture(false)).catch(() => setNeedsGesture(true));
       return;
     }
     el.srcObject = stream;
-    void el.play().catch(() => {});
+    void el.play().then(() => setNeedsGesture(false)).catch(() => setNeedsGesture(true));
   }, [stream, trackId]);
 
   useEffect(() => {
@@ -180,15 +182,35 @@ function RemoteAudioSink({
     void el.setSinkId(sinkId).catch(() => {});
   }, [sinkId, stream, trackId]);
 
-  return <audio ref={ref} autoPlay playsInline className="hidden" />;
+  return (
+    <>
+      <audio ref={ref} autoPlay playsInline className="hidden" />
+      {needsGesture && (
+        <button
+          type="button"
+          className="absolute bottom-20 left-1/2 -translate-x-1/2 z-[5] px-4 py-2 rounded-full text-sm font-medium bg-black/70 text-white"
+          style={{ fontFamily: "Roboto" }}
+          onClick={() => {
+            const el = ref.current;
+            if (!el) return;
+            void el.play().then(() => setNeedsGesture(false)).catch(() => {});
+          }}
+        >
+          Click to enable sound
+        </button>
+      )}
+    </>
+  );
 }
 
 function ScreenReceiveWatch({
   peerSharing,
   videoElRef,
+  getStats,
 }: {
   peerSharing: boolean;
   videoElRef: RefObject<HTMLVideoElement | null>;
+  getStats?: () => Promise<RTCStatsReport> | undefined;
 }) {
   const [fail, setFail] = useState(false);
 
@@ -199,23 +221,38 @@ function ScreenReceiveWatch({
     }
     setFail(false);
     const started = performance.now();
-    const id = window.setInterval(() => {
+    let lastFrames = 0;
+    const id = window.setInterval(async () => {
       const el = videoElRef.current;
       const w = el?.videoWidth ?? 0;
       const h = el?.videoHeight ?? 0;
-      // Placeholder outbound is 16×16 — real camera/screen is larger.
       if (w > 32 && h > 32) {
         setFail(false);
         window.clearInterval(id);
         return;
       }
-      if (performance.now() - started > 6000) {
-        setFail(true);
+      try {
+        const stats = await getStats?.();
+        let frames = 0;
+        stats?.forEach((r) => {
+          if (r.type === "inbound-rtp" && (r as { kind?: string }).kind === "video") {
+            frames = Math.max(frames, (r as { framesReceived?: number }).framesReceived || 0);
+          }
+        });
+        if (frames > lastFrames) {
+          lastFrames = frames;
+          setFail(false);
+          // Frames arriving — keep watching until video element paints or timeout softens.
+        }
+      } catch { /* */ }
+      // Longer window for TURN / slow first frames; only fail if still blank.
+      if (performance.now() - started > 12_000) {
+        if (w <= 32 && h <= 32 && lastFrames === 0) setFail(true);
         window.clearInterval(id);
       }
-    }, 400);
+    }, 500);
     return () => window.clearInterval(id);
-  }, [peerSharing, videoElRef]);
+  }, [peerSharing, videoElRef, getStats]);
 
   if (!fail || !peerSharing) return null;
   return (
@@ -535,6 +572,7 @@ export function CallOverlays() {
             <ScreenReceiveWatch
               peerSharing={call.peerScreenSharing}
               videoElRef={remoteVideoRef}
+              getStats={call.getPeerStats}
             />
             <RemoteStreamDebug
               videoElRef={remoteVideoRef}
@@ -658,7 +696,7 @@ export function CallOverlays() {
           {call.audioInputs.length > 0 && (
             <DeviceSelect
               label="Microphone"
-              value={call.audioInputs[0]?.deviceId || ""}
+              value={call.selectedMicId || call.audioInputs[0]?.deviceId || ""}
               onChange={id => void call.switchMic(id)}
               options={call.audioInputs}
             />
@@ -666,7 +704,7 @@ export function CallOverlays() {
           {call.videoInputs.length > 0 && (
             <DeviceSelect
               label="Camera"
-              value={call.videoInputs[0]?.deviceId || ""}
+              value={call.selectedCamId || call.videoInputs[0]?.deviceId || ""}
               onChange={id => void call.switchCam(id)}
               options={call.videoInputs}
             />

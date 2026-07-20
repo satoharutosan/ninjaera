@@ -162,6 +162,7 @@ export class CallPeer {
     // real frames arrived on a second, ignored m-line.
     this.pc.onnegotiationneeded = async () => {
       if (this.closed || this.polite) return;
+      if (this.makingOffer || this.pc.signalingState !== "stable") return;
       try {
         this.makingOffer = true;
         await this.pc.setLocalDescription();
@@ -182,6 +183,7 @@ export class CallPeer {
 
   /** Resolve the live video RTCRtpSender — never assume getSenders()[0]. */
   private findVideoSender(): RTCRtpSender {
+    if (!this.mediaReady) throw new Error("Video sender unavailable");
     const byTransceiver = this.videoTransceiver.sender;
     if (byTransceiver) return byTransceiver;
     const found = this.pc.getSenders().find(s => s.track?.kind === "video");
@@ -346,20 +348,26 @@ export class CallPeer {
     const audioT = transceivers.find(t => t.receiver.track?.kind === "audio");
     const videoT = transceivers.find(t => t.receiver.track?.kind === "video");
 
-    if (audioT) {
-      this.audioTransceiver = audioT;
-      if (this.pendingAudioTrack) {
-        try { await audioT.sender.replaceTrack(this.pendingAudioTrack); } catch { /* */ }
-      }
-      try { audioT.direction = "sendrecv"; } catch { /* */ }
+    if (!audioT || !videoT) {
+      webrtcLog("Callee offer missing audio/video m-lines", {
+        count: transceivers.length,
+        kinds: transceivers.map(t => t.receiver.track?.kind),
+      });
+      throw new Error("Call negotiation failed — missing media lines");
     }
-    if (videoT) {
-      this.videoTransceiver = videoT;
-      if (this.pendingVideoTrack) {
-        try { await videoT.sender.replaceTrack(this.pendingVideoTrack); } catch { /* */ }
-      }
-      try { videoT.direction = "sendrecv"; } catch { /* */ }
+
+    this.audioTransceiver = audioT;
+    if (this.pendingAudioTrack) {
+      try { await audioT.sender.replaceTrack(this.pendingAudioTrack); } catch { /* */ }
     }
+    try { audioT.direction = "sendrecv"; } catch { /* */ }
+
+    this.videoTransceiver = videoT;
+    if (this.pendingVideoTrack) {
+      try { await videoT.sender.replaceTrack(this.pendingVideoTrack); } catch { /* */ }
+    }
+    try { videoT.direction = "sendrecv"; } catch { /* */ }
+
     this.mediaReady = true;
     webrtcLog("Callee attached local tracks to offer transceivers", {
       video: this.getVideoDirection(),
@@ -423,16 +431,22 @@ export class CallPeer {
 
   setMicEnabled(on: boolean) {
     this.localStream?.getAudioTracks().forEach(t => { t.enabled = on; });
-    const t = this.audioTransceiver.sender.track;
-    if (t) t.enabled = on;
+    if (!this.mediaReady) return;
+    try {
+      const t = this.audioTransceiver.sender.track;
+      if (t) t.enabled = on;
+    } catch { /* */ }
   }
 
   setCamEnabled(on: boolean) {
     if (this.cameraTrack) this.cameraTrack.enabled = on;
     if (!this.sendingScreen) {
       this.localStream?.getVideoTracks().forEach(t => { t.enabled = on; });
-      const t = this.findVideoSender().track;
-      if (t && t === this.cameraTrack) t.enabled = on;
+      if (!this.mediaReady) return;
+      try {
+        const t = this.findVideoSender().track;
+        if (t && t === this.cameraTrack) t.enabled = on;
+      } catch { /* */ }
     }
   }
 
@@ -444,12 +458,17 @@ export class CallPeer {
     });
     const newTrack = next.getAudioTracks()[0];
     const old = this.localStream.getAudioTracks()[0];
-    if (newTrack) await this.audioTransceiver.sender.replaceTrack(newTrack);
+    if (newTrack && this.mediaReady) {
+      try { await this.audioTransceiver.sender.replaceTrack(newTrack); } catch { /* */ }
+    }
     if (old) {
       this.localStream.removeTrack(old);
       old.stop();
     }
-    if (newTrack) this.localStream.addTrack(newTrack);
+    if (newTrack) {
+      this.localStream.addTrack(newTrack);
+      this.pendingAudioTrack = newTrack;
+    }
     next.getVideoTracks().forEach(t => t.stop());
   }
 
@@ -464,8 +483,9 @@ export class CallPeer {
     if (newTrack) {
       this.cameraTrack = newTrack;
       this.outboundBaseTrack = newTrack;
-      if (!this.sendingScreen) {
-        await this.findVideoSender().replaceTrack(newTrack);
+      this.pendingVideoTrack = newTrack;
+      if (!this.sendingScreen && this.mediaReady) {
+        try { await this.findVideoSender().replaceTrack(newTrack); } catch { /* */ }
       }
     }
     if (old && old !== this.screenTrack && old !== this.placeholder?.track) {
@@ -474,6 +494,17 @@ export class CallPeer {
     }
     if (newTrack) this.localStream.addTrack(newTrack);
     next.getAudioTracks().forEach(t => t.stop());
+  }
+
+  /** Attempt ICE restart after brief disconnects (caller only creates the new offer). */
+  restartIce() {
+    if (this.closed) return;
+    try {
+      webrtcLog("restartIce");
+      this.pc.restartIce();
+    } catch (err) {
+      webrtcLog("restartIce failed", err);
+    }
   }
 
   async startScreenShare(): Promise<MediaStreamTrack> {

@@ -174,6 +174,7 @@ export default function DesktopApp() {
     api.auth.logout().catch(() => {});
     clearAuthStorage();
     setToken(null);
+    void import("@/features/calling/iceConfig").then((m) => m.clearIceServerCache());
     setUser(null);
     setContacts(MSGS_DATA_INIT);
     setMsgUnread(0);

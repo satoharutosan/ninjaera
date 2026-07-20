@@ -25,7 +25,7 @@ export const CALL_DENIED_MESSAGE =
   "Voice and video calls are available only when at least one participant is a team member.";
 
 export const CALL_OFFLINE_MESSAGE =
-  "This user is currently offline and cannot receive calls.";
+  "This user is currently unavailable.";
 
 /** Recipient must be Online (not Away / Invisible / Offline). */
 export function canCallPeer(peer: {

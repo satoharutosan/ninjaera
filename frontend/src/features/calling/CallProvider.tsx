@@ -70,6 +70,8 @@ type CallContextValue = {
   switchMic: (deviceId: string) => Promise<void>;
   switchCam: (deviceId: string) => Promise<void>;
   setAudioOutput: (deviceId: string) => Promise<void>;
+  selectedMicId: string;
+  selectedCamId: string;
   shareScreen: () => Promise<void>;
   stopScreenShare: () => Promise<void>;
   /** Live WebRTC stats for the active peer (dev diagnostics). */
@@ -132,15 +134,22 @@ export function CallProvider({ children }: { children: ReactNode }) {
   const callIdRef = useRef<string | null>(null);
   const isCallerRef = useRef(false);
   const cancelledRef = useRef(false);
+  /** Bumped on every reset so async accept/beginMedia can abort stale work. */
+  const callGenRef = useRef(0);
   const phaseRef = useRef<CallPhase>("idle");
   const callTypeRef = useRef<CallType>("voice");
   const localViewRef = useRef<VideoViewMode>("auto");
   const remoteViewRef = useRef<VideoViewMode>("auto");
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const ringTickRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const outgoingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const iceRestartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const iceRestartAttemptedRef = useRef(false);
   const pendingStreamRef = useRef<MediaStream | null>(null);
   /** Peer signaled screen share via call:media-state (may precede unmuted frames). */
   const peerAnnouncedScreenRef = useRef(false);
+  const [selectedMicId, setSelectedMicId] = useState("");
+  const [selectedCamId, setSelectedCamId] = useState("");
 
   phaseRef.current = phase;
   callTypeRef.current = callType;
@@ -205,6 +214,19 @@ export function CallProvider({ children }: { children: ReactNode }) {
     peerRef.current?.close();
     peerRef.current = null;
     pendingSignalsRef.current = [];
+    if (pendingStreamRef.current) {
+      pendingStreamRef.current.getTracks().forEach(t => t.stop());
+      pendingStreamRef.current = null;
+    }
+    if (outgoingTimeoutRef.current) {
+      clearTimeout(outgoingTimeoutRef.current);
+      outgoingTimeoutRef.current = null;
+    }
+    if (iceRestartTimerRef.current) {
+      clearTimeout(iceRestartTimerRef.current);
+      iceRestartTimerRef.current = null;
+    }
+    iceRestartAttemptedRef.current = false;
     setLocalStream(null);
     setRemoteStream(null);
     setRemoteAudioStream(null);
@@ -223,9 +245,12 @@ export function CallProvider({ children }: { children: ReactNode }) {
     setPeerCamOn(true);
     setLocalView("auto");
     setRemoteView("auto");
+    setSelectedMicId("");
+    setSelectedCamId("");
   }, [stopRingTimer]);
 
   const reset = useCallback((opts?: { keepCancelFlag?: boolean }) => {
+    callGenRef.current += 1;
     cleanupPeer();
     phaseRef.current = "idle";
     setPhase("idle");
@@ -241,19 +266,86 @@ export function CallProvider({ children }: { children: ReactNode }) {
   const resetRef = useRef(reset);
   resetRef.current = reset;
 
-  const beginMedia = useCallback(async (type: CallType, asCaller: boolean, id: string, stream: MediaStream) => {
+  const beginMedia = useCallback(async (type: CallType, asCaller: boolean, id: string, stream: MediaStream, gen: number) => {
+    if (callGenRef.current !== gen || callIdRef.current !== id) {
+      stream.getTracks().forEach(t => t.stop());
+      return;
+    }
     setLocalStream(stream);
     setCamOn(type === "video");
+    const audioId = stream.getAudioTracks()[0]?.getSettings?.().deviceId;
+    const videoId = stream.getVideoTracks()[0]?.getSettings?.().deviceId;
+    if (audioId) setSelectedMicId(audioId);
+    if (videoId) setSelectedCamId(videoId);
     await refreshDevices();
+    if (callGenRef.current !== gen || callIdRef.current !== id) {
+      stream.getTracks().forEach(t => t.stop());
+      return;
+    }
 
     const iceServers = await resolveIceServers();
+    if (callGenRef.current !== gen || callIdRef.current !== id) {
+      stream.getTracks().forEach(t => t.stop());
+      return;
+    }
+
+    if (import.meta.env.PROD) {
+      const { getLastTurnConfigured } = await import("./iceConfig");
+      if (!getLastTurnConfigured() && import.meta.env.DEV === false) {
+        // Soft hint once per call session — avoid spamming.
+        if (!(window as unknown as { __neTurnWarned?: boolean }).__neTurnWarned) {
+          (window as unknown as { __neTurnWarned?: boolean }).__neTurnWarned = true;
+          console.warn("[CALL] TURN not configured — connection may fail on restricted networks");
+        }
+      }
+    }
+
+    iceRestartAttemptedRef.current = false;
     const peer = new CallPeer(
       {
         onRemoteStream: () => refreshRemotePreview(),
         onHasRemoteScreen: () => refreshRemotePreview(),
         onConnectionState: (state) => {
           setConnectionState(state);
+          if (import.meta.env.DEV) console.info("[CALL] connectionState", state);
+
+          if (state === "connected" || state === "completed") {
+            if (iceRestartTimerRef.current) {
+              clearTimeout(iceRestartTimerRef.current);
+              iceRestartTimerRef.current = null;
+            }
+            iceRestartAttemptedRef.current = false;
+            return;
+          }
+
+          if (state === "disconnected") {
+            if (iceRestartTimerRef.current) return;
+            iceRestartTimerRef.current = setTimeout(() => {
+              iceRestartTimerRef.current = null;
+              const p = peerRef.current;
+              if (!p || callIdRef.current !== id) return;
+              if (p.pc.connectionState === "connected" || p.pc.connectionState === "completed") return;
+              if (!iceRestartAttemptedRef.current) {
+                iceRestartAttemptedRef.current = true;
+                if (import.meta.env.DEV) console.info("[ICE] restart after disconnect");
+                p.restartIce();
+                return;
+              }
+              toast.message("Connection lost");
+              if (callIdRef.current) emitCallHangup(callIdRef.current);
+              resetRef.current();
+            }, 12_000);
+            return;
+          }
+
           if (state === "failed") {
+            const p = peerRef.current;
+            if (p && !iceRestartAttemptedRef.current) {
+              iceRestartAttemptedRef.current = true;
+              if (import.meta.env.DEV) console.info("[ICE] restart after failed");
+              p.restartIce();
+              return;
+            }
             toast.error("Connection failed");
             if (callIdRef.current) emitCallHangup(callIdRef.current);
             resetRef.current();
@@ -270,11 +362,21 @@ export function CallProvider({ children }: { children: ReactNode }) {
       !asCaller,
       iceServers,
     );
+    if (callGenRef.current !== gen || callIdRef.current !== id) {
+      peer.close();
+      stream.getTracks().forEach(t => t.stop());
+      return;
+    }
     peerRef.current = peer;
     // Attaching tracks here triggers onnegotiationneeded inside CallPeer, which
     // drives the offer (perfect negotiation) — no manual createOffer needed and
     // no track-attach race. Flush any signals that arrived before this point.
     await peer.setLocalStream(stream, type === "video");
+    if (callGenRef.current !== gen || callIdRef.current !== id) {
+      peer.close();
+      if (peerRef.current === peer) peerRef.current = null;
+      return;
+    }
     refreshLocalPreview();
     const buffered = pendingSignalsRef.current.splice(0);
     for (const sig of buffered) {
@@ -307,10 +409,12 @@ export function CallProvider({ children }: { children: ReactNode }) {
     }
     // Hold devices only after invite succeeds — stop stream if invite fails
     const pendingStream = validation.stream;
+    const gen = callGenRef.current;
 
     cancelledRef.current = false;
     isCallerRef.current = true;
     setCallType(opts.type);
+    phaseRef.current = "outgoing";
     setPhase("outgoing");
     startRingTimer();
     setInvite({
@@ -326,6 +430,10 @@ export function CallProvider({ children }: { children: ReactNode }) {
     pendingStreamRef.current = pendingStream;
     setLocalStream(pendingStream);
     setCamOn(opts.type === "video");
+    const audioId = pendingStream.getAudioTracks()[0]?.getSettings?.().deviceId;
+    const videoId = pendingStream.getVideoTracks()[0]?.getSettings?.().deviceId;
+    if (audioId) setSelectedMicId(audioId);
+    if (videoId) setSelectedCamId(videoId);
 
     const ok = emitCallInvite({
       conversationId: opts.conversationId,
@@ -337,34 +445,61 @@ export function CallProvider({ children }: { children: ReactNode }) {
       pendingStreamRef.current = null;
       toast.error("Not connected — try again");
       reset();
+      return;
     }
+
+    if (outgoingTimeoutRef.current) clearTimeout(outgoingTimeoutRef.current);
+    outgoingTimeoutRef.current = setTimeout(() => {
+      outgoingTimeoutRef.current = null;
+      if (callGenRef.current !== gen) return;
+      if (phaseRef.current !== "outgoing" && phaseRef.current !== "connecting") return;
+      if (import.meta.env.DEV) console.info("[CALL] outgoing timeout");
+      toast.message("No answer — call ended");
+      if (callIdRef.current) emitCallHangup(callIdRef.current);
+      else cancelledRef.current = true;
+      resetRef.current({ keepCancelFlag: true });
+      window.setTimeout(() => { cancelledRef.current = false; }, 4000);
+    }, 60_000);
   }, [reset, startRingTimer]);
 
   const acceptIncoming = useCallback(async () => {
     if (!invite?.callId) return;
-    const validation = await validateAndGetMedia(invite.type === "video");
+    const acceptId = invite.callId;
+    const acceptType = invite.type;
+    const gen = callGenRef.current;
+    const validation = await validateAndGetMedia(acceptType === "video");
     if (!validation.ok) {
       toast.error(validation.error);
-      if (validation.code === "no-cam" && invite.type === "video") {
+      if (validation.code === "no-cam" && acceptType === "video") {
         toast.message("Tip: ask the caller to switch to a voice call.");
       }
       return;
     }
+    if (callGenRef.current !== gen || callIdRef.current !== acceptId || phaseRef.current !== "incoming") {
+      validation.stream.getTracks().forEach(t => t.stop());
+      return;
+    }
     try {
       isCallerRef.current = false;
-      callIdRef.current = invite.callId;
-      setCallId(invite.callId);
-      setCallType(invite.type);
+      callIdRef.current = acceptId;
+      setCallId(acceptId);
+      setCallType(acceptType);
+      phaseRef.current = "connecting";
       setPhase("connecting");
       stopRingTimer();
-      emitCallAccept(invite.callId);
-      await beginMedia(invite.type, false, invite.callId, validation.stream);
+      emitCallAccept(acceptId);
+      await beginMedia(acceptType, false, acceptId, validation.stream, gen);
+      if (callGenRef.current !== gen || callIdRef.current !== acceptId) {
+        return;
+      }
+      phaseRef.current = "active";
       setPhase("active");
       tickRef.current = setInterval(() => setElapsedSec(s => s + 1), 1000);
     } catch (e) {
       validation.stream.getTracks().forEach(t => t.stop());
+      if (callGenRef.current !== gen) return;
       toast.error(e instanceof Error ? e.message : "Could not start call media");
-      emitCallDecline(invite.callId);
+      emitCallDecline(acceptId);
       reset();
     }
   }, [invite, beginMedia, reset, stopRingTimer]);
@@ -424,10 +559,12 @@ export function CallProvider({ children }: { children: ReactNode }) {
 
   const switchMic = useCallback(async (deviceId: string) => {
     await peerRef.current?.replaceAudioInput(deviceId);
+    setSelectedMicId(deviceId);
   }, []);
 
   const switchCam = useCallback(async (deviceId: string) => {
     await peerRef.current?.replaceVideoInput(deviceId);
+    setSelectedCamId(deviceId);
     refreshLocalPreview();
   }, [refreshLocalPreview]);
 
@@ -523,31 +660,50 @@ export function CallProvider({ children }: { children: ReactNode }) {
       }),
       onRealtimeEvent<CallInvite>("call:ringing", async (data) => {
         if (!data?.callId) return;
-        if (cancelledRef.current) {
+        // Cancel-before-ringing or already idle after hangup — always tear down server call.
+        if (cancelledRef.current || phaseRef.current === "idle") {
+          if (import.meta.env.DEV) console.info("[SIGNALING] hangup late ringing", data.callId);
           emitCallHangup(data.callId);
-          resetRef.current();
+          if (cancelledRef.current) resetRef.current();
           return;
         }
-        if (!isCallerRef.current) return;
+        if (!isCallerRef.current) {
+          // Not our outgoing invite — ignore (don't hang up someone else's call id).
+          return;
+        }
+        if (outgoingTimeoutRef.current) {
+          // Keep timeout until accepted.
+        }
         callIdRef.current = data.callId;
         setCallId(data.callId);
         setInvite(prev => prev
           ? { ...prev, callId: data.callId, type: data.type, callerId: data.callerId }
           : data);
+        phaseRef.current = "outgoing";
         setPhase("outgoing");
       }),
       onRealtimeEvent<{ callId: string; type: CallType }>("call:accepted", async (data) => {
         if (!isCallerRef.current || !data?.callId) return;
         if (callIdRef.current && callIdRef.current !== data.callId) return;
+        const gen = callGenRef.current;
         callIdRef.current = data.callId;
         setCallId(data.callId);
+        phaseRef.current = "connecting";
         setPhase("connecting");
         stopRingTimer();
+        if (outgoingTimeoutRef.current) {
+          clearTimeout(outgoingTimeoutRef.current);
+          outgoingTimeoutRef.current = null;
+        }
         try {
           let stream = pendingStreamRef.current;
           pendingStreamRef.current = null;
           if (!stream) {
             const validation = await validateAndGetMedia((data.type || callTypeRef.current) === "video");
+            if (callGenRef.current !== gen || callIdRef.current !== data.callId) {
+              if (validation.ok) validation.stream.getTracks().forEach(t => t.stop());
+              return;
+            }
             if (!validation.ok) {
               toast.error(validation.error);
               emitCallHangup(data.callId);
@@ -556,11 +712,14 @@ export function CallProvider({ children }: { children: ReactNode }) {
             }
             stream = validation.stream;
           }
-          await beginMediaRef.current(data.type || callTypeRef.current, true, data.callId, stream);
+          await beginMediaRef.current(data.type || callTypeRef.current, true, data.callId, stream, gen);
+          if (callGenRef.current !== gen || callIdRef.current !== data.callId) return;
+          phaseRef.current = "active";
           setPhase("active");
           if (tickRef.current) clearInterval(tickRef.current);
           tickRef.current = setInterval(() => setElapsedSec(s => s + 1), 1000);
         } catch (e) {
+          if (callGenRef.current !== gen) return;
           toast.error(e instanceof Error ? e.message : "Media error");
           emitCallHangup(data.callId);
           resetRef.current();
@@ -594,11 +753,13 @@ export function CallProvider({ children }: { children: ReactNode }) {
         else if (reason === "offline") toast.message(CALL_OFFLINE_MESSAGE);
         resetRef.current();
       }),
-      onRealtimeEvent<{ callId: string }>("call:busy", () => {
+      onRealtimeEvent<{ callId: string }>("call:busy", (data) => {
+        if (callIdRef.current && data?.callId && callIdRef.current !== data.callId) return;
         if (pendingStreamRef.current) {
           pendingStreamRef.current.getTracks().forEach(t => t.stop());
           pendingStreamRef.current = null;
         }
+        toast.message("User is busy");
         resetRef.current();
       }),
       onRealtimeEvent<{ callId: string }>("call:ignored", ({ callId: id }) => {
@@ -681,13 +842,16 @@ export function CallProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => () => { cleanupPeer(); }, [cleanupPeer]);
+  useEffect(() => () => {
+    callGenRef.current += 1;
+    cleanupPeer();
+  }, [cleanupPeer]);
 
   const value = useMemo<CallContextValue>(() => ({
     phase, invite, callId, callType, elapsedSec, ringingSec, micOn, camOn,
     screenSharing, peerScreenSharing, peerMicOn, peerCamOn, localView, remoteView,
     connectionState, localStream, remoteStream, remoteAudioStream, remoteBindEpoch,
-    audioInputs, videoInputs, audioOutputs, selectedOutputId,
+    audioInputs, videoInputs, audioOutputs, selectedOutputId, selectedMicId, selectedCamId,
     startCall: (opts) => { void startCall(opts); },
     acceptIncoming: () => { void acceptIncoming(); },
     declineIncoming, ignoreIncoming, hangup,
@@ -699,7 +863,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
     phase, invite, callId, callType, elapsedSec, ringingSec, micOn, camOn,
     screenSharing, peerScreenSharing, peerMicOn, peerCamOn, localView, remoteView,
     connectionState, localStream, remoteStream, remoteAudioStream, remoteBindEpoch,
-    audioInputs, videoInputs, audioOutputs, selectedOutputId,
+    audioInputs, videoInputs, audioOutputs, selectedOutputId, selectedMicId, selectedCamId,
     startCall, acceptIncoming, declineIncoming, ignoreIncoming, hangup,
     toggleMic, toggleCam, switchMic, switchCam, setAudioOutput,
     shareScreen, stopScreenShare, getPeerStats, getVideoDirection, setLocalViewMode, setRemoteViewMode,

@@ -4,7 +4,7 @@ import { registerAppScheme, handleAppProtocol } from './protocol'
 import { createMainWindow, showMainWindow, broadcastToRenderer, appState } from './window'
 import { createTray } from './tray'
 import { registerIpc } from './ipc'
-import { initSocketManager, connectSocket } from './socketManager'
+import { initSocketManager, connectSocket, initConnectivityWatch } from './socketManager'
 import { initNotifications } from './notifications'
 import { initDownloads } from './downloads'
 import { setStatusSink } from './offlineQueue'
@@ -61,6 +61,7 @@ if (squirrelEvent) {
       registerDisplayMediaHandler()
 
       initSocketManager((channel, payload) => broadcastToRenderer(channel, payload))
+      initConnectivityWatch()
       initNotifications(
         (payload) => {
           // Restore + focus, then deep-link based on routing metadata (never text).

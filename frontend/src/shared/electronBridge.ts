@@ -3,7 +3,7 @@
  * Returns undefined in the web app, so all reused modules stay backward compatible.
  */
 
-export type NinjaSocketStatus = 'connected' | 'disconnected' | 'connecting'
+export type NinjaSocketStatus = 'connected' | 'disconnected' | 'connecting' | 'reconnecting'
 
 export type NinjaNotifyPayload = {
   title: string
@@ -56,8 +56,11 @@ export interface NinjaBridgeApi {
     connect: () => void
     disconnect: () => void
     emit: (event: string, data: unknown) => void
+    getStatus: () => Promise<NinjaSocketStatus>
     on: (event: string, handler: (data: unknown) => void) => () => void
     onStatus: (handler: (s: NinjaSocketStatus) => void) => () => void
+    onReconnected: (handler: () => void) => () => void
+    onAuthInvalid: (handler: (payload: { reason?: string }) => void) => () => void
   }
   window: {
     minimize: () => void

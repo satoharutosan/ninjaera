@@ -11,7 +11,11 @@ import {
   connectRealtime,
   disconnectRealtime,
   onRealtimeEvent,
+  onRealtimeReconnect,
+  onRealtimeStatus,
+  nudgeRealtimeOnOnline,
   joinConversation,
+  type RealtimeStatus,
 } from "@/app/realtime";
 import { messageCache } from "@/features/messages/messageCache";
 import { toChatMsg } from "@/features/messages/types";
@@ -146,6 +150,8 @@ export default function DesktopApp() {
   const [focusMessageInput, setFocusMessageInput] = useState(false);
   const [, setNotifs] = useState<ApiNotification[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState<RealtimeStatus>("connected");
+  const [realtimeEpoch, setRealtimeEpoch] = useState(0);
   const convRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
@@ -475,6 +481,75 @@ export default function DesktopApp() {
     return () => clearInterval(id);
   }, [loggedIn]);
 
+  // Connection status banner + automatic recovery sync.
+  useEffect(() => {
+    if (!loggedIn) {
+      setConnectionStatus("connected");
+      return;
+    }
+    return onRealtimeStatus((s) => {
+      setConnectionStatus(s);
+      if (import.meta.env.DEV) console.info("[REALTIME] status", s);
+    });
+  }, [loggedIn]);
+
+  useEffect(() => {
+    if (!loggedIn) return;
+    return onRealtimeReconnect(() => {
+      if (import.meta.env.DEV) console.info("[RECONNECT] syncing desktop session");
+      // Verify session without forcing logout on transient failures.
+      api.auth
+        .me()
+        .then(({ user: me }) => {
+          setUser(me);
+          setCachedUser(me);
+        })
+        .catch((e) => {
+          const status = e instanceof ApiError ? e.status : 0;
+          if (status === 401 || status === 403) handleLogout();
+        });
+      refreshConversations();
+      refreshMessageBadge();
+      refreshNotifications();
+      api.users.pingPresence().catch(() => {});
+      setRealtimeEpoch((n) => n + 1);
+    });
+  }, [
+    loggedIn,
+    handleLogout,
+    refreshConversations,
+    refreshMessageBadge,
+    refreshNotifications,
+  ]);
+
+  // Auth rejected by the socket layer (expired/revoked JWT) — only then force login.
+  useEffect(() => {
+    if (!ninja) return;
+    return ninja.socket.onAuthInvalid?.(() => {
+      if (import.meta.env.DEV) console.info("[AUTH] socket auth invalid — signing out");
+      handleLogout();
+    });
+  }, [handleLogout]);
+
+  // Network / wake / tray restore nudges — single socket, continuous retry.
+  useEffect(() => {
+    if (!loggedIn) return;
+    const onOnline = () => nudgeRealtimeOnOnline();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") {
+        nudgeRealtimeOnOnline();
+        refreshConversations();
+        refreshMessageBadge();
+      }
+    };
+    window.addEventListener("online", onOnline);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("online", onOnline);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [loggedIn, refreshConversations, refreshMessageBadge]);
+
   // Tray / notification navigation intents.
   useEffect(() => {
     if (!ninja) return;
@@ -539,6 +614,27 @@ export default function DesktopApp() {
             <LoginScreen onLogin={handleLogin} signupUrl={signupUrl} />
           ) : (
             <div className="ninja-desktop-body">
+              {connectionStatus !== "connected" && (
+                <div
+                  className="ninja-connection-banner"
+                  role="status"
+                  aria-live="polite"
+                  style={{
+                    background:
+                      connectionStatus === "disconnected"
+                        ? "color-mix(in srgb, #B3261E 18%, transparent)"
+                        : "color-mix(in srgb, var(--ninja-accent, #6750A4) 16%, transparent)",
+                    color: theme.onSurface,
+                    borderBottom: `1px solid ${theme.outlineVar}`,
+                  }}
+                >
+                  {connectionStatus === "disconnected"
+                    ? "Offline — reconnecting when the network is back…"
+                    : connectionStatus === "reconnecting"
+                      ? "Reconnecting…"
+                      : "Connecting…"}
+                </div>
+              )}
               <div className="ninja-desktop-messages ninja-scroll">
                 <MessagesPage
                   settings={messagesSettings}
@@ -561,6 +657,7 @@ export default function DesktopApp() {
                   desktopMode
                   onDesktopOpenSettings={() => setSettingsOpen(true)}
                   onDesktopLogout={handleLogout}
+                  realtimeEpoch={realtimeEpoch}
                 />
               </div>
             </div>

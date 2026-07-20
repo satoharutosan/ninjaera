@@ -373,7 +373,7 @@ export function initRealtime(httpServer: HttpServer, corsOrigin: string) {
     });
 
     socket.on("call:signal", (data: { callId: string; signal: unknown }) => {
-      if (!allowSocketRate(userId, "call:signal", 120, 10_000)) return;
+      if (!allowSocketRate(userId, "call:signal", 400, 10_000)) return;
       const signal = data?.signal;
       if (!signal || typeof signal !== "object") return;
       // Cap serialized payload size to reduce abuse

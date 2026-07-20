@@ -1,10 +1,47 @@
 import { io, type Socket } from "socket.io-client";
 import { getToken } from "./api";
-import { getNinja } from "../shared/electronBridge";
+import { getNinja, type NinjaSocketStatus } from "../shared/electronBridge";
+
+export type RealtimeStatus = NinjaSocketStatus;
 
 let socket: Socket | null = null;
 /** Persists across socket reconnects so CallProvider handlers stay registered after login. */
 const listeners = new Map<string, Set<(data: unknown) => void>>();
+const statusListeners = new Set<(status: RealtimeStatus) => void>();
+const reconnectListeners = new Set<() => void>();
+
+let webStatus: RealtimeStatus = "disconnected";
+let webEverConnected = false;
+let lifecycleBound = false;
+
+function devLog(tag: string, message: string, extra?: unknown) {
+  if (!import.meta.env.DEV) return;
+  if (extra !== undefined) console.info(`[${tag}] ${message}`, extra);
+  else console.info(`[${tag}] ${message}`);
+}
+
+function setWebStatus(next: RealtimeStatus) {
+  if (webStatus === next) return;
+  webStatus = next;
+  for (const handler of statusListeners) {
+    try {
+      handler(next);
+    } catch {
+      /* isolate */
+    }
+  }
+}
+
+function notifyReconnect() {
+  devLog("RECONNECT", "realtime restored — running sync handlers");
+  for (const handler of reconnectListeners) {
+    try {
+      handler();
+    } catch {
+      /* isolate */
+    }
+  }
+}
 
 function bindStoredListeners(s: Socket) {
   for (const [event, set] of listeners) {
@@ -13,6 +50,38 @@ function bindStoredListeners(s: Socket) {
       s.on(event, handler);
     }
   }
+}
+
+function bindWebLifecycle(s: Socket) {
+  if (lifecycleBound) return;
+  lifecycleBound = true;
+
+  s.on("connect", () => {
+    const wasReconnect = webEverConnected;
+    webEverConnected = true;
+    setWebStatus("connected");
+    devLog("SOCKET", wasReconnect ? "reconnected" : "connected");
+    if (wasReconnect) notifyReconnect();
+  });
+
+  s.on("disconnect", (reason) => {
+    setWebStatus("disconnected");
+    devLog("SOCKET", `disconnected (${reason})`);
+  });
+
+  s.io.on("reconnect_attempt", (attempt) => {
+    setWebStatus("reconnecting");
+    const token = getToken();
+    if (token) s.auth = { token };
+    devLog("RECONNECT", `attempt #${attempt}`);
+  });
+
+  s.on("connect_error", (err) => {
+    const msg = String((err as Error)?.message || err || "");
+    devLog("SOCKET", `connect_error: ${msg}`);
+    if (webEverConnected) setWebStatus("reconnecting");
+    else setWebStatus("connecting");
+  });
 }
 
 /**
@@ -24,18 +93,26 @@ function ensureSocket(): Socket | null {
   if (!token) {
     if (socket) {
       socket.removeAllListeners();
+      socket.io.removeAllListeners();
       socket.disconnect();
       socket = null;
+      lifecycleBound = false;
+      webEverConnected = false;
+      setWebStatus("disconnected");
     }
     return null;
   }
 
   if (socket) {
     socket.auth = { token };
-    if (!socket.connected) socket.connect();
+    if (!socket.connected) {
+      setWebStatus(webEverConnected ? "reconnecting" : "connecting");
+      socket.connect();
+    }
     return socket;
   }
 
+  setWebStatus("connecting");
   socket = io({
     path: "/socket.io",
     auth: { token },
@@ -43,15 +120,14 @@ function ensureSocket(): Socket | null {
     autoConnect: true,
     reconnection: true,
     reconnectionAttempts: Infinity,
-    reconnectionDelay: 800,
-    reconnectionDelayMax: 5000,
+    reconnectionDelay: 1000,
+    reconnectionDelayMax: 15000,
+    randomizationFactor: 0.5,
+    timeout: 20000,
   });
 
   bindStoredListeners(socket);
-
-  socket.on("connect_error", () => {
-    /* auth / network — auto-retry via reconnection */
-  });
+  bindWebLifecycle(socket);
 
   return socket;
 }
@@ -92,8 +168,12 @@ export function disconnectRealtime() {
   }
   if (socket) {
     socket.removeAllListeners();
+    socket.io.removeAllListeners();
     socket.disconnect();
     socket = null;
+    lifecycleBound = false;
+    webEverConnected = false;
+    setWebStatus("disconnected");
   }
   // Keep `listeners` so CallProvider (always mounted) rebinds on next login.
 }
@@ -119,6 +199,58 @@ export function onRealtimeEvent<T = unknown>(event: string, handler: (data: T) =
     set.delete(wrapped);
     socket?.off(event, wrapped);
   };
+}
+
+/** Connection status for UI banners (desktop bridge or web Socket.IO). */
+export function onRealtimeStatus(handler: (status: RealtimeStatus) => void): () => void {
+  const ninja = getNinja();
+  if (ninja) {
+    return ninja.socket.onStatus(handler);
+  }
+  statusListeners.add(handler);
+  try {
+    handler(webStatus);
+  } catch {
+    /* isolate */
+  }
+  return () => {
+    statusListeners.delete(handler);
+  };
+}
+
+/**
+ * Fires after a successful reconnect (not the initial connect).
+ * Use to refetch conversations, catch up messages, and restore presence.
+ */
+export function onRealtimeReconnect(handler: () => void): () => void {
+  const ninja = getNinja();
+  if (ninja?.socket.onReconnected) {
+    return ninja.socket.onReconnected(handler);
+  }
+  // Fallback: infer from status transitions when onReconnected is unavailable.
+  if (ninja) {
+    let prev: RealtimeStatus | null = null;
+    let hadConnected = false;
+    return ninja.socket.onStatus((s) => {
+      if (s === "connected" && hadConnected && prev && prev !== "connected") {
+        handler();
+      }
+      if (s === "connected") hadConnected = true;
+      prev = s;
+    });
+  }
+  reconnectListeners.add(handler);
+  return () => {
+    reconnectListeners.delete(handler);
+  };
+}
+
+/** Browser / OS online events — nudge the socket without creating duplicates. */
+export function nudgeRealtimeOnOnline(): void {
+  if (typeof window === "undefined") return;
+  if (!navigator.onLine) return;
+  devLog("REALTIME", "navigator online — nudging socket");
+  connectRealtime();
 }
 
 export function emitTyping(conversationId: number, typing: boolean) {

@@ -547,6 +547,48 @@ export function useMessageThread({
     // Already on live edge — Virtuoso scroll handled by caller
   }, [conversationId, currentUserId, bootThread, markCaughtUpTo]);
 
+  /**
+   * After a socket reconnect, re-join the room and fetch any messages missed while offline.
+   * Dedupes by message id; preserves scroll when the user is reading history.
+   */
+  const syncAfterReconnect = useCallback(async () => {
+    if (!conversationId || !currentUserId) return;
+    joinConversation(conversationId);
+    if (import.meta.env.DEV) {
+      console.info("[SYNC] thread catch-up", { conversationId });
+    }
+
+    const atLiveEdge = !hasMoreNewerRef.current;
+    const current = msgsRef.current;
+    const newestId = current.filter(m => m.id > 0).at(-1)?.id ?? null;
+
+    if (newestId == null) {
+      await openConversation();
+      return;
+    }
+
+    // Force at least one after-cursor check even when we believed we were caught up.
+    hasMoreNewerRef.current = true;
+    let pages = 0;
+    let added = 0;
+    while (pages < 25) {
+      pages += 1;
+      const n = await loadNewerMessages();
+      added += n;
+      if (n === 0) break;
+    }
+
+    if (atLiveEdge && isNearBottomRef.current && added > 0) {
+      const tip = msgsRef.current.filter(m => m.id > 0).at(-1)?.id ?? null;
+      markCaughtUpTo(tip, { atBottom: true });
+      setShowJumpBtn(false);
+      setUnreadBelow(0);
+    } else if (!atLiveEdge && added > 0) {
+      setUnreadBelow(n => n + added);
+      setShowJumpBtn(true);
+    }
+  }, [conversationId, currentUserId, openConversation, loadNewerMessages, markCaughtUpTo]);
+
   const replaceOptimistic = useCallback((tempId: number, real: ChatMsg) => {
     setMsgs(prev => {
       if (prev.some(m => m.id === real.id)) {
@@ -640,5 +682,6 @@ export function useMessageThread({
     removeLocal,
     updateLocal,
     openConversation,
+    syncAfterReconnect,
   };
 }

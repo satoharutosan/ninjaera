@@ -74,7 +74,7 @@ const EmojiGifPicker = lazy(() =>
   import("@/features/messages/EmojiGifPicker").then((m) => ({ default: m.EmojiGifPicker })),
 );
 
-function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setContacts, onUnreadChange, onConversationsRefresh, currentUserId, currentUser, onUserUpdate, initialConversationId, dmRequestsIntent, onDmRequestsIntentHandled, focusInput, onFocusHandled, onInitialConversationHandled, isActive = true, desktopMode = false, onDesktopOpenSettings, onDesktopLogout }: {
+function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setContacts, onUnreadChange, onConversationsRefresh, currentUserId, currentUser, onUserUpdate, initialConversationId, dmRequestsIntent, onDmRequestsIntentHandled, focusInput, onFocusHandled, onInitialConversationHandled, isActive = true, desktopMode = false, onDesktopOpenSettings, onDesktopLogout, realtimeEpoch = 0 }: {
   settings: AppSettings;
   showEmailToast: (title:string, body:string, page:Page)=>void;
   showPushNotif: (title:string, body:string, page:Page)=>void;
@@ -101,6 +101,8 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
   onDesktopOpenSettings?: () => void;
   /** Desktop-only: sign the user out via the shell. */
   onDesktopLogout?: () => void;
+  /** Bumped after realtime reconnect so the open thread re-syncs missed messages. */
+  realtimeEpoch?: number;
 }) {
   const C = useC();
   const callApi = useCallOptional();
@@ -242,9 +244,16 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
     loadOlderMessages, loadNewerMessages,
     applyNewMessage, applyUpdatedMessage, applyDeletedMessage, applyReaction,
     jumpToLatest, appendLocal, replaceOptimistic, markLocalFailed, removeLocal, updateLocal,
+    syncAfterReconnect,
   } = thread;
 
   useEffect(() => { selIdRef.current = sel.id; }, [sel.id]);
+
+  // After socket reconnect: re-join + fetch missed messages for the open thread.
+  useEffect(() => {
+    if (!realtimeEpoch || sel.id <= 0) return;
+    void syncAfterReconnect();
+  }, [realtimeEpoch, sel.id, syncAfterReconnect]);
 
   // When the live edge arrives after the user was already at the bottom of a
   // historical window, atBottomStateChange does not re-fire — catch up here.

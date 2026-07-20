@@ -46,6 +46,11 @@ extraResources:
     to: favicon.png
   - from: build/icon.ico
     to: icon.ico
+  # White Telegram-style tray glyph only (does not replace EXE/window icon.ico).
+  - from: build/tray-icon.ico
+    to: tray-icon.ico
+  - from: build/tray-icon.png
+    to: tray-icon.png
 
 publish:
   - provider: generic

@@ -14,8 +14,11 @@ export const IPC = {
   socketConnect: 'ninja:socket:connect',
   socketDisconnect: 'ninja:socket:disconnect',
   socketEmit: 'ninja:socket:emit',
+  socketGetStatus: 'ninja:socket:get-status',
   socketEvent: 'ninja:socket:event', // main -> renderer (fan-out of server events)
   socketStatus: 'ninja:socket:status', // main -> renderer connection status
+  socketReconnected: 'ninja:socket:reconnected', // main -> renderer after a successful reconnect
+  socketAuthInvalid: 'ninja:socket:auth-invalid', // main -> renderer when JWT is rejected
 
   // Window controls
   windowMinimize: 'ninja:window:minimize',
@@ -63,7 +66,7 @@ export const IPC = {
   relaunch: 'ninja:app:relaunch',
 } as const
 
-export type SocketStatus = 'connected' | 'disconnected' | 'connecting'
+export type SocketStatus = 'connected' | 'disconnected' | 'connecting' | 'reconnecting'
 
 export type NotifyPayload = {
   title: string

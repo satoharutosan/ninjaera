@@ -59,13 +59,28 @@ const api = {
     connect: () => ipcRenderer.send(IPC.socketConnect),
     disconnect: () => ipcRenderer.send(IPC.socketDisconnect),
     emit: (event: string, data: unknown) => ipcRenderer.send(IPC.socketEmit, { event, data }),
+    getStatus: (): Promise<SocketStatus> => ipcRenderer.invoke(IPC.socketGetStatus),
     on: (event: string, handler: Handler): (() => void) => {
       if (!socketListeners.has(event)) socketListeners.set(event, new Set())
       const set = socketListeners.get(event)!
       set.add(handler)
       return () => set.delete(handler)
     },
-    onStatus: (handler: (s: SocketStatus) => void) => subscribe(IPC.socketStatus, handler),
+    onStatus: (handler: (s: SocketStatus) => void) => {
+      // Seed late subscribers with the current status so UI is not stuck blank.
+      void ipcRenderer.invoke(IPC.socketGetStatus).then((s: SocketStatus) => {
+        try {
+          handler(s)
+        } catch {
+          /* isolate */
+        }
+      })
+      return subscribe(IPC.socketStatus, handler)
+    },
+    onReconnected: (handler: () => void) =>
+      subscribe(IPC.socketReconnected, () => handler()),
+    onAuthInvalid: (handler: (payload: { reason?: string }) => void) =>
+      subscribe(IPC.socketAuthInvalid, handler),
   },
 
   window: {

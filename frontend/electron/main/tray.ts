@@ -8,19 +8,28 @@ import { BRAND } from './brand'
 
 let tray: Tray | null = null
 
+/**
+ * White Telegram-style tray glyph (transparent bg). Kept separate from
+ * build/icon.ico so the EXE / window / installer icons stay unchanged.
+ */
 function trayIcon() {
   const candidates = app.isPackaged
     ? [
-        path.join(process.resourcesPath, 'icon.ico'),
-        path.join(process.resourcesPath, 'logo.png'),
+        path.join(process.resourcesPath, 'tray-icon.ico'),
+        path.join(process.resourcesPath, 'tray-icon.png'),
       ]
     : [
-        path.join(app.getAppPath(), 'build', 'icon.ico'),
-        path.join(app.getAppPath(), 'public', 'logo.png'),
+        path.join(app.getAppPath(), 'build', 'tray-icon.ico'),
+        path.join(app.getAppPath(), 'build', 'tray-icon.png'),
       ]
   for (const iconPath of candidates) {
     const img = nativeImage.createFromPath(iconPath)
-    if (!img.isEmpty()) return img.resize({ width: 18, height: 18 })
+    if (img.isEmpty()) continue
+    // Prefer the native multi-size .ico; only resize PNG fallbacks for tray DPI.
+    if (iconPath.toLowerCase().endsWith('.png')) {
+      return img.resize({ width: 32, height: 32, quality: 'best' })
+    }
+    return img
   }
   return nativeImage.createEmpty()
 }

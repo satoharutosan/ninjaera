@@ -32,7 +32,7 @@ import {
   SH2, ADMIN_NOTIFICATIONS, MSGS_DATA_INIT, BADGE_BG,
   FilledBtn, OutlinedBtn,
 } from "@/app/shared";
-import { connectRealtime, disconnectRealtime, onRealtimeEvent, joinConversation } from "@/app/realtime";
+import { connectRealtime, disconnectRealtime, onRealtimeEvent, onRealtimeReconnect, nudgeRealtimeOnOnline, joinConversation } from "@/app/realtime";
 import { messageCache } from "@/features/messages/messageCache";
 import { toChatMsg } from "@/features/messages/types";
 import {
@@ -628,6 +628,7 @@ export default function App() {
   const [focusMessageInput, setFocusMessageInput] = useState(false);
   /** Keep MessagesPage mounted after first visit so selection/scroll/draft survive navigation. */
   const [messagesKeepAlive, setMessagesKeepAlive] = useState(() => pageFromLocation() === "messages");
+  const [realtimeEpoch, setRealtimeEpoch] = useState(0);
   const convRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [dmRequestsIntent, setDmRequestsIntent] = useState<{ requestId?: number; nonce: number } | null>(null);
   const dmRequestsNonce = useRef(0);
@@ -1014,6 +1015,36 @@ export default function App() {
     return () => clearInterval(id);
   }, [loggedIn]);
 
+  useEffect(() => {
+    if (!loggedIn) return;
+    return onRealtimeReconnect(() => {
+      if (import.meta.env.DEV) console.info("[RECONNECT] syncing web session");
+      api.auth
+        .me()
+        .then(({ user: me }) => {
+          setUser(me);
+          setCachedUser(me);
+          if (me.avatarUrl) setUserAvatar(me.avatarUrl);
+        })
+        .catch((e) => {
+          const status = e instanceof ApiError ? e.status : 0;
+          if (status === 401 || status === 403) handleLogout();
+        });
+      refreshConversations();
+      refreshMessageBadge();
+      refreshNotifications();
+      api.users.pingPresence().catch(() => {});
+      setRealtimeEpoch((n) => n + 1);
+    });
+  }, [loggedIn, handleLogout, refreshConversations, refreshMessageBadge, refreshNotifications]);
+
+  useEffect(() => {
+    if (!loggedIn) return;
+    const onOnline = () => nudgeRealtimeOnOnline();
+    window.addEventListener("online", onOnline);
+    return () => window.removeEventListener("online", onOnline);
+  }, [loggedIn]);
+
   const sortContacts = (list: Contact[]) => {
     const channels = list.filter(c => c.type === "channel");
     const dms = list.filter(c => c.type === "dm");
@@ -1163,6 +1194,7 @@ export default function App() {
               onFocusHandled={clearFocusMessageInput}
               onInitialConversationHandled={clearSelectedConversation}
               isActive={page === "messages"}
+              realtimeEpoch={realtimeEpoch}
             />
           </div>
         )}

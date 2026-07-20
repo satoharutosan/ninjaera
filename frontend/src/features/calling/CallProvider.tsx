@@ -19,6 +19,7 @@ import {
   emitCallMediaState,
   emitCallSignal,
   onRealtimeEvent,
+  onRealtimeReconnect,
 } from "@/app/realtime";
 import { validateAndGetMedia } from "./devices";
 import { CallPeer } from "./webrtc";
@@ -835,6 +836,23 @@ export function CallProvider({ children }: { children: ReactNode }) {
         } else {
           toast.error(error || "Call failed");
         }
+        resetRef.current();
+      }),
+      onRealtimeReconnect(() => {
+        const p = phaseRef.current;
+        if (p === "idle") return;
+        // Active calls with a healthy peer connection survive brief drops.
+        if (p === "active") {
+          const live = peerRef.current?.pc.connectionState;
+          if (live === "connected" || live === "connecting") return;
+          if (callIdRef.current) emitCallHangup(callIdRef.current);
+          toast.message("Connection lost");
+          resetRef.current();
+          return;
+        }
+        // Ringing / outgoing / connecting UIs are usually stale after a socket drop
+        // (server cleans calls when the last device disconnects).
+        if (callIdRef.current) emitCallHangup(callIdRef.current);
         resetRef.current();
       }),
     ];

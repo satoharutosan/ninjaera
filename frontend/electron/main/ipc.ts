@@ -13,7 +13,13 @@ import {
   resetSettings,
   type CachedUser,
 } from './store'
-import { connectSocket, disconnectSocket, emitSocket, getSocketStatus } from './socketManager'
+import {
+  connectSocket,
+  disconnectSocket,
+  emitSocket,
+  getSocketStatus,
+  nudgeSocketReconnect,
+} from './socketManager'
 import { enqueueRead, enqueueReaction, getStatus as getQueueStatus } from './offlineQueue'
 import { showNotification } from './notifications'
 import { checkForUpdates, quitAndInstall } from './updater'
@@ -62,12 +68,13 @@ export function registerIpc(): void {
   ipcMain.handle(IPC.authGetUser, () => getUser())
 
   // ── Socket bridge ──
-  ipcMain.on(IPC.socketConnect, () => connectSocket())
+  ipcMain.on(IPC.socketConnect, () => nudgeSocketReconnect('renderer-connect'))
   ipcMain.on(IPC.socketDisconnect, () => disconnectSocket())
   ipcMain.on(IPC.socketEmit, (_e, payload) => {
     if (!isObj(payload) || !isStr(payload.event)) return
     emitSocket(payload.event, payload.data)
   })
+  ipcMain.handle(IPC.socketGetStatus, () => getSocketStatus())
 
   // ── Window controls ──
   ipcMain.on(IPC.windowMinimize, () => getMainWindow()?.minimize())

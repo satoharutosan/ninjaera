@@ -134,6 +134,13 @@ export function showMainWindow(): void {
   if (win.isMinimized()) win.restore()
   win.show()
   win.focus()
+  // Soft reconnect nudge when restoring from tray (socket may have been idle).
+  try {
+    // Lazy import avoids circular deps with socketManager <-> window.
+    void import('./socketManager').then((m) => m.nudgeSocketReconnect('show-window'))
+  } catch {
+    /* ignore */
+  }
 }
 
 export function broadcastToRenderer(channel: string, payload: unknown): void {

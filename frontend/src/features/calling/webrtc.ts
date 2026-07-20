@@ -95,20 +95,30 @@ export class CallPeer {
   constructor(
     private handlers: PeerHandlers,
     polite: boolean,
+    iceServers: RTCIceServer[] = ICE_SERVERS,
   ) {
     this.polite = polite;
-    this.pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    this.pc = new RTCPeerConnection({
+      iceServers,
+      iceCandidatePoolSize: 4,
+    });
 
     this.pc.onicecandidate = (e) => {
       if (e.candidate) {
+        webrtcLog("local ICE candidate", e.candidate.type, e.candidate.protocol);
         this.handlers.onSignal({ kind: "ice", candidate: e.candidate.toJSON() });
+      } else {
+        webrtcLog("ICE gathering complete");
       }
+    };
+
+    this.pc.oniceconnectionstatechange = () => {
+      webrtcLog("iceConnectionState", this.pc.iceConnectionState);
     };
 
     this.pc.ontrack = (e) => {
       const track = e.track;
-      // Explicit pipeline probe — if this never logs video after remote share, RTP is broken.
-      console.log("[REMOTE TRACK]", {
+      webrtcLog("REMOTE TRACK", {
         kind: track.kind,
         id: track.id,
         readyState: track.readyState,

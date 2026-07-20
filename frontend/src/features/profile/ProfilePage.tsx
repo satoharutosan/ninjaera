@@ -18,6 +18,7 @@ import { api, setToken, type ApiUser, ApiError } from "@/app/api";
 import { toast } from "sonner";
 import { useUsernameField } from "@/shared/useUsernameField";
 import { validateUsernameClient } from "@/shared/username";
+import { normalizeCountryName } from "@/shared/countryIso";
 
 /**
  * Future-proof unlock gates: when game progression syncs, set these from API data.
@@ -85,7 +86,7 @@ function ProfilePage({ setPage, isDark, setIsDark, settings, setSettings, user, 
   const [dobM, setDobM] = useState("");
   const [dobD, setDobD] = useState("");
   const [dobY, setDobY] = useState("");
-  const [country, setCountry] = useState("Japan");
+  const [country, setCountry] = useState("");
   const [showCurPw, setShowCurPw] = useState(false);
   const [showNewPw, setShowNewPw] = useState(false);
   const [showConfPw, setShowConfPw] = useState(false);
@@ -127,7 +128,7 @@ function ProfilePage({ setPage, isDark, setIsDark, settings, setSettings, user, 
     if (!user) return;
     usernameField.reset(user.username);
     setGender(user.gender || "Prefer not to say");
-    setCountry(user.country || "Japan");
+    setCountry(normalizeCountryName(user.country));
     setBio(user.bio || "");
     if (user.dateOfBirth) {
       const [y, m, d] = user.dateOfBirth.split("-");
@@ -144,7 +145,8 @@ function ProfilePage({ setPage, isDark, setIsDark, settings, setSettings, user, 
   useEffect(() => {
     if (user?.country && user.country !== "Unknown") return;
     fetch("https://ipapi.co/json/").then(r => r.json()).then(d => {
-      if (d.country_name && COUNTRIES.includes(d.country_name)) setCountry(d.country_name);
+      const normalized = normalizeCountryName(d.country_name || d.country_code);
+      if (normalized !== "Unknown" && COUNTRIES.includes(normalized)) setCountry(normalized);
     }).catch(() => {});
   }, [user?.country]);
 
@@ -310,8 +312,14 @@ function ProfilePage({ setPage, isDark, setIsDark, settings, setSettings, user, 
                   {/* Country with flag image */}
                   <div className="relative mt-1">
                     <div className="flex items-center gap-2 w-full px-3 py-2.5 rounded-[4px] border" style={{ borderColor:C.outline, background:C.surface }}>
-                      <FlagImg country={country} />
-                      <select value={country} onChange={e => setCountry(e.target.value)} className="flex-1 bg-transparent text-sm focus:outline-none appearance-none" style={{ color:C.onSurface, fontFamily:"Roboto" }}>
+                      <FlagImg country={country || "Unknown"} />
+                      <select
+                        value={COUNTRIES.includes(country) ? country : ""}
+                        onChange={e => setCountry(e.target.value)}
+                        className="flex-1 bg-transparent text-sm focus:outline-none appearance-none"
+                        style={{ color:C.onSurface, fontFamily:"Roboto" }}
+                      >
+                        <option value="" disabled>Select country</option>
                         {COUNTRIES.map(c => <option key={c} value={c}>{c}</option>)}
                       </select>
                       <ExpandMoreIcon style={{ fontSize:18, color:C.onSurfaceVar, pointerEvents:"none" }} />

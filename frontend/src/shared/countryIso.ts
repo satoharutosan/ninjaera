@@ -74,6 +74,8 @@ const COUNTRY_ALIASES: Record<string, string> = {
   "taiwan, province of china": "Taiwan",
   "taiwan (province of china)": "Taiwan",
   "republic of china": "Taiwan",
+  "türkiye": "Turkey",
+  "turkiye": "Turkey",
   "uae": "United Arab Emirates",
   "brunei darussalam": "Brunei",
   "laos": "Laos",
@@ -112,6 +114,31 @@ export function resolveCountryIso(country: string | null | undefined): string | 
     if (name.toLowerCase() === lower) return code.toLowerCase();
   }
   return null;
+}
+
+/** Map any name/ISO/alias to a canonical COUNTRY_ISO key (for <select> value sync). */
+export function normalizeCountryName(country: string | null | undefined): string {
+  if (!country?.trim()) return "Unknown";
+  const raw = country.trim();
+  const lower = raw.toLowerCase();
+  if (lower === "unknown" || lower === "n/a" || lower === "none") return "Unknown";
+
+  if (COUNTRY_ISO[raw]) return raw;
+
+  const iso = resolveCountryIso(raw);
+  if (iso) {
+    for (const [name, code] of Object.entries(COUNTRY_ISO)) {
+      if (code.toLowerCase() === iso) return name;
+    }
+  }
+
+  const aliased = COUNTRY_ALIASES[lower];
+  if (aliased && COUNTRY_ISO[aliased]) return aliased;
+
+  for (const name of Object.keys(COUNTRY_ISO)) {
+    if (name.toLowerCase() === lower) return name;
+  }
+  return "Unknown";
 }
 
 export function countryFlagEmoji(code: string): string {

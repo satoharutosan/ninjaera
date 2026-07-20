@@ -23,3 +23,18 @@ export function canPlaceCall(
 
 export const CALL_DENIED_MESSAGE =
   "Voice and video calls are available only when at least one participant is a team member.";
+
+export const CALL_OFFLINE_MESSAGE =
+  "This user is currently offline and cannot receive calls.";
+
+/** Recipient must be Online (not Away / Invisible / Offline). */
+export function canCallPeer(peer: {
+  online?: boolean;
+  status?: string | null;
+  isDeleted?: boolean;
+} | null | undefined): boolean {
+  if (!peer || peer.isDeleted) return false;
+  if (peer.online === false) return false;
+  const status = peer.status || (peer.online ? "Online" : "Offline");
+  return status === "Online";
+}

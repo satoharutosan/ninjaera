@@ -22,6 +22,8 @@ import {
 } from "@/app/realtime";
 import { validateAndGetMedia } from "./devices";
 import { CallPeer } from "./webrtc";
+import { resolveIceServers } from "./iceConfig";
+import { CALL_OFFLINE_MESSAGE } from "./permissions";
 import { getNinja } from "@/shared/electronBridge";
 import type { CallInvite, CallPhase, CallType, IceSignal, VideoViewMode } from "./types";
 
@@ -244,6 +246,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
     setCamOn(type === "video");
     await refreshDevices();
 
+    const iceServers = await resolveIceServers();
     const peer = new CallPeer(
       {
         onRemoteStream: () => refreshRemotePreview(),
@@ -265,6 +268,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
         },
       },
       !asCaller,
+      iceServers,
     );
     peerRef.current = peer;
     // Attaching tracks here triggers onnegotiationneeded inside CallPeer, which
@@ -587,7 +591,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
         else if (reason === "busy") toast.message("User is busy");
         else if (reason === "failed") toast.error("Call failed");
         else if (reason === "disconnect") toast.message("Connection lost");
-        else if (reason === "offline") toast.message("User is offline");
+        else if (reason === "offline") toast.message(CALL_OFFLINE_MESSAGE);
         resetRef.current();
       }),
       onRealtimeEvent<{ callId: string }>("call:busy", () => {
@@ -660,7 +664,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
         // Always clear modals — never leave caller/callee stuck after a signaling error.
         const raw = (error || "").toLowerCase();
         if (code === "busy") toast.message("User is busy");
-        else if (code === "offline") toast.message("User is offline");
+        else if (code === "offline") toast.message(CALL_OFFLINE_MESSAGE);
         else if (code === "forbidden" || raw.includes("not authorized") || raw.includes("not a participant")) {
           toast.error("Call failed");
         } else if (code === "not_found" || code === "invalid_state") {

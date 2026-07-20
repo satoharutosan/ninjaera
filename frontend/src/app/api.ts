@@ -654,6 +654,14 @@ export const api = {
     contacts: () => request<{ contacts: { id: number; username: string; avatarUrl?: string; status: string }[] }>("/dm-contacts"),
   },
 
+  webrtc: {
+    iceServers: () =>
+      request<{
+        iceServers: RTCIceServer[];
+        turnConfigured: boolean;
+      }>("/webrtc/ice-servers"),
+  },
+
   admin: {
     check: () => request<{ isAdmin: boolean; isSuperAdmin: boolean; user: ApiUser }>("/admin/check"),
     stats: () => request<{

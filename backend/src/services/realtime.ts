@@ -28,7 +28,7 @@ import {
   type CallTimelineEvent,
 } from "./callMessages.js";
 import { formatTime } from "../middleware/auth.js";
-import { registerSocketConnection, unregisterSocketConnection } from "./presence.js";
+import { registerSocketConnection, unregisterSocketConnection, getPresencePayload } from "./presence.js";
 import { assertCanAccessConversation, assertNotBlockedInConversation, usersAreBlocked } from "./conversationAccess.js";
 import { allowSocketRate } from "../middleware/rateLimit.js";
 import { invalidateAdminStatsCache } from "./adminStatsCache.js";
@@ -228,6 +228,11 @@ export function initRealtime(httpServer: HttpServer, corsOrigin: string) {
         return;
       }
       if (!isUserSocketOnline(calleeId)) {
+        socket.emit("call:error", { error: "User is offline", code: "offline" });
+        return;
+      }
+      const presence = await getPresencePayload(calleeId);
+      if (!presence?.online || presence.status !== "Online") {
         socket.emit("call:error", { error: "User is offline", code: "offline" });
         return;
       }

@@ -1,5 +1,6 @@
 import type { Request } from "express";
 import { qRun } from "../db/query.js";
+import { normalizeCountryName } from "./countryNames.js";
 
 export type GeoResult = {
   ip: string;
@@ -130,9 +131,7 @@ export async function saveUserLocation(userId: number, geo: GeoResult) {
 
 /** Profile `users.country` value derived from a geo lookup — never defaults to Japan. */
 export function resolveProfileCountryName(geo: GeoResult): string {
-  const name = geo.countryName?.trim();
-  if (name) return name;
-  return "Unknown";
+  return normalizeCountryName(geo.countryName, geo.countryCode);
 }
 
 /**

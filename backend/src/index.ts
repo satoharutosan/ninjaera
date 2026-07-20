@@ -29,7 +29,9 @@ import dmRoutes from "./routes/dm.js";
 import gameDownloadRoutes from "./routes/gameDownloads.js";
 import contentRoutes from "./routes/content.js";
 import externalsRoutes from "./routes/externals.js";
+import webrtcRoutes from "./routes/webrtc.js";
 import { initRealtime } from "./services/realtime.js";
+import { buildIceServers, iceConfigSummary } from "./services/webrtcIce.js";
 import { verifyMailOnStartup, mailStatus, isEmailEnabled } from "./services/mail.js";
 import { optionalAuth } from "./middleware/auth.js";
 import { canDownloadResource, normalizeResourceVisibility } from "./routes/content.js";
@@ -215,6 +217,7 @@ async function main() {
   app.use("/api", dmRoutes);
   app.use("/api", gameDownloadRoutes);
   app.use("/api", contentRoutes);
+  app.use("/api/webrtc", webrtcRoutes);
   app.use("/externals", externalsRoutes);
 
   app.get("/api/health", async (_req, res) => {
@@ -282,6 +285,11 @@ async function main() {
     console.log(`  database: ${dbAsync.provider}`);
     console.log(`  storage:  ${storage.provider}`);
     console.log(`  http upload timeout: ${uploadTimeoutMs}ms`);
+    const iceSummary = iceConfigSummary(buildIceServers());
+    console.log(`  webrtc ice: stun=${iceSummary.stun} turn=${iceSummary.turn} credentials=${iceSummary.hasCredentials}`);
+    if (isProd && iceSummary.turn === 0) {
+      console.warn("  [webrtc] No TURN servers configured — screen share / calls may fail across NATs. Set TURN_URLS, TURN_USERNAME, TURN_CREDENTIAL.");
+    }
     // Email is lazy + gated by EMAIL_ENABLED — never blocks calls/WebRTC/sockets.
     void verifyMailOnStartup();
   });

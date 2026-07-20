@@ -31,7 +31,7 @@ import VideocamIcon from "@mui/icons-material/Videocam";
 import { toast } from "sonner";
 import { VoiceRecorderButton } from "@/features/messages/VoiceRecorder";
 import { useCallOptional } from "@/features/calling/CallProvider";
-import { CALL_DENIED_MESSAGE, canPlaceCall } from "@/features/calling/permissions";
+import { CALL_DENIED_MESSAGE, CALL_OFFLINE_MESSAGE, canPlaceCall, canCallPeer } from "@/features/calling/permissions";
 import { MediaPreviewLine } from "@/features/messages/MediaPreviewLine";
 import type { GifItem } from "@/features/messages/emojiData";
 import {
@@ -1266,6 +1266,10 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
         : "You cannot call this user because they have blocked you.");
       return;
     }
+    if (!canCallPeer(sel)) {
+      toast.message(CALL_OFFLINE_MESSAGE);
+      return;
+    }
     if (!canPlaceCall(currentUser, { isTeamMember: sel.isTeamMember, isAdmin: sel.isAdmin })) {
       toast.message(CALL_DENIED_MESSAGE);
       return;
@@ -1282,6 +1286,17 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
       peerAvatar: sel.avatarUrl,
     });
   };
+
+  const peerCallable = sel.type === "dm" && !!sel.otherUserId && !sel.isDeleted
+    && canCallPeer(sel)
+    && canPlaceCall(currentUser, { isTeamMember: sel.isTeamMember, isAdmin: sel.isAdmin });
+  const callDisabledReason = sel.type === "dm" && !sel.isDeleted
+    ? (!canCallPeer(sel)
+      ? CALL_OFFLINE_MESSAGE
+      : (!canPlaceCall(currentUser, { isTeamMember: sel.isTeamMember, isAdmin: sel.isAdmin })
+        ? CALL_DENIED_MESSAGE
+        : undefined))
+    : undefined;
 
   const commitEdit = async (id: number) => {
     if (!editText.trim()) return;
@@ -2104,21 +2119,25 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
               <>
                 <button
                   type="button"
-                  title={canPlaceCall(currentUser, { isTeamMember: sel.isTeamMember, isAdmin: sel.isAdmin }) ? "Voice call" : CALL_DENIED_MESSAGE}
+                  title={peerCallable ? "Voice call" : (callDisabledReason || "Voice call unavailable")}
                   aria-label="Start voice call"
+                  aria-disabled={!peerCallable}
+                  disabled={!peerCallable}
                   onClick={() => startDmCall("voice")}
-                  className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-black/5"
-                  style={{ color: canPlaceCall(currentUser, { isTeamMember: sel.isTeamMember, isAdmin: sel.isAdmin }) ? C.primary : C.onSurfaceVar, opacity: canPlaceCall(currentUser, { isTeamMember: sel.isTeamMember, isAdmin: sel.isAdmin }) ? 1 : 0.45 }}
+                  className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-black/5 disabled:pointer-events-auto disabled:cursor-not-allowed"
+                  style={{ color: peerCallable ? C.primary : C.onSurfaceVar, opacity: peerCallable ? 1 : 0.45 }}
                 >
                   <CallIcon style={{ fontSize: 20 }} />
                 </button>
                 <button
                   type="button"
-                  title={canPlaceCall(currentUser, { isTeamMember: sel.isTeamMember, isAdmin: sel.isAdmin }) ? "Video call" : CALL_DENIED_MESSAGE}
+                  title={peerCallable ? "Video call" : (callDisabledReason || "Video call unavailable")}
                   aria-label="Start video call"
+                  aria-disabled={!peerCallable}
+                  disabled={!peerCallable}
                   onClick={() => startDmCall("video")}
-                  className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-black/5"
-                  style={{ color: canPlaceCall(currentUser, { isTeamMember: sel.isTeamMember, isAdmin: sel.isAdmin }) ? C.primary : C.onSurfaceVar, opacity: canPlaceCall(currentUser, { isTeamMember: sel.isTeamMember, isAdmin: sel.isAdmin }) ? 1 : 0.45 }}
+                  className="w-9 h-9 rounded-full flex items-center justify-center hover:bg-black/5 disabled:pointer-events-auto disabled:cursor-not-allowed"
+                  style={{ color: peerCallable ? C.primary : C.onSurfaceVar, opacity: peerCallable ? 1 : 0.45 }}
                 >
                   <VideocamIcon style={{ fontSize: 20 }} />
                 </button>

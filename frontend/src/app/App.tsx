@@ -1109,7 +1109,12 @@ export default function App() {
       background: theme.bg,
       fontFamily: "Roboto, sans-serif",
     }}>
-      <Toaster position="top-right" richColors />
+      <Toaster
+        position="top-right"
+        richColors
+        offset="calc(var(--ninja-chrome-top, 4rem) + 0.75rem)"
+        mobileOffset="calc(var(--ninja-chrome-top, 4rem) + 0.5rem)"
+      />
       <CallOverlays />
       {!authReady ? (
         <div className="min-h-screen flex items-center justify-center" aria-busy="true" aria-label="Restoring session">

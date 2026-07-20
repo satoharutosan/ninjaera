@@ -1,6 +1,8 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
+  /* Matches Navbar h-16 — used by Sonner toast offset */
+  --ninja-chrome-top: 4rem;
   --font-size: 16px;
   --background: #FFFBFE;
   --foreground: #1C1B1F;

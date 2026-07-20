@@ -515,7 +515,12 @@ export default function DesktopApp() {
   return (
     <ThemeCtx.Provider value={theme}>
       <CallProvider>
-        <Toaster position="top-right" richColors />
+        <Toaster
+          position="top-right"
+          richColors
+          offset="calc(var(--ninja-titlebar-h, 44px) + 0.75rem)"
+          mobileOffset="calc(var(--ninja-titlebar-h, 44px) + 0.5rem)"
+        />
         <div className="ninja-desktop-root" style={{ background: theme.bg }}>
           {titleBar}
           {!authReady ? (

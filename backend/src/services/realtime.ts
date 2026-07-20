@@ -31,6 +31,7 @@ import { formatTime } from "../middleware/auth.js";
 import { registerSocketConnection, unregisterSocketConnection } from "./presence.js";
 import { assertCanAccessConversation, assertNotBlockedInConversation, usersAreBlocked } from "./conversationAccess.js";
 import { allowSocketRate } from "../middleware/rateLimit.js";
+import { invalidateAdminStatsCache } from "./adminStatsCache.js";
 
 let io: Server | null = null;
 
@@ -459,6 +460,8 @@ export function emitToAdmins(event: string, data: unknown) {
 /** Coalesce high-frequency metric changes into at most one admin:stats pulse per window. */
 let adminStatsTimer: ReturnType<typeof setTimeout> | null = null;
 export function scheduleAdminStatsRefresh(delayMs = 750) {
+  // Drop cached dashboard body immediately so the next /admin/stats refetch is authoritative.
+  invalidateAdminStatsCache();
   if (adminStatsTimer) return;
   adminStatsTimer = setTimeout(() => {
     adminStatsTimer = null;

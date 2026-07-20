@@ -67,7 +67,7 @@ router.get("/me", requireAuth, async (req, res) => {
     settings: {
       emailNotif: settings.email_notif === 1,
       pushNotif: settings.push_notif === 1,
-      twoFA: settings.two_fa === 1,
+      twoFA: false, // Two-factor auth not available yet — always report disabled
       publicProfile: settings.public_profile === 1,
     },
     stats,
@@ -311,7 +311,8 @@ router.patch("/me/settings", requireAuth, async (req, res) => {
 
   if (emailNotif !== undefined) { updates.push("email_notif = ?"); values.push(emailNotif ? 1 : 0); }
   if (pushNotif !== undefined) { updates.push("push_notif = ?"); values.push(pushNotif ? 1 : 0); }
-  if (twoFA !== undefined) { updates.push("two_fa = ?"); values.push(twoFA ? 1 : 0); }
+  // Two-factor auth is not implemented yet — always persist as disabled.
+  if (twoFA !== undefined) { updates.push("two_fa = ?"); values.push(0); }
   if (publicProfile !== undefined) { updates.push("public_profile = ?"); values.push(publicProfile ? 1 : 0); }
 
   if (updates.length === 0) {

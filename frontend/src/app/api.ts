@@ -661,6 +661,7 @@ export const api = {
       onlineUsers: number;
       pendingApplications: number;
       pendingJobApplications?: number;
+      pendingDmRequests?: number;
       unreadContacts: number;
       notifications: number;
       totalDownloads: number;

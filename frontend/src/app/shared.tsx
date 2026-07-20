@@ -71,14 +71,13 @@ const ADMIN_NOTIFICATIONS = [
 ];
 
 // ── Country → flag emoji + cities ─────────────────────────────────────────────
-import { COUNTRY_ISO as FULL_COUNTRY_ISO } from "@/shared/countryIso";
+import { COUNTRY_ISO as FULL_COUNTRY_ISO, resolveCountryIso, countryFlagEmoji } from "@/shared/countryIso";
 
 // Re-export full ISO map
 const COUNTRY_ISO: Record<string,string> = FULL_COUNTRY_ISO;
 function countryFlag(name: string): string {
-  const code = COUNTRY_ISO[name];
-  if (!code || code.length !== 2) return "🌐";
-  return String.fromCodePoint(...code.split("").map(c => 0x1F1E6 + c.charCodeAt(0) - 65));
+  const code = resolveCountryIso(name);
+  return code ? countryFlagEmoji(code) : "🌐";
 }
 
 const COUNTRY_CITIES: Record<string, string[]> = {
@@ -248,15 +247,16 @@ function Chip({ label, color, filled=false }: { label:string; color?:string; fil
 
 // ── Flag image helper ─────────────────────────────────────────────────────────
 function FlagImg({ country, size=20 }: { country:string; size?:number }) {
-  const iso = (COUNTRY_ISO[country] || "").toLowerCase();
-  if (!iso) return <span className="text-base">{countryFlag(country)}</span>;
+  const iso = resolveCountryIso(country);
+  if (!iso) return <span className="text-base" title={country || "Unknown"}>{countryFlag(country)}</span>;
   return (
     <img
       src={`https://flagcdn.com/w${Math.max(size, 20)}/${iso}.png`}
       alt={`${country} flag`}
       width={size}
-      height={Math.round(size * 0.67)}
-      className="rounded-sm object-cover shrink-0 inline-block"
+      height={Math.round(size * 0.75)}
+      className="rounded-sm object-contain shrink-0 inline-block"
+      loading="lazy"
     />
   );
 }

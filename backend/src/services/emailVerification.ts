@@ -16,6 +16,7 @@ import { setUserOnline } from "./presence.js";
 import { syncPublicChannels } from "./channels.js";
 import { logActivitySync } from "./activityLog.js";
 import { assertTrustedRegistrationEmail } from "../config/trustedEmailProviders.js";
+import { lookupGeo, saveUserLocation, resolveProfileCountryName } from "./geoip.js";
 import type { Request } from "express";
 
 export type PendingRegistration = {
@@ -395,15 +396,18 @@ async function createUserDirectly(opts: {
   req?: Request;
 }): Promise<number> {
   const ts = new Date().toISOString();
+  const geo = opts.req ? await lookupGeo(opts.req) : null;
+  const country = geo ? resolveProfileCountryName(geo) : "Unknown";
+
   const userId = await qTransaction(async () => {
     // Clear any leftover pending row for this email
     await qRun("DELETE FROM pending_registrations WHERE email = ?", opts.email);
 
     const result = await qRun(`
       INSERT INTO users (
-        email, username, password_hash, member_since, created_at, updated_at, email_verified, email_verified_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 1, ?)
-    `, opts.email, opts.username, opts.passwordHash, ts.slice(0, 10), ts, ts, ts);
+        email, username, password_hash, country, member_since, created_at, updated_at, email_verified, email_verified_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
+    `, opts.email, opts.username, opts.passwordHash, country, ts.slice(0, 10), ts, ts, ts);
 
     const id = Number(result.lastInsertRowid);
     await qRun("INSERT INTO user_settings (user_id) VALUES (?)", id);
@@ -426,6 +430,10 @@ async function createUserDirectly(opts: {
   setUserOnline(userId);
   syncPublicChannels(userId);
 
+  if (geo) {
+    await saveUserLocation(userId, geo);
+  }
+
   if (opts.req) {
     logActivitySync({
       req: opts.req,
@@ -435,6 +443,7 @@ async function createUserDirectly(opts: {
       eventCategory: "authentication",
       description: `User registered: ${opts.username}`,
       affectedObject: `user:${userId}`,
+      geo: geo ?? undefined,
     });
   }
 
@@ -513,12 +522,15 @@ export async function resendVerificationEmail(emailRaw: string, req?: Request): 
 
 async function createUserFromPending(pending: PendingRegistration, req?: Request): Promise<number> {
   const ts = new Date().toISOString();
+  const geo = req ? await lookupGeo(req) : null;
+  const country = geo ? resolveProfileCountryName(geo) : "Unknown";
+
   const userId = await qTransaction(async () => {
     const result = await qRun(`
       INSERT INTO users (
-        email, username, password_hash, member_since, created_at, updated_at, email_verified, email_verified_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 1, ?)
-    `, pending.email, pending.username, pending.password_hash, ts.slice(0, 10), ts, ts, ts);
+        email, username, password_hash, country, member_since, created_at, updated_at, email_verified, email_verified_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
+    `, pending.email, pending.username, pending.password_hash, country, ts.slice(0, 10), ts, ts, ts);
 
     const id = Number(result.lastInsertRowid);
     await qRun("INSERT INTO user_settings (user_id) VALUES (?)", id);
@@ -542,6 +554,10 @@ async function createUserFromPending(pending: PendingRegistration, req?: Request
   setUserOnline(userId);
   syncPublicChannels(userId);
 
+  if (geo) {
+    await saveUserLocation(userId, geo);
+  }
+
   if (req) {
     logActivitySync({
       req,
@@ -551,6 +567,7 @@ async function createUserFromPending(pending: PendingRegistration, req?: Request
       eventCategory: "authentication",
       description: `User registered: ${pending.username}`,
       affectedObject: `user:${userId}`,
+      geo: geo ?? undefined,
     });
   }
 

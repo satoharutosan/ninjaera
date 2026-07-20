@@ -40,7 +40,79 @@ export const COUNTRY_ISO: Record<string, string> = {
   "United Kingdom": "GB", "United States": "US", "Uruguay": "UY", "Uzbekistan": "UZ",
   "Vanuatu": "VU", "Vatican City": "VA", "Venezuela": "VE", "Vietnam": "VN", "Yemen": "YE",
   "Zambia": "ZM", "Zimbabwe": "ZW",
+  "Suriname": "SR",
 };
+
+/** Alternate names / spellings → canonical COUNTRY_ISO keys. */
+const COUNTRY_ALIASES: Record<string, string> = {
+  "holland": "Netherlands",
+  "the netherlands": "Netherlands",
+  "nederland": "Netherlands",
+  "netherlands (kingdom of the)": "Netherlands",
+  "usa": "United States",
+  "us": "United States",
+  "u.s.": "United States",
+  "u.s.a.": "United States",
+  "united states of america": "United States",
+  "uk": "United Kingdom",
+  "great britain": "United Kingdom",
+  "britain": "United Kingdom",
+  "england": "United Kingdom",
+  "south korea": "South Korea",
+  "korea, republic of": "South Korea",
+  "republic of korea": "South Korea",
+  "korea (republic of)": "South Korea",
+  "north korea": "North Korea",
+  "korea, democratic people's republic of": "North Korea",
+  "russia": "Russia",
+  "russian federation": "Russia",
+  "czechia": "Czech Republic",
+  "czech republic": "Czech Republic",
+  "viet nam": "Vietnam",
+  "syria": "Syria",
+  "syrian arab republic": "Syria",
+  "taiwan, province of china": "Taiwan",
+  "taiwan (province of china)": "Taiwan",
+  "republic of china": "Taiwan",
+  "uae": "United Arab Emirates",
+  "brunei darussalam": "Brunei",
+  "laos": "Laos",
+  "lao people's democratic republic": "Laos",
+  "moldova, republic of": "Moldova",
+  "republic of moldova": "Moldova",
+  "tanzania, united republic of": "Tanzania",
+  "united republic of tanzania": "Tanzania",
+  "bolivia (plurinational state of)": "Bolivia",
+  "venezuela (bolivarian republic of)": "Venezuela",
+  "iran (islamic republic of)": "Iran",
+  "palestine, state of": "Palestine",
+  "state of palestine": "Palestine",
+};
+
+/**
+ * Resolve any country name, alias, or ISO alpha-2 code to a lowercase flagcdn ISO code.
+ * Returns null for Unknown / unrecognized values.
+ */
+export function resolveCountryIso(country: string | null | undefined): string | null {
+  if (!country) return null;
+  const raw = country.trim();
+  if (!raw) return null;
+  const lower = raw.toLowerCase();
+  if (lower === "unknown" || lower === "n/a" || lower === "none") return null;
+
+  // Already an ISO alpha-2 code (e.g. "NL", "nl")
+  if (/^[a-z]{2}$/i.test(raw)) return raw.toLowerCase();
+
+  if (COUNTRY_ISO[raw]) return COUNTRY_ISO[raw].toLowerCase();
+
+  const aliased = COUNTRY_ALIASES[lower];
+  if (aliased && COUNTRY_ISO[aliased]) return COUNTRY_ISO[aliased].toLowerCase();
+
+  for (const [name, code] of Object.entries(COUNTRY_ISO)) {
+    if (name.toLowerCase() === lower) return code.toLowerCase();
+  }
+  return null;
+}
 
 export function countryFlagEmoji(code: string): string {
   if (!code || code.length !== 2) return "🌐";
@@ -48,7 +120,10 @@ export function countryFlagEmoji(code: string): string {
 }
 
 export function formatCountryDisplay(countryName: string | null, countryCode: string | null): string {
-  const code = countryCode || (countryName ? COUNTRY_ISO[countryName] : null);
+  const code = (countryCode && countryCode.length === 2 ? countryCode.toUpperCase() : null)
+    || (countryName ? resolveCountryIso(countryName)?.toUpperCase() ?? null : null)
+    || (countryName ? COUNTRY_ISO[countryName] : null)
+    || null;
   const name = countryName || "Unknown";
   const flag = code ? countryFlagEmoji(code) : "🌐";
   return `${flag} ${name}`;

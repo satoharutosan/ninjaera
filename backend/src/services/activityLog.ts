@@ -1,6 +1,6 @@
 import type { Request } from "express";
 import { qGet, qRun } from "../db/query.js";
-import { lookupGeo, saveUserLocation } from "./geoip.js";
+import { lookupGeo, saveUserLocation, type GeoResult } from "./geoip.js";
 import { emitToAdmins, scheduleAdminStatsRefresh } from "./realtime.js";
 
 export type ActivityInput = {
@@ -15,6 +15,8 @@ export type ActivityInput = {
   affectedObject?: string | null;
   result?: "success" | "failure";
   metadata?: Record<string, unknown>;
+  /** When provided, skips a second IP geo lookup (e.g. registration already looked up). */
+  geo?: GeoResult;
 };
 
 export type ParsedPlatform = {
@@ -207,7 +209,11 @@ export async function logActivity(input: ActivityInput) {
   let countryCode: string | null = null;
   let isVpn: number | null = null;
 
-  if (req) {
+  if (input.geo) {
+    country = input.geo.countryName;
+    countryCode = input.geo.countryCode;
+    isVpn = input.geo.isVpn ? 1 : 0;
+  } else if (req) {
     try {
       const geo = await lookupGeo(req);
       country = geo.countryName;

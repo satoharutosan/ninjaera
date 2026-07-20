@@ -14,6 +14,10 @@ import ChatIcon from "@mui/icons-material/Chat";
 import { useC, SH2, ChatAvatar, BADGE_BG } from "@/app/shared";
 import { useCall } from "./CallProvider";
 import { CallChatPanel } from "./CallChatPanel";
+import { getNinja } from "@/shared/electronBridge";
+
+const DESKTOP_CHROME_TOP = "var(--ninja-titlebar-h, 44px)";
+
 
 function formatElapsed(sec: number) {
   const m = Math.floor(sec / 60);
@@ -395,7 +399,7 @@ export function CallOverlays() {
 
   if (call.phase === "incoming" && call.invite) {
     return (
-      <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 p-4" role="dialog" aria-modal="true" aria-label="Incoming call">
+      <div className="fixed inset-x-0 bottom-0 z-[80] flex items-center justify-center bg-black/60 p-4" style={{ top: getNinja() ? DESKTOP_CHROME_TOP : 0 }} role="dialog" aria-modal="true" aria-label="Incoming call">
         <div className="w-full max-w-sm rounded-3xl p-6 text-center relative" style={{ background: C.surface, boxShadow: SH2 }}>
           <button
             type="button"
@@ -451,7 +455,7 @@ export function CallOverlays() {
 
   if (call.phase === "outgoing") {
     return (
-      <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 p-4" role="dialog" aria-modal="true" aria-label="Outgoing call">
+      <div className="fixed inset-x-0 bottom-0 z-[80] flex items-center justify-center bg-black/60 p-4" style={{ top: getNinja() ? DESKTOP_CHROME_TOP : 0 }} role="dialog" aria-modal="true" aria-label="Outgoing call">
         <div className="w-full max-w-sm rounded-3xl p-6 text-center" style={{ background: C.surface, boxShadow: SH2 }}>
           <div
             className="mx-auto mb-4 w-20 h-20 rounded-full overflow-hidden"
@@ -501,7 +505,7 @@ export function CallOverlays() {
   });
 
   return (
-    <div className="fixed inset-0 z-[80] flex flex-col bg-[#1C1B1F]" role="dialog" aria-modal="true" aria-label="In call">
+    <div className="fixed inset-x-0 bottom-0 z-[80] flex flex-col bg-[#1C1B1F]" style={{ top: getNinja() ? DESKTOP_CHROME_TOP : 0 }} role="dialog" aria-modal="true" aria-label="In call">
       {/* Main column: video + controls only — chat overlays and never shrinks this. */}
       <div className="relative flex-1 min-h-0 flex flex-col">
         <div className="flex-1 relative min-h-0 grid grid-cols-1 md:grid-cols-2 gap-2 p-3">

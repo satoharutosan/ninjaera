@@ -41,8 +41,9 @@ export async function lookupGeo(req: Request): Promise<GeoResult> {
     originCountryName: null,
   };
 
+  // Local/dev traffic has no public geo — never invent a country (especially not Japan).
   if (isPrivateIp(ip)) {
-    return { ...empty, countryCode: "JP", countryName: "Japan" };
+    return empty;
   }
 
   try {
@@ -125,4 +126,21 @@ export async function saveUserLocation(userId: number, geo: GeoResult) {
     geo.originCountryName,
     ts,
   );
+}
+
+/** Profile `users.country` value derived from a geo lookup — never defaults to Japan. */
+export function resolveProfileCountryName(geo: GeoResult): string {
+  const name = geo.countryName?.trim();
+  if (name) return name;
+  return "Unknown";
+}
+
+/**
+ * Persist registration country + location from a single geo lookup.
+ * Existing users are unaffected (call only on account creation).
+ */
+export async function applyRegistrationCountry(userId: number, geo: GeoResult) {
+  const country = resolveProfileCountryName(geo);
+  await qRun("UPDATE users SET country = ? WHERE id = ?", country, userId);
+  await saveUserLocation(userId, geo);
 }

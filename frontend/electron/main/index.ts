@@ -13,6 +13,7 @@ import { getToken, getSettings } from './store'
 import { IPC } from '@shared-electron/ipc'
 import { BRAND } from './brand'
 import { BACKEND_URL, IS_PRODUCTION_BACKEND } from './config'
+import { registerDisplayMediaHandler } from './screenCapture'
 
 // Squirrel.Windows install/update/uninstall events — handle and exit before bootstrapping UI.
 const require = createRequire(import.meta.url)
@@ -57,6 +58,7 @@ if (squirrelEvent) {
         `[ninja] Backend ${IS_PRODUCTION_BACKEND ? 'production' : 'development'} → ${BACKEND_URL}`,
       )
       handleAppProtocol()
+      registerDisplayMediaHandler()
 
       initSocketManager((channel, payload) => broadcastToRenderer(channel, payload))
       initNotifications(

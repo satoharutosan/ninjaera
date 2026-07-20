@@ -516,7 +516,6 @@ export default function DesktopApp() {
     <ThemeCtx.Provider value={theme}>
       <CallProvider>
         <Toaster position="top-right" richColors />
-        <CallOverlays />
         <div className="ninja-desktop-root" style={{ background: theme.bg }}>
           {titleBar}
           {!authReady ? (
@@ -561,6 +560,8 @@ export default function DesktopApp() {
             </div>
           )}
         </div>
+        {/* Overlays after title bar in DOM, but CSS keeps title bar above via z-index + top offset */}
+        <CallOverlays />
         {settingsOpen && (
           <SettingsDialog
             settings={settings}

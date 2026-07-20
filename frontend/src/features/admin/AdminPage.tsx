@@ -777,7 +777,7 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                       secondaryLabel="Online"
                       Icon={PeopleIcon}
                     />
-                    <StatCard label="Pending Applications" value={stats.pendingApplications} color="#B3261E" Icon={InboxIcon} />
+                    <StatCard label="Pending Applications" value={stats.pendingJobApplications ?? stats.pendingApplications} color="#B3261E" Icon={InboxIcon} />
                     <StatCard label="Unread Contacts" value={stats.unreadContacts} color="#B3261E" Icon={MailOutlineIcon} />
                     <StatCard label="Notifications" value={stats.notifications} Icon={NotificationsIcon} />
                     <StatCard label="Total Downloads" value={stats.totalDownloads} Icon={DownloadIcon} />
@@ -1252,7 +1252,13 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
 
             {section === "applications" && (
               <div>
-                <h1 className="text-2xl font-medium mb-6" style={{ color: C.onSurface, fontFamily: "Roboto" }}>Teamwork Applications</h1>
+                <div className="mb-6">
+                  <h1 className="text-2xl font-medium" style={{ color: C.onSurface, fontFamily: "Roboto" }}>Teamwork Applications</h1>
+                  <p className="text-sm mt-1" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
+                    {applications.filter((a) => a.status === "pending").length} pending
+                    {applications.length > 0 ? ` · ${applications.length} total` : ""}
+                  </p>
+                </div>
                 <div className="space-y-4">
                   {applications.map(app => (
                     <div key={app.id} className="rounded-2xl p-5" style={{ background: C.surface, boxShadow: SH1 }}>
@@ -1264,7 +1270,7 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                             ) : null}
                             <div className="min-w-0">
                               <h3 className="font-medium" style={{ color: C.onSurface, fontFamily: "Roboto" }}>{app.fullName}</h3>
-                              <p className="text-sm" style={{ color: C.primary }}>@{app.applicant.username} · {app.jobTitle}</p>
+                              <p className="text-sm" style={{ color: C.primary }}>@{app.applicant.username || "unknown"} · {app.jobTitle || "Position unavailable"}</p>
                               <p className="text-xs mt-1 flex items-center gap-1" style={{ color: C.onSurfaceVar }}>
                                 {app.country && <FlagImg country={app.country} size={14} />}{app.country}{app.city ? ` · ${app.city}` : ""} · {app.time}
                               </p>

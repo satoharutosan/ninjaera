@@ -26,6 +26,8 @@ html {
   flex-direction: column;
   overflow: hidden;
   box-sizing: border-box;
+  --ninja-titlebar-h: 44px;
+  padding-top: var(--ninja-titlebar-h);
 }
 
 .ninja-desktop-body {
@@ -126,10 +128,17 @@ html {
   z-index: 2;
 }
 
-/* Custom title bar drag regions */
+/* Custom title bar — fixed above all overlays; never covered/blurred */
 .ninja-titlebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 200;
+  height: 44px;
   -webkit-app-region: drag;
   user-select: none;
+  flex-shrink: 0;
 }
 .ninja-no-drag {
   -webkit-app-region: no-drag;
@@ -146,6 +155,7 @@ html {
 /* Font scaling hook (set on :root by DesktopApp) */
 :root {
   --ninja-font-scale: 1;
+  --ninja-titlebar-h: 44px;
   --ninja-accent: #6750a4;
   --ninja-accent-cont: #eaddff;
   --ninja-accent-4: color-mix(in srgb, #6750a4 4%, transparent);

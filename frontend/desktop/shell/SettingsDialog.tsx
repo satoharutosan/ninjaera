@@ -84,7 +84,14 @@ export function SettingsDialog({
   const spks = devices.filter((d) => d.kind === "audiooutput");
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-6" style={{ background: "rgba(0,0,0,0.5)" }} onMouseDown={onClose}>
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center p-6"
+      style={{
+        top: "var(--ninja-titlebar-h, 0px)",
+        background: "rgba(0,0,0,0.5)",
+      }}
+      onMouseDown={onClose}
+    >
       <div
         className="ninja-scroll flex w-full max-w-3xl rounded-3xl overflow-hidden shadow-2xl"
         style={{ background: C.surface, height: "min(640px, 90vh)" }}

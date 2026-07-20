@@ -75,6 +75,16 @@ export function createMainWindow(): BrowserWindow {
     }
   })
 
+  mainWindow.webContents.session.setPermissionRequestHandler((_wc, permission, callback) => {
+    const allowed = new Set([
+      "media",
+      "display-capture",
+      "notifications",
+      "clipboard-sanitized-write",
+    ])
+    callback(allowed.has(permission))
+  })
+
   // Open external links (target=_blank / window.open) in the system browser.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('http://') || url.startsWith('https://')) {

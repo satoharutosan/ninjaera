@@ -59,9 +59,8 @@ export function TitleBar({
 
   return (
     <header
-      className="ninja-titlebar flex items-center gap-2 pr-0 shrink-0"
+      className="ninja-titlebar flex items-center gap-2 pr-0"
       style={{
-        height: 44,
         background: C.surface,
         borderBottom: `1px solid ${C.outlineVar}`,
         paddingLeft: 20,

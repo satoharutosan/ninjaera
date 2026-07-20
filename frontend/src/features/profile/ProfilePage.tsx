@@ -140,9 +140,9 @@ function ProfilePage({ setPage, isDark, setIsDark, settings, setSettings, user, 
     api.users.stats().then(r => { setStats(r.stats); setActivities(r.activities); }).catch(() => {});
   }, []);
 
-  // Auto-detect country from IP only when country not set
+  // Auto-detect country from IP only when country is unset or Unknown
   useEffect(() => {
-    if (user?.country) return;
+    if (user?.country && user.country !== "Unknown") return;
     fetch("https://ipapi.co/json/").then(r => r.json()).then(d => {
       if (d.country_name && COUNTRIES.includes(d.country_name)) setCountry(d.country_name);
     }).catch(() => {});
@@ -213,7 +213,7 @@ function ProfilePage({ setPage, isDark, setIsDark, settings, setSettings, user, 
   const switchDefs = [
     { key:"emailNotif" as const, t:"Email Notifications", d:"Show alerts when receiving messages or notifications" },
     { key:"pushNotif"  as const, t:"Push Notifications",  d:"System-level alerts when browsing other sites" },
-    { key:"twoFA"      as const, t:"Two-Factor Auth",     d:"Extra login security via authenticator app" },
+    { key:"twoFA"      as const, t:"Two-Factor Auth",     d:"Extra login security via authenticator app", comingSoon: true },
     { key:"publicProfile" as const, t:"Public Profile",   d:"Show gender, birth date & nationality to others" },
   ];
   return (
@@ -488,14 +488,30 @@ function ProfilePage({ setPage, isDark, setIsDark, settings, setSettings, user, 
               </button>
             </div>
             {switchDefs.map(s => {
-              const on = settings[s.key];
+              const comingSoon = "comingSoon" in s && s.comingSoon;
+              const on = comingSoon ? false : settings[s.key];
               return (
                 <div key={s.key} className="flex items-center justify-between p-4 rounded-2xl" style={{ background:C.surface, boxShadow:SH1 }}>
                   <div>
-                    <p className="font-medium text-sm" style={{ color:C.onSurface, fontFamily:"Roboto" }}>{s.t}</p>
+                    <div className="flex items-center gap-2">
+                      <p className="font-medium text-sm" style={{ color:C.onSurface, fontFamily:"Roboto" }}>{s.t}</p>
+                      {comingSoon && (
+                        <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full" style={{ background: C.surfaceVar, color: C.onSurfaceVar, fontFamily: "Roboto" }}>
+                          Coming Soon
+                        </span>
+                      )}
+                    </div>
                     <p className="text-xs" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>{s.d}</p>
                   </div>
-                  <button onClick={() => toggle(s.key, !on)} className="w-12 h-6 rounded-full relative transition-colors" style={{ background:on?C.primary:C.outline }}>
+                  <button
+                    type="button"
+                    disabled={!!comingSoon}
+                    aria-disabled={!!comingSoon}
+                    title={comingSoon ? "Coming soon" : undefined}
+                    onClick={() => { if (!comingSoon) toggle(s.key, !on); }}
+                    className={`w-12 h-6 rounded-full relative transition-colors ${comingSoon ? "opacity-50 cursor-not-allowed" : ""}`}
+                    style={{ background:on?C.primary:C.outline }}
+                  >
                     <div className="w-5 h-5 rounded-full bg-white absolute top-0.5 shadow-sm transition-all" style={{ left:on?"calc(100% - 22px)":"2px" }} />
                   </button>
                 </div>

@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { qGet, qRun } from "../db/query.js";
-import { lookupGeo, saveUserLocation } from "../services/geoip.js";
+import { lookupGeo, saveUserLocation, resolveProfileCountryName } from "../services/geoip.js";
 import { logActivitySync } from "../services/activityLog.js";
 import { setUserOnline } from "../services/presence.js";
 import { syncPublicChannels } from "../services/channels.js";
@@ -98,21 +98,24 @@ async function linkProvider(userId: number, provider: OAuthProvider, providerUse
   );
 }
 
-async function createOAuthUser(profile: OAuthProfile): Promise<number> {
+async function createOAuthUser(profile: OAuthProfile, req?: import("express").Request): Promise<number> {
   const ts = now();
   const username = await generateUniqueUsername(profile.usernameHint);
+  const geo = req ? await lookupGeo(req) : null;
+  const country = geo ? resolveProfileCountryName(geo) : "Unknown";
   // No local password yet — empty hash means "hasPassword: false" until the user
   // optionally creates one from the Profile page. Never a random unusable hash.
   const result = await qRun(`
     INSERT INTO users (
-      email, username, password_hash, avatar_url, member_since, created_at, updated_at,
+      email, username, password_hash, avatar_url, country, member_since, created_at, updated_at,
       email_verified, email_verified_at
     )
-    VALUES (?, ?, '', ?, ?, ?, ?, 1, ?)
+    VALUES (?, ?, '', ?, ?, ?, ?, ?, 1, ?)
   `,
     profile.email,
     username,
     profile.avatarUrl || null,
+    country,
     ts.slice(0, 10),
     ts,
     ts,
@@ -135,6 +138,7 @@ async function createOAuthUser(profile: OAuthProfile): Promise<number> {
   `, userId, globalRank);
 
   await linkProvider(userId, profile.provider, profile.providerUserId);
+  if (geo) await saveUserLocation(userId, geo);
   return userId;
 }
 
@@ -213,7 +217,7 @@ async function completeOAuthLogin(
         redirectWithError(res, trust.error);
         return;
       }
-      await createOAuthUser(profile);
+      await createOAuthUser(profile, req);
       isNewUser = true;
       user = await findUserByEmail(profile.email);
       if (!user) {

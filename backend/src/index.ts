@@ -84,7 +84,7 @@ async function main() {
     hsts: isProd ? { maxAge: 15552000, includeSubDomains: true } : false,
   }));
   app.use((_req, res, next) => {
-    res.setHeader("Permissions-Policy", "camera=(self), microphone=(self), geolocation=(), payment=()");
+    res.setHeader("Permissions-Policy", "camera=(self), microphone=(self), display-capture=(self), geolocation=(), payment=()");
     next();
   });
 

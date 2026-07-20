@@ -23,6 +23,7 @@ import PersonAddIcon from "@mui/icons-material/PersonAdd";
 import InboxIcon from "@mui/icons-material/Inbox";
 import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
 import CheckIcon from "@mui/icons-material/Check";
+import PhotoCameraIcon from "@mui/icons-material/PhotoCamera";
 import CircularProgress from "@mui/material/CircularProgress";
 import Badge from "@mui/material/Badge";
 import CallIcon from "@mui/icons-material/Call";
@@ -132,6 +133,9 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
   const [myBio, setMyBio] = useState(currentUser?.bio || "");
   const [myMood, setMyMood] = useState(currentUser?.mood || "");
   const [savingProfile, setSavingProfile] = useState(false);
+  const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
+  const [avatarUploading, setAvatarUploading] = useState(false);
+  const avatarFileRef = useRef<HTMLInputElement>(null);
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [voiceBusy, setVoiceBusy] = useState(false);
   const [replyingTo, setReplyingTo] = useState<ChatMsg|null>(() => {
@@ -787,12 +791,40 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
       setMyMood(updated.mood || "");
       if (updated.status) setMyStatus(updated.status);
       onUserUpdate?.(updated);
+      if (avatarPreview) {
+        URL.revokeObjectURL(avatarPreview);
+        setAvatarPreview(null);
+      }
       setSettingsOpen(false);
       toast.success("Profile saved");
     } catch {
       toast.error("Failed to save profile");
     } finally {
       setSavingProfile(false);
+    }
+  };
+
+  const uploadMyAvatar = async (file: File) => {
+    if (!file.type.startsWith("image/") || file.type === "image/gif") {
+      toast.error("Please choose a JPEG, PNG, or WebP image");
+      return;
+    }
+    const preview = URL.createObjectURL(file);
+    setAvatarPreview(preview);
+    setAvatarUploading(true);
+    try {
+      const { avatarUrl } = await api.users.uploadAvatar(file);
+      if (currentUser) {
+        onUserUpdate?.({ ...currentUser, avatarUrl });
+      }
+      toast.success("Avatar updated");
+      URL.revokeObjectURL(preview);
+      setAvatarPreview(null);
+    } catch (e) {
+      toast.error(e instanceof ApiError ? e.message : "Failed to upload avatar");
+    } finally {
+      setAvatarUploading(false);
+      if (avatarFileRef.current) avatarFileRef.current.value = "";
     }
   };
 
@@ -1581,8 +1613,11 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
       {/* New DM modal */}
       {newDmOpen && (
         <div
-          className={`fixed inset-0 z-[60] flex items-center justify-center p-4${desktopMode ? "" : " bg-black/50 backdrop-blur-sm"}`}
-          style={desktopMode ? { background: "rgba(0,0,0,0.5)" } : undefined}
+          className={`fixed inset-x-0 bottom-0 z-[60] flex items-center justify-center p-4${desktopMode ? "" : " bg-black/50 backdrop-blur-sm"}`}
+          style={{
+            top: desktopMode ? "var(--ninja-titlebar-h, 44px)" : 0,
+            ...(desktopMode ? { background: "rgba(0,0,0,0.5)" } : undefined),
+          }}
           onClick={() => setNewDmOpen(false)}
         >
           <div className="rounded-3xl p-6 w-full max-w-sm shadow-2xl" style={{ background: C.surface }} onClick={e => e.stopPropagation()}>
@@ -1603,8 +1638,11 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
       )}
       {confirm && (
         <div
-          className={`fixed inset-0 z-[60] flex items-center justify-center p-4${desktopMode ? "" : " bg-black/50 backdrop-blur-sm"}`}
-          style={desktopMode ? { background: "rgba(0,0,0,0.5)" } : undefined}
+          className={`fixed inset-x-0 bottom-0 z-[60] flex items-center justify-center p-4${desktopMode ? "" : " bg-black/50 backdrop-blur-sm"}`}
+          style={{
+            top: desktopMode ? "var(--ninja-titlebar-h, 44px)" : 0,
+            ...(desktopMode ? { background: "rgba(0,0,0,0.5)" } : undefined),
+          }}
           onClick={() => setConfirm(null)}
           role="dialog"
           aria-modal="true"
@@ -1638,27 +1676,66 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
       {/* Settings Modal */}
       {settingsOpen && (
         <div
-          className={`fixed inset-0 z-50 flex items-center justify-center p-4${desktopMode ? "" : " bg-black/40 backdrop-blur-[2px]"}`}
-          style={desktopMode ? { background: "rgba(0,0,0,0.5)" } : undefined}
-          onClick={() => setSettingsOpen(false)}
+          className={`fixed inset-x-0 bottom-0 z-50 flex items-center justify-center p-4${desktopMode ? "" : " bg-black/40 backdrop-blur-[2px]"}`}
+          style={{
+            top: desktopMode ? "var(--ninja-titlebar-h, 44px)" : 0,
+            ...(desktopMode ? { background: "rgba(0,0,0,0.5)" } : undefined),
+          }}
+          onClick={() => {
+            if (avatarPreview) {
+              URL.revokeObjectURL(avatarPreview);
+              setAvatarPreview(null);
+            }
+            setSettingsOpen(false);
+          }}
         >
           <div className="rounded-3xl p-6 w-full max-w-sm" style={{ background:C.surface, boxShadow:"0 8px 32px rgba(0,0,0,.24)" }} onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-5">
               <h3 className="font-medium text-base" style={{ color:C.onSurface, fontFamily:"Roboto" }}>My Profile</h3>
-              <button type="button" onClick={() => setSettingsOpen(false)} className="w-8 h-8 rounded-full flex items-center justify-center hover:bg-black/5" style={{ color:C.onSurfaceVar }} aria-label="Close"><CloseIcon style={{ fontSize:18 }} /></button>
+              <button type="button" onClick={() => {
+                if (avatarPreview) {
+                  URL.revokeObjectURL(avatarPreview);
+                  setAvatarPreview(null);
+                }
+                setSettingsOpen(false);
+              }} className="w-8 h-8 rounded-full flex items-center justify-center hover:bg-black/5" style={{ color:C.onSurfaceVar }} aria-label="Close"><CloseIcon style={{ fontSize:18 }} /></button>
             </div>
             <div className="flex items-center gap-4 mb-5">
-              <div className="relative shrink-0 w-16 h-16 ninja-profile-avatar">
-                <ChatAvatar
-                  name={currentUser?.username || "?"}
-                  avatarUrl={currentUser?.avatarUrl}
-                  size={64}
-                  bg={desktopMode ? (isDarkTheme ? "transparent" : C.primary) : undefined}
+              <div className="relative shrink-0 w-16 h-16 ninja-profile-avatar group">
+                <button
+                  type="button"
+                  disabled={avatarUploading || savingProfile}
+                  onClick={() => avatarFileRef.current?.click()}
+                  className="relative w-16 h-16 rounded-full overflow-hidden focus:outline-none"
+                  title="Change avatar"
+                  aria-label="Change avatar"
+                >
+                  <ChatAvatar
+                    name={currentUser?.username || "?"}
+                    avatarUrl={avatarPreview || currentUser?.avatarUrl}
+                    size={64}
+                    bg={desktopMode ? (isDarkTheme ? "transparent" : C.primary) : undefined}
+                  />
+                  <div className="absolute inset-0 rounded-full bg-black/45 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                    {avatarUploading
+                      ? <CircularProgress size={22} sx={{ color: "#fff" }} />
+                      : <PhotoCameraIcon style={{ fontSize: 22, color: "white" }} />}
+                  </div>
+                </button>
+                <input
+                  ref={avatarFileRef}
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) void uploadMyAvatar(f);
+                  }}
                 />
                 <ProfileStatusBadge
                   status={myStatus}
                   C={C}
-                  disabled={savingProfile}
+                  disabled={savingProfile || avatarUploading}
                   onChange={applyPresenceStatus}
                 />
               </div>
@@ -2415,8 +2492,11 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
       {/* Conversation / user details modal — mobile, and Electron when the right rail is collapsed */}
       {detailsOpen && (isMobile || (desktopMode && !showDesktopRightRail)) && detailsContact && (
         <div
-          className={`fixed inset-0 z-[60] flex items-end sm:items-center justify-center p-0 sm:p-4${desktopMode ? "" : " bg-black/50 backdrop-blur-sm"}`}
-          style={desktopMode ? { background: "rgba(0,0,0,0.5)" } : undefined}
+          className={`fixed inset-x-0 bottom-0 z-[60] flex items-end sm:items-center justify-center p-0 sm:p-4${desktopMode ? "" : " bg-black/50 backdrop-blur-sm"}`}
+          style={{
+            top: desktopMode ? "var(--ninja-titlebar-h, 44px)" : 0,
+            ...(desktopMode ? { background: "rgba(0,0,0,0.5)" } : undefined),
+          }}
           role="dialog"
           aria-modal="true"
           aria-label={detailsContact.type === "channel" ? "Channel details" : "User profile"}

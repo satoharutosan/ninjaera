@@ -23,6 +23,18 @@ import { normalizeResourceCategory, RESOURCE_CATEGORY_ERROR } from "../services/
 import { validateExternalDownloadUrl, usesExternalDownload } from "../services/externalDownloadUrl.js";
 import { logActivitySync, formatPlatformLabel } from "../services/activityLog.js";
 import { emitToAdmins, emitToUser, broadcast, scheduleAdminStatsRefresh, emitConversationUpdate } from "../services/realtime.js";
+import { getAdminStatsCache, setAdminStatsCache, invalidateAdminStatsCache } from "../services/adminStatsCache.js";
+import {
+  PENDING_JOB_APPLICATIONS_SQL,
+  PENDING_DM_REQUESTS_SQL,
+  TEAMWORK_APPLICATIONS_LIST_SQL,
+  UNREAD_CONTACTS_SQL,
+  TOTAL_USERS_SQL,
+  TOTAL_NOTIFICATIONS_SQL,
+  TOTAL_DOWNLOADS_SQL,
+  TOTAL_MESSAGES_SQL,
+  isAdminStatsDiagnosticsEnabled,
+} from "../services/adminDashboardMetrics.js";
 import { emitProfileUpdated, syncTeamMemberDisplayName } from "../services/profileBroadcast.js";
 import { isUserOnline, countOnlineUsers } from "../services/presence.js";
 import { syncPrivateChannelParticipants, syncPublicChannels, syncPrivateChannelsForUser, pruneIneligiblePrivateParticipants } from "../services/channels.js";
@@ -182,8 +194,6 @@ router.use(requireAuth, requireAdmin);
 router.use(adminLinkFileRoutes);
 
 // ── Dashboard ────────────────────────────────────────────────────────────────
-const STATS_CACHE_TTL_MS = 5000;
-let statsCache: { at: number; body: Record<string, unknown> } | null = null;
 
 /** Coerce COUNT/SUM results from SQLite (number) or Postgres (string bigint) to a finite integer. */
 function asInt(value: unknown, fallback = 0): number {
@@ -258,10 +268,11 @@ function logAdminStatsError(req: import("express").Request, err: unknown, contex
 
 router.get("/stats", async (req, res) => {
   try {
-    if (statsCache && Date.now() - statsCache.at < STATS_CACHE_TTL_MS) {
+    const cached = getAdminStatsCache();
+    if (cached) {
       // Always recompute unique online users — presence changes faster than the general stats cache.
       const onlineUsers = asInt(countOnlineUsers(), 0);
-      res.json({ ...statsCache.body, onlineUsers });
+      res.json({ ...cached.body, onlineUsers });
       return;
     }
 
@@ -288,7 +299,7 @@ router.get("/stats", async (req, res) => {
       recentContacts,
       recentActivity,
     ] = await Promise.all([
-      safeCount("totalUsers", "SELECT COUNT(*) as c FROM users WHERE is_npc = 0 AND is_deleted = 0"),
+      safeCount("totalUsers", TOTAL_USERS_SQL),
       safeQueryOne<{ admin_count: unknown; member_count: unknown }>(
         "roleCounts",
         // Snake_case aliases only — Postgres lowercases unquoted camelCase (adminCount → admincount).
@@ -297,26 +308,16 @@ router.get("/stats", async (req, res) => {
           COALESCE(SUM(CASE WHEN is_admin = 0 OR is_admin IS NULL THEN 1 ELSE 0 END), 0) as member_count
          FROM users WHERE is_npc = 0 AND is_deleted = 0`,
       ),
-      safeCount("pendingJobApplications", "SELECT COUNT(*) as c FROM job_applications WHERE status = 'pending'"),
-      safeCount("pendingDmRequests", "SELECT COUNT(*) as c FROM dm_requests WHERE status = 'pending'"),
-      safeCount(
-        "notifications",
-        `SELECT COUNT(*) as c FROM notifications n
-         WHERE n.user_id IS NULL
-         AND NOT EXISTS (SELECT 1 FROM notification_reads nr WHERE nr.notification_id = n.id)`,
-      ),
-      safeCount("unreadContacts", "SELECT COUNT(*) as c FROM contact_tickets WHERE is_read = 0"),
+      // Same filter as Teamwork Applications management (pending status only).
+      safeCount("pendingJobApplications", PENDING_JOB_APPLICATIONS_SQL),
+      // Tracked separately — never mixed into pendingApplications (DM ≠ teamwork).
+      safeCount("pendingDmRequests", PENDING_DM_REQUESTS_SQL),
+      // Same universe as Notifications management list (all rows).
+      safeCount("notifications", TOTAL_NOTIFICATIONS_SQL),
+      safeCount("unreadContacts", UNREAD_CONTACTS_SQL),
       // Hard-deleted messages are removed from the table; exclude call_event system chips.
-      safeCount(
-        "totalMessages",
-        `SELECT COUNT(*) as c FROM messages
-         WHERE media_type IS NULL OR media_type != 'call_event'`,
-      ),
-      safeCount(
-        "totalDownloads",
-        `SELECT COUNT(*) as c FROM activity_logs
-         WHERE event_category = 'downloads' AND result = 'success'`,
-      ),
+      safeCount("totalMessages", TOTAL_MESSAGES_SQL),
+      safeCount("totalDownloads", TOTAL_DOWNLOADS_SQL),
       safeQueryAll<{ d: string; c: unknown }>(
         "registrationsByDay",
         `SELECT substr(created_at, 1, 10) as d, COUNT(*) as c
@@ -404,8 +405,24 @@ router.get("/stats", async (req, res) => {
     const adminCount = asInt(roleCounts?.admin_count, 0);
     // Members = non-admin active users (excludes deleted/NPC via WHERE).
     const memberCount = asInt(roleCounts?.member_count, Math.max(0, totalUsers - adminCount));
-    // Overview "Pending Applications" = teamwork apps + pending DM requests.
-    const pendingApplications = pendingJobApplications + pendingDmRequests;
+    // Overview "Pending Applications" MUST equal pending teamwork apps only
+    // (same as Teamwork Applications management). DM requests are separate.
+    const pendingApplications = pendingJobApplications;
+
+    if (isAdminStatsDiagnosticsEnabled()) {
+      console.info("[Admin Stats Diagnostics]", {
+        provider: dbAsync.provider,
+        pendingJobApplications,
+        pendingDmRequests,
+        pendingApplicationsCard: pendingApplications,
+        unreadContacts,
+        notifications,
+        totalUsers,
+        totalDownloads,
+        totalMessages,
+        note: "pendingApplications === pendingJobApplications; DM requests are not included",
+      });
+    }
 
     const registrationsByDay = Object.fromEntries(registrationRows.map((r) => [r.d, asInt(r.c)]));
     const messagesByDay = Object.fromEntries(messageDayRows.map((r) => [r.d, asInt(r.c)]));
@@ -449,6 +466,7 @@ router.get("/stats", async (req, res) => {
       onlineUsers,
       pendingApplications,
       pendingJobApplications,
+      pendingDmRequests,
       unreadContacts,
       notifications,
       totalDownloads,
@@ -504,16 +522,18 @@ router.get("/stats", async (req, res) => {
       })),
     };
 
-    statsCache = { at: Date.now(), body };
+    setAdminStatsCache(body);
     res.json(body);
   } catch (err) {
     logAdminStatsError(req, err);
     // Last-resort empty dashboard — never leave the admin UI on a hard 500 for stats.
+    invalidateAdminStatsCache();
     res.status(200).json({
       totalUsers: 0,
       onlineUsers: asInt(countOnlineUsers(), 0),
       pendingApplications: 0,
       pendingJobApplications: 0,
+      pendingDmRequests: 0,
       unreadContacts: 0,
       notifications: 0,
       totalDownloads: 0,
@@ -756,7 +776,7 @@ router.patch("/users/:id", async (req, res) => {
       await qRun(`
         INSERT INTO team_members (name, role, department, country, city, status_label, status_color, sort_order, user_id)
         VALUES (?, 'Team Member', ?, ?, ?, 'Active', '#386A20', ?, ?)
-      `, u.username, department, u.country || "Japan", u.city || "Tokyo", maxOrder + 1, id);
+      `, u.username, department, u.country || "Unknown", u.city || "—", maxOrder + 1, id);
     }
     broadcast("team:updated", {});
   } else if (isTeamMember === false) {
@@ -925,16 +945,21 @@ router.patch("/notifications/:id", async (req, res) => {
 
 router.delete("/notifications/:id", async (req, res) => {
   await qRun("DELETE FROM notifications WHERE id = ?", Number(req.params.id));
+  emitToAdmins("admin:notifications", {});
+  scheduleAdminStatsRefresh();
+  broadcast("counts:update", {});
   res.json({ ok: true });
 });
 
 router.post("/notifications/:id/pin", async (req, res) => {
   await qRun("UPDATE notifications SET pinned = 1 WHERE id = ?", Number(req.params.id));
+  emitToAdmins("admin:notifications", {});
   res.json({ ok: true });
 });
 
 router.post("/notifications/:id/unpin", async (req, res) => {
   await qRun("UPDATE notifications SET pinned = 0 WHERE id = ?", Number(req.params.id));
+  emitToAdmins("admin:notifications", {});
   res.json({ ok: true });
 });
 
@@ -1348,13 +1373,7 @@ router.delete("/contacts/:id", async (req, res) => {
 
 // ── Teamwork Applications ────────────────────────────────────────────────────
 router.get("/applications", async (_req, res) => {
-  const apps = await qAll<Record<string, unknown>>(`
-    SELECT ja.*, u.username, u.email, u.avatar_url, jp.title as job_title
-    FROM job_applications ja
-    JOIN users u ON u.id = ja.user_id
-    JOIN job_postings jp ON jp.id = ja.job_id
-    ORDER BY ja.created_at DESC
-  `);
+  const apps = await qAll<Record<string, unknown>>(TEAMWORK_APPLICATIONS_LIST_SQL);
   res.json({
     applications: apps.map(a => ({
       id: a.id,
@@ -1407,8 +1426,8 @@ router.post("/applications/:id/approve", async (req, res) => {
   const existing = await qGet<{ id: number }>("SELECT id FROM team_members WHERE user_id = ? OR name = ?", app.user_id, app.full_name);
   const roleTitle = job?.title || "Team Member";
   const department = job?.department || "General";
-  const country = app.country || user.country || "Japan";
-  const city = app.city || user.city || "Tokyo";
+  const country = app.country || user.country || "Unknown";
+  const city = app.city || user.city || "—";
   if (!existing) {
     const maxOrder = (await qGet<{ m: number | null }>("SELECT MAX(sort_order) as m FROM team_members"))!.m || 0;
     await qRun(`

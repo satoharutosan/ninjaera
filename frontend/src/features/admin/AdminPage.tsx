@@ -465,31 +465,60 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
       toast.error("Title is required");
       return;
     }
+    const category = editResource.category || "App";
+    const isAppExternal = category === "App";
+    if (isAppExternal) {
+      const url = (editResource.externalUrl || "").trim();
+      if (!url) {
+        toast.error("External download URL is required for App resources");
+        return;
+      }
+      try {
+        const parsed = new URL(url);
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+          toast.error("Only HTTP and HTTPS URLs are allowed");
+          return;
+        }
+      } catch {
+        toast.error("Please enter a valid URL (for example https://github.com/...)");
+        return;
+      }
+    }
     const filename = resourceFile?.name || (editResource.id ? "resource" : "file");
     setResourceUploading(true);
     setResourceUploadBytes(null);
-    setResourceUploadProgress(
-      resourceFile
-        ? { filename, percent: 0, phase: "uploading" }
-        : { filename, percent: 100, phase: "processing" },
-    );
+    if (!isAppExternal) {
+      setResourceUploadProgress(
+        resourceFile
+          ? { filename, percent: 0, phase: "uploading" }
+          : { filename, percent: 100, phase: "processing" },
+      );
+    } else {
+      setResourceUploadProgress(null);
+    }
     try {
       const form = new FormData();
       form.append("title", editResource.title || "");
-      form.append("category", editResource.category || "App");
+      form.append("category", category);
       form.append("description", editResource.description || "");
       if (editResource.version) form.append("version", editResource.version);
       form.append("enabled", String(editResource.enabled !== false));
       form.append("visibility", editResource.visibility === "PRIVATE" ? "PRIVATE" : "PUBLIC");
-      if (resourceFile) form.append("file", resourceFile);
-      const onUploadProgress = trackUploadProgress(filename, setResourceUploadProgress, setResourceUploadBytes);
+      if (isAppExternal) {
+        form.append("externalUrl", (editResource.externalUrl || "").trim());
+      } else if (resourceFile) {
+        form.append("file", resourceFile);
+      }
+      const onUploadProgress = isAppExternal
+        ? undefined
+        : trackUploadProgress(filename, setResourceUploadProgress, setResourceUploadBytes);
       if (editResource.id) {
         await api.admin.updateResource(editResource.id, form, { onUploadProgress });
       } else {
         await api.admin.createResource(form, { onUploadProgress });
       }
-      setResourceUploadProgress({ filename, percent: 100, phase: "complete" });
-      toast.success(editResource.id ? "Updated" : "Uploaded");
+      if (!isAppExternal) setResourceUploadProgress({ filename, percent: 100, phase: "complete" });
+      toast.success(editResource.id ? "Updated" : "Saved");
       setEditResource(null);
       setResourceFile(null);
       setResourceUploadProgress(null);
@@ -499,7 +528,7 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
     } catch (e) {
       setResourceUploadProgress(null);
       setResourceUploadBytes(null);
-      toast.error(e instanceof ApiError ? e.message : "Upload failed");
+      toast.error(e instanceof ApiError ? e.message : "Save failed");
     } finally {
       setResourceUploading(false);
     }
@@ -511,29 +540,43 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
       toast.error("Version is required");
       return;
     }
-    const filename = gameBuildFile?.name || (editGameBuild.id ? "game build" : "file");
-    setGameUploading(true);
-    setGameUploadBytes(null);
-    setGameUploadProgress(
-      gameBuildFile
-        ? { filename, percent: 0, phase: "uploading" }
-        : { filename, percent: 100, phase: "processing" },
-    );
+    const url = (editGameBuild.externalUrl || "").trim();
+    if (!url) {
+      toast.error("External download URL is required");
+      return;
+    }
     try {
-      const form = new FormData();
-      form.append("platform", editGameBuild.platform || "windows");
-      form.append("version", editGameBuild.version || "");
-      form.append("releaseNotes", editGameBuild.releaseNotes || "");
-      form.append("published", String(!!editGameBuild.published));
-      if (gameBuildFile) form.append("file", gameBuildFile);
-      const onUploadProgress = trackUploadProgress(filename, setGameUploadProgress, setGameUploadBytes);
-      if (editGameBuild.id) {
-        await api.admin.updateGameDownload(editGameBuild.id, form, { onUploadProgress });
-      } else {
-        await api.admin.createGameDownload(form, { onUploadProgress });
+      const parsed = new URL(url);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        toast.error("Only HTTP and HTTPS URLs are allowed");
+        return;
       }
-      setGameUploadProgress({ filename, percent: 100, phase: "complete" });
-      toast.success(editGameBuild.id ? "Updated" : "Uploaded");
+    } catch {
+      toast.error("Please enter a valid URL (for example https://github.com/...)");
+      return;
+    }
+    setGameUploading(true);
+    setGameUploadProgress(null);
+    setGameUploadBytes(null);
+    try {
+      const payload = {
+        platform: editGameBuild.platform || "windows",
+        version: editGameBuild.version || "",
+        releaseNotes: editGameBuild.releaseNotes || "",
+        published: !!editGameBuild.published,
+        externalUrl: url,
+      };
+      if (editGameBuild.id) {
+        await api.admin.updateGameDownload(editGameBuild.id, {
+          version: payload.version,
+          releaseNotes: payload.releaseNotes,
+          published: payload.published,
+          externalUrl: payload.externalUrl,
+        });
+      } else {
+        await api.admin.createGameDownload(payload);
+      }
+      toast.success(editGameBuild.id ? "Updated" : "Saved");
       setEditGameBuild(null);
       setGameBuildFile(null);
       setGameUploadProgress(null);
@@ -541,9 +584,7 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
       loadSection();
       api.admin.stats().then(setStats).catch(() => {});
     } catch (e) {
-      setGameUploadProgress(null);
-      setGameUploadBytes(null);
-      toast.error(e instanceof ApiError ? e.message : "Upload failed");
+      toast.error(e instanceof ApiError ? e.message : "Save failed");
     } finally {
       setGameUploading(false);
     }
@@ -1286,11 +1327,11 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                 <div className="flex items-center justify-between mb-6">
                   <h1 className="text-2xl font-medium" style={{ color: C.onSurface, fontFamily: "Roboto" }}>Resources</h1>
                   <FilledBtn onClick={() => {
-                    setEditResource({ title: "", category: "App", description: "", enabled: true, visibility: "PUBLIC" });
+                    setEditResource({ title: "", category: "App", description: "", enabled: true, visibility: "PUBLIC", externalUrl: "" });
                     setResourceFile(null);
                     setResourceUploadProgress(null);
                     setResourceUploadBytes(null);
-                  }}>Upload Resource</FilledBtn>
+                  }}>Add Resource</FilledBtn>
                 </div>
                 <div className="space-y-3">
                   {resources.map(r => (
@@ -1313,7 +1354,10 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                           </span>
                           {!r.enabled && <Chip label="Disabled" color={C.error} />}
                         </div>
-                        <p className="text-xs" style={{ color: C.onSurfaceVar }}>{r.description}</p>
+                        <p className="text-xs" style={{ color: C.onSurfaceVar }}>
+                          {r.description}
+                          {r.category === "App" && r.externalUrl ? " · External URL" : r.fileSize ? ` · ${(r.fileSize / 1048576).toFixed(1)} MB` : ""}
+                        </p>
                       </div>
                       <div className="flex gap-1">
                         <button onClick={() => { setEditResource(r); setResourceFile(null); }} className="p-1.5 rounded-full hover:bg-black/5" style={{ color: C.primary }}><EditIcon style={{ fontSize: 16 }} /></button>
@@ -1331,11 +1375,11 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                 <div className="flex items-center justify-between mb-6">
                   <h1 className="text-2xl font-medium" style={{ color: C.onSurface, fontFamily: "Roboto" }}>Game Downloads</h1>
                   <FilledBtn onClick={() => {
-                    setEditGameBuild({ platform: "windows", version: "", releaseNotes: "", published: false });
+                    setEditGameBuild({ platform: "windows", version: "", releaseNotes: "", published: false, externalUrl: "" });
                     setGameBuildFile(null);
                     setGameUploadProgress(null);
                     setGameUploadBytes(null);
-                  }}>Upload Build</FilledBtn>
+                  }}>Add Build</FilledBtn>
                 </div>
                 <div className="space-y-3">
                   {gameBuilds.map(g => (
@@ -1347,7 +1391,7 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                           <Chip label={`v${g.version}`} />
                           {g.published ? <Chip label="Published" color="#386A20" filled /> : <Chip label="Draft" />}
                         </div>
-                        <p className="text-xs" style={{ color: C.onSurfaceVar }}>{g.releaseNotes || "No release notes"} · {g.fileSize ? `${(g.fileSize / 1048576).toFixed(1)} MB` : "No file"}</p>
+                        <p className="text-xs" style={{ color: C.onSurfaceVar }}>{g.releaseNotes || "No release notes"} · {g.externalUrl ? "External URL" : g.fileSize ? `${(g.fileSize / 1048576).toFixed(1)} MB` : "No download URL"}</p>
                       </div>
                       <div className="flex gap-1">
                         <button onClick={() => { setEditGameBuild(g); setGameBuildFile(null); }} className="p-1.5 rounded-full hover:bg-black/5" style={{ color: C.primary }}><EditIcon style={{ fontSize: 16 }} /></button>
@@ -1355,7 +1399,7 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                       </div>
                     </div>
                   ))}
-                  {gameBuilds.length === 0 && <p className="text-center py-10 text-sm" style={{ color: C.onSurfaceVar }}>No game builds uploaded</p>}
+                  {gameBuilds.length === 0 && <p className="text-center py-10 text-sm" style={{ color: C.onSurfaceVar }}>No game builds registered</p>}
                 </div>
               </div>
             )}
@@ -1600,13 +1644,17 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
           onClick={() => { if (!resourceUploading) setEditResource(null); }}
         >
           <div className="rounded-3xl p-6 w-full max-w-md" style={{ background: C.surface }} onClick={e => e.stopPropagation()}>
-            <h3 className="font-medium mb-4" style={{ color: C.onSurface, fontFamily: "Roboto" }}>{editResource.id ? "Edit" : "Upload"} Resource</h3>
+            <h3 className="font-medium mb-4" style={{ color: C.onSurface, fontFamily: "Roboto" }}>{editResource.id ? "Edit" : "Add"} Resource</h3>
             <div className="space-y-3">
               <Field label="Title" value={editResource.title || ""} onChange={v => setEditResource({ ...editResource, title: v })} />
               <div className="relative mt-1">
                 <select
                   value={editResource.category || "App"}
-                  onChange={e => setEditResource({ ...editResource, category: e.target.value })}
+                  onChange={e => {
+                    const next = e.target.value;
+                    setEditResource({ ...editResource, category: next });
+                    if (next === "App") setResourceFile(null);
+                  }}
                   disabled={resourceUploading}
                   className="w-full px-4 py-3.5 rounded-[4px] border text-sm"
                   style={{ borderColor: C.outline, color: C.onSurface, background: C.surface, fontFamily: "Roboto" }}
@@ -1631,21 +1679,35 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                 </select>
                 <span className="absolute left-3 -top-2 px-1 text-xs" style={{ color: C.primary, background: C.surface }}>Visibility</span>
               </div>
-              <div>
-                <label className="text-xs" style={{ color: C.primary, fontFamily: "Roboto" }}>File {editResource.id ? "(replace)" : ""}</label>
-                <input
-                  type="file"
-                  disabled={resourceUploading}
-                  onChange={e => setResourceFile(e.target.files?.[0] || null)}
-                  className="mt-1 text-sm w-full disabled:opacity-50"
-                  style={{ color: C.onSurface }}
-                />
-                {resourceFile && (
-                  <p className="text-xs mt-1" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
-                    {resourceFile.name}
+              {(editResource.category || "App") === "App" ? (
+                <div>
+                  <Field
+                    label="External Download URL"
+                    value={editResource.externalUrl || ""}
+                    onChange={v => setEditResource({ ...editResource, externalUrl: v })}
+                    placeholder="https://github.com/.../releases/download/..."
+                  />
+                  <p className="text-[11px] mt-1" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
+                    Users download directly from this HTTPS URL (e.g. GitHub Releases). Files are not stored on the server.
                   </p>
-                )}
-              </div>
+                </div>
+              ) : (
+                <div>
+                  <label className="text-xs" style={{ color: C.primary, fontFamily: "Roboto" }}>File {editResource.id ? "(replace)" : ""}</label>
+                  <input
+                    type="file"
+                    disabled={resourceUploading}
+                    onChange={e => setResourceFile(e.target.files?.[0] || null)}
+                    className="mt-1 text-sm w-full disabled:opacity-50"
+                    style={{ color: C.onSurface }}
+                  />
+                  {resourceFile && (
+                    <p className="text-xs mt-1" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
+                      {resourceFile.name}
+                    </p>
+                  )}
+                </div>
+              )}
               <label className="flex items-center gap-2 text-sm" style={{ color: C.onSurface, fontFamily: "Roboto" }}>
                 <input
                   type="checkbox"
@@ -1654,7 +1716,7 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                   onChange={e => setEditResource({ ...editResource, enabled: e.target.checked })}
                 /> Enabled
               </label>
-              {resourceUploadProgress && (
+              {resourceUploadProgress && (editResource.category || "App") !== "App" && (
                 <AdminUploadProgress
                   state={resourceUploadProgress}
                   loaded={resourceUploadBytes?.loaded}
@@ -1677,7 +1739,7 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
           onClick={() => { if (!gameUploading) setEditGameBuild(null); }}
         >
           <div className="rounded-3xl p-6 w-full max-w-md" style={{ background: C.surface }} onClick={e => e.stopPropagation()}>
-            <h3 className="font-medium mb-4" style={{ color: C.onSurface, fontFamily: "Roboto" }}>{editGameBuild.id ? "Edit" : "Upload"} Game Build</h3>
+            <h3 className="font-medium mb-4" style={{ color: C.onSurface, fontFamily: "Roboto" }}>{editGameBuild.id ? "Edit" : "Add"} Game Build</h3>
             <div className="space-y-3">
               <div className="relative mt-1">
                 <select
@@ -1694,19 +1756,15 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
               <Field label="Version" value={editGameBuild.version || ""} onChange={v => setEditGameBuild({ ...editGameBuild, version: v })} />
               <Field label="Release Notes" value={editGameBuild.releaseNotes || ""} onChange={v => setEditGameBuild({ ...editGameBuild, releaseNotes: v })} rows={3} />
               <div>
-                <label className="text-xs" style={{ color: C.primary, fontFamily: "Roboto" }}>Build file {editGameBuild.id ? "(replace)" : ""}</label>
-                <input
-                  type="file"
-                  disabled={gameUploading}
-                  onChange={e => setGameBuildFile(e.target.files?.[0] || null)}
-                  className="mt-1 text-sm w-full disabled:opacity-50"
-                  style={{ color: C.onSurface }}
+                <Field
+                  label="External Download URL"
+                  value={editGameBuild.externalUrl || ""}
+                  onChange={v => setEditGameBuild({ ...editGameBuild, externalUrl: v })}
+                  placeholder="https://github.com/.../releases/download/..."
                 />
-                {gameBuildFile && (
-                  <p className="text-xs mt-1" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
-                    {gameBuildFile.name}
-                  </p>
-                )}
+                <p className="text-[11px] mt-1" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
+                  Users download directly from this HTTPS URL (e.g. GitHub Releases). Game files are not uploaded to the server.
+                </p>
               </div>
               <label className="flex items-center gap-2 text-sm" style={{ color: C.onSurface, fontFamily: "Roboto" }}>
                 <input
@@ -1716,17 +1774,8 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                   onChange={e => setEditGameBuild({ ...editGameBuild, published: e.target.checked })}
                 /> Published
               </label>
-              {gameUploadProgress && (
-                <AdminUploadProgress
-                  state={gameUploadProgress}
-                  loaded={gameUploadBytes?.loaded}
-                  total={gameUploadBytes?.total}
-                />
-              )}
               <FilledBtn onClick={() => void saveGameUpload()} disabled={gameUploading}>
-                {gameUploading
-                  ? (gameUploadProgress?.phase === "processing" ? "Processing…" : "Uploading…")
-                  : "Save"}
+                {gameUploading ? "Saving…" : "Save"}
               </FilledBtn>
             </div>
           </div>

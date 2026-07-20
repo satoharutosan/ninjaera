@@ -6,6 +6,7 @@ import { optionalAuth } from "../middleware/auth.js";
 import { isAdmin, isTeamMember } from "../middleware/admin.js";
 import { logActivitySync } from "../services/activityLog.js";
 import { getStorage } from "../storage/index.js";
+import { validateExternalDownloadUrl } from "../services/externalDownloadUrl.js";
 
 const router = Router();
 
@@ -112,11 +113,17 @@ router.get("/resources/:id/download", optionalAuth, async (req, res) => {
   const id = Number(req.params.id);
   const resource = await qGet<{
     content_url: string | null;
+    external_url: string | null;
     title: string;
+    category: string;
+    version: string | null;
     visibility?: string | null;
   }>("SELECT * FROM resources WHERE id = ? AND enabled = 1", id);
 
-  if (!resource || !resource.content_url) {
+  const hasExternal = !!(resource?.external_url && String(resource.external_url).trim());
+  const hasStored = !!(resource?.content_url && String(resource.content_url).trim());
+
+  if (!resource || (!hasExternal && !hasStored)) {
     logActivitySync({
       req,
       userId: req.user?.id ?? null,
@@ -151,10 +158,33 @@ router.get("/resources/:id/download", optionalAuth, async (req, res) => {
     return;
   }
 
+  // External URL (Games-style App resources / GitHub): auth + log, then hand URL to the client.
+  // Client navigates directly so the browser download history shows GitHub — never proxy the file.
+  if (hasExternal) {
+    const checked = validateExternalDownloadUrl(resource.external_url);
+    if (!checked.ok) {
+      res.status(500).json({ error: "This resource has an invalid download URL. Please contact an administrator." });
+      return;
+    }
+    logActivitySync({
+      req,
+      userId: req.user?.id ?? null,
+      username: req.user?.username ?? "Guest",
+      eventType: "resource_download",
+      eventCategory: "downloads",
+      description: `Downloaded resource: ${resource.title}${resource.version ? ` v${resource.version}` : ""} (${resource.category})`,
+      affectedObject: `resource:${id}`,
+      result: "success",
+      metadata: { source: "external", category: resource.category, version: resource.version },
+    });
+    res.json({ externalUrl: checked.url });
+    return;
+  }
+
   const storage = getStorage();
 
   if (storage.provider === "local") {
-    const key = resource.content_url.replace(/^\/uploads\//, "").replace(/^[/\\]+/, "").replace(/\.\./g, "");
+    const key = resource.content_url!.replace(/^\/uploads\//, "").replace(/^[/\\]+/, "").replace(/\.\./g, "");
     const filePath = path.resolve(storage.localRoot!, key);
     const relative = path.relative(storage.localRoot!, filePath);
     if (relative.startsWith("..") || path.isAbsolute(relative) || !fs.existsSync(filePath)) {
@@ -197,7 +227,7 @@ router.get("/resources/:id/download", optionalAuth, async (req, res) => {
 
   let downloadUrl: string;
   try {
-    downloadUrl = await storage.getSignedDownloadUrl(resource.content_url, 120);
+    downloadUrl = await storage.getSignedDownloadUrl(resource.content_url!, 120);
   } catch {
     res.status(404).json({ error: "File not found" });
     return;

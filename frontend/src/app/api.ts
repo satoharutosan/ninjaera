@@ -134,6 +134,24 @@ import {
   isAuthPersistent,
 } from "@/shared/authStorage";
 import { CONNECTION_ERROR_MESSAGE } from "@/shared/networkMessages";
+import { getNinja } from "@/shared/electronBridge";
+
+/** Open an external download URL so the browser/OS downloads directly (e.g. GitHub). */
+async function openExternalDownload(url: string): Promise<void> {
+  const ninja = getNinja();
+  if (ninja?.shell?.openExternal) {
+    const r = await ninja.shell.openExternal(url);
+    if (!r.ok) throw new ApiError("Could not open the download link.", 0);
+    return;
+  }
+  const a = document.createElement("a");
+  a.href = url;
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
 
 export function getToken(): string | null {
   return getStoredToken();
@@ -568,6 +586,14 @@ export const api = {
         const data = await res.json().catch(() => ({}));
         throw new ApiError((data as { error?: string }).error || res.statusText, res.status);
       }
+      const contentType = res.headers.get("Content-Type") || "";
+      if (contentType.includes("application/json")) {
+        const data = await res.json() as { externalUrl?: string };
+        if (data.externalUrl) {
+          await openExternalDownload(data.externalUrl);
+          return;
+        }
+      }
       const disposition = res.headers.get("Content-Disposition") || "";
       const match = /filename\*?=(?:UTF-8''|")?([^\";]+)/i.exec(disposition);
       const filename = match ? decodeURIComponent(match[1].replace(/"/g, "")) : `resource-${id}`;
@@ -588,6 +614,14 @@ export const api = {
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new ApiError((data as { error?: string }).error || res.statusText, res.status);
+      }
+      const contentType = res.headers.get("Content-Type") || "";
+      if (contentType.includes("application/json")) {
+        const data = await res.json() as { externalUrl?: string };
+        if (data.externalUrl) {
+          await openExternalDownload(data.externalUrl);
+          return;
+        }
       }
       const disposition = res.headers.get("Content-Disposition") || "";
       const match = /filename\*?=(?:UTF-8''|")?([^\";]+)/i.exec(disposition);
@@ -718,10 +752,21 @@ export const api = {
       request<{ ok: boolean }>(`/admin/resources/${id}`, { method: "PATCH", body: form, onUploadProgress: opts?.onUploadProgress }),
     deleteResource: (id: number) => request<{ ok: boolean }>(`/admin/resources/${id}`, { method: "DELETE" }),
     gameDownloads: () => request<{ downloads: AdminGameDownload[] }>("/admin/game-downloads"),
-    createGameDownload: (form: FormData, opts?: { onUploadProgress?: (p: UploadProgress) => void }) =>
-      request<{ id: number }>("/admin/game-downloads", { method: "POST", body: form, onUploadProgress: opts?.onUploadProgress }),
-    updateGameDownload: (id: number, form: FormData, opts?: { onUploadProgress?: (p: UploadProgress) => void }) =>
-      request<{ ok: boolean }>(`/admin/game-downloads/${id}`, { method: "PATCH", body: form, onUploadProgress: opts?.onUploadProgress }),
+    createGameDownload: (data: {
+      platform: string;
+      version: string;
+      releaseNotes?: string;
+      published?: boolean;
+      externalUrl: string;
+    }) =>
+      request<{ id: number }>("/admin/game-downloads", { method: "POST", body: JSON.stringify(data) }),
+    updateGameDownload: (id: number, data: {
+      version?: string;
+      releaseNotes?: string;
+      published?: boolean;
+      externalUrl?: string;
+    }) =>
+      request<{ ok: boolean }>(`/admin/game-downloads/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
     deleteGameDownload: (id: number) => request<{ ok: boolean }>(`/admin/game-downloads/${id}`, { method: "DELETE" }),
     linkFiles: () => request<{ files: AdminLinkFile[] }>("/admin/link-files"),
     createLinkFile: (form: FormData, opts?: { onUploadProgress?: (p: UploadProgress) => void }) =>
@@ -959,6 +1004,7 @@ export type AdminResource = {
   category: string;
   description: string;
   contentUrl?: string | null;
+  externalUrl?: string | null;
   enabled: boolean;
   fileSize?: number;
   version?: string;
@@ -992,6 +1038,7 @@ export type AdminGameDownload = {
   version: string;
   releaseNotes: string;
   fileUrl?: string | null;
+  externalUrl?: string | null;
   fileSize?: number;
   published: boolean;
   publishedAt?: string;

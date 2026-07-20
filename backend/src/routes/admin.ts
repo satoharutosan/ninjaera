@@ -20,6 +20,7 @@ import {
   USERNAME_TAKEN_ERROR,
 } from "../services/username.js";
 import { normalizeResourceCategory, RESOURCE_CATEGORY_ERROR } from "../services/resourceCategories.js";
+import { validateExternalDownloadUrl, usesExternalDownload } from "../services/externalDownloadUrl.js";
 import { logActivitySync, formatPlatformLabel } from "../services/activityLog.js";
 import { emitToAdmins, emitToUser, broadcast, scheduleAdminStatsRefresh, emitConversationUpdate } from "../services/realtime.js";
 import { emitProfileUpdated, syncTeamMemberDisplayName } from "../services/profileBroadcast.js";
@@ -42,7 +43,6 @@ import { deleteStoredUrl, getStorage } from "../storage/index.js";
 import { createMemoryUploader, createTempDiskUploader, cleanupTempFile, persistMulterFile } from "../storage/multerUpload.js";
 import { validateUpload } from "../services/uploadValidation.js";
 import {
-  ADMIN_GAME_MAX_BYTES,
   ADMIN_RESOURCE_MAX_BYTES,
   formatBytesLimit,
 } from "../config/uploadLimits.js";
@@ -140,8 +140,6 @@ function channelAvatarMiddleware(req: import("express").Request, res: import("ex
   });
 }
 
-const gameUpload = createTempDiskUploader({ limits: { fileSize: ADMIN_GAME_MAX_BYTES }, prefix: "game" });
-
 /** Disable Node socket idle timeouts for long-running large-file transfers. */
 function extendUploadSocketTimeouts(
   req: import("express").Request,
@@ -179,7 +177,6 @@ function multerSizeLimitMiddleware(
 }
 
 const resourceFileUpload = multerSizeLimitMiddleware(upload, "file", ADMIN_RESOURCE_MAX_BYTES, "Resource file");
-const gameFileUpload = multerSizeLimitMiddleware(gameUpload, "file", ADMIN_GAME_MAX_BYTES, "Game build");
 
 router.use(requireAuth, requireAdmin);
 router.use(adminLinkFileRoutes);
@@ -1528,6 +1525,7 @@ router.get("/resources", async (_req, res) => {
       category: r.category,
       description: r.description,
       contentUrl: r.content_url,
+      externalUrl: r.external_url || null,
       publishedAt: r.published_at,
       enabled: r.enabled !== 0,
       uploaderId: r.uploader_id,
@@ -1542,7 +1540,7 @@ router.get("/resources", async (_req, res) => {
 
 router.post("/resources", extendUploadSocketTimeouts, resourceFileUpload, async (req, res) => {
   const started = Date.now();
-  const { title, category, description, version, sortOrder, enabled, visibility } = req.body;
+  const { title, category, description, version, sortOrder, enabled, visibility, externalUrl } = req.body;
   if (!title || !category) {
     cleanupTempFile(req.file);
     res.status(400).json({ error: "Title and category are required" });
@@ -1554,34 +1552,51 @@ router.post("/resources", extendUploadSocketTimeouts, resourceFileUpload, async 
     res.status(400).json({ error: RESOURCE_CATEGORY_ERROR });
     return;
   }
+
+  const isExternal = usesExternalDownload(normalizedCategory);
+  let external: string | null = null;
+  if (isExternal) {
+    cleanupTempFile(req.file);
+    const checked = validateExternalDownloadUrl(externalUrl);
+    if (!checked.ok) {
+      res.status(400).json({ error: checked.error });
+      return;
+    }
+    external = checked.url;
+  }
+
   let stored: PutObjectResult | null = null;
   try {
     const ts = now();
-    if (req.file) stored = await persistMulterFile(req.file, "resource");
-    const fileUrl = stored?.url ?? null;
-    const fileSize = stored?.size ?? null;
+    if (!isExternal && req.file) stored = await persistMulterFile(req.file, "resource");
+    const fileUrl = isExternal ? null : (stored?.url ?? null);
+    const fileSize = isExternal ? null : (stored?.size ?? null);
     const vis = String(visibility || "PUBLIC").toUpperCase() === "PRIVATE" ? "PRIVATE" : "PUBLIC";
     const result = await qRun(`
-      INSERT INTO resources (title, category, description, content_url, published_at, enabled, uploader_id, file_size, version, sort_order, visibility)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, title, normalizedCategory, description || "", fileUrl, ts, enabled === "false" ? 0 : 1, req.user!.id, fileSize, version || null, Number(sortOrder) || 0, vis);
-    logAdminUpload({
-      ok: true,
-      uploadType: "resource",
-      adminId: req.user!.id,
-      username: req.user!.username,
-      filename: req.file?.originalname ?? null,
-      fileSize,
-      durationMs: Date.now() - started,
-      resourceId: Number(result.lastInsertRowid),
-      ipAddress: clientIp(req),
-    });
+      INSERT INTO resources (title, category, description, content_url, external_url, published_at, enabled, uploader_id, file_size, version, sort_order, visibility)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, title, normalizedCategory, description || "", fileUrl, external, ts, enabled === "false" ? 0 : 1, req.user!.id, fileSize, version || null, Number(sortOrder) || 0, vis);
+    if (!isExternal) {
+      logAdminUpload({
+        ok: true,
+        uploadType: "resource",
+        adminId: req.user!.id,
+        username: req.user!.username,
+        filename: req.file?.originalname ?? null,
+        fileSize,
+        durationMs: Date.now() - started,
+        resourceId: Number(result.lastInsertRowid),
+        ipAddress: clientIp(req),
+      });
+    }
     logActivitySync({
       req,
       userId: req.user!.id,
-      eventType: "resource_upload",
+      eventType: isExternal ? "resource_external_url" : "resource_upload",
       eventCategory: "resources",
-      description: `Uploaded resource "${title}"`,
+      description: isExternal
+        ? `Registered external download for resource "${title}"`
+        : `Uploaded resource "${title}"`,
       affectedObject: `resource:${result.lastInsertRowid}`,
     });
     scheduleAdminStatsRefresh();
@@ -1589,34 +1604,42 @@ router.post("/resources", extendUploadSocketTimeouts, resourceFileUpload, async 
   } catch (err) {
     cleanupTempFile(req.file);
     await rollbackStoredFile(stored);
-    logAdminUpload({
-      ok: false,
-      uploadType: "resource",
-      adminId: req.user!.id,
-      username: req.user!.username,
-      filename: req.file?.originalname ?? null,
-      fileSize: req.file?.size ?? null,
-      durationMs: Date.now() - started,
-      reason: err instanceof Error ? err.message : String(err),
-      ipAddress: clientIp(req),
-    });
+    if (!isExternal) {
+      logAdminUpload({
+        ok: false,
+        uploadType: "resource",
+        adminId: req.user!.id,
+        username: req.user!.username,
+        filename: req.file?.originalname ?? null,
+        fileSize: req.file?.size ?? null,
+        durationMs: Date.now() - started,
+        reason: err instanceof Error ? err.message : String(err),
+        ipAddress: clientIp(req),
+      });
+    }
     throw err;
   }
 });
 
 router.patch("/resources/:id", extendUploadSocketTimeouts, resourceFileUpload, async (req, res) => {
   const id = Number(req.params.id);
-  const existing = await qGet<{ content_url: string | null }>("SELECT * FROM resources WHERE id = ?", id);
+  const existing = await qGet<{
+    content_url: string | null;
+    external_url: string | null;
+    category: string;
+  }>("SELECT * FROM resources WHERE id = ?", id);
   if (!existing) {
     cleanupTempFile(req.file);
     res.status(404).json({ error: "Resource not found" });
     return;
   }
 
-  const { title, category, description, version, sortOrder, enabled, visibility } = req.body;
+  const { title, category, description, version, sortOrder, enabled, visibility, externalUrl } = req.body;
   const fields: string[] = [];
   const vals: unknown[] = [];
   if (title !== undefined) { fields.push("title = ?"); vals.push(title); }
+
+  let nextCategory = existing.category;
   if (category !== undefined) {
     const normalizedCategory = normalizeResourceCategory(category);
     if (!normalizedCategory) {
@@ -1625,6 +1648,7 @@ router.patch("/resources/:id", extendUploadSocketTimeouts, resourceFileUpload, a
       return;
     }
     fields.push("category = ?"); vals.push(normalizedCategory);
+    nextCategory = normalizedCategory;
   }
   if (description !== undefined) { fields.push("description = ?"); vals.push(description); }
   if (version !== undefined) { fields.push("version = ?"); vals.push(version); }
@@ -1634,21 +1658,47 @@ router.patch("/resources/:id", extendUploadSocketTimeouts, resourceFileUpload, a
     fields.push("visibility = ?");
     vals.push(String(visibility).toUpperCase() === "PRIVATE" ? "PRIVATE" : "PUBLIC");
   }
+
+  const isExternal = usesExternalDownload(nextCategory);
   const started = Date.now();
   let stored: PutObjectResult | null = null;
+  let replacedFile: string | null = null;
+
   try {
-    let replacedFile: string | null = null;
-    if (req.file) {
-      stored = await persistMulterFile(req.file, "resource");
-      fields.push("content_url = ?"); vals.push(stored.url);
-      fields.push("file_size = ?"); vals.push(stored.size);
-      replacedFile = existing.content_url;
+    if (isExternal) {
+      cleanupTempFile(req.file);
+      if (externalUrl !== undefined && String(externalUrl).trim() !== "") {
+        const checked = validateExternalDownloadUrl(externalUrl);
+        if (!checked.ok) {
+          res.status(400).json({ error: checked.error });
+          return;
+        }
+        fields.push("external_url = ?"); vals.push(checked.url);
+        fields.push("content_url = ?"); vals.push(null);
+        fields.push("file_size = ?"); vals.push(null);
+        replacedFile = existing.content_url;
+      } else if (!existing.external_url) {
+        res.status(400).json({ error: "External download URL is required for App resources" });
+        return;
+      }
+    } else {
+      if (usesExternalDownload(existing.category)) {
+        fields.push("external_url = ?"); vals.push(null);
+      }
+      if (req.file) {
+        stored = await persistMulterFile(req.file, "resource");
+        fields.push("content_url = ?"); vals.push(stored.url);
+        fields.push("file_size = ?"); vals.push(stored.size);
+        fields.push("external_url = ?"); vals.push(null);
+        replacedFile = existing.content_url;
+      }
     }
+
     if (!fields.length) { res.status(400).json({ error: "No fields to update" }); return; }
     vals.push(id);
     await qRun(`UPDATE resources SET ${fields.join(", ")} WHERE id = ?`, ...vals);
     if (replacedFile) await deleteStoredUrl(replacedFile);
-    if (req.file) {
+    if (req.file && !isExternal) {
       logAdminUpload({
         ok: true,
         uploadType: "resource",
@@ -1666,7 +1716,7 @@ router.patch("/resources/:id", extendUploadSocketTimeouts, resourceFileUpload, a
   } catch (err) {
     cleanupTempFile(req.file);
     await rollbackStoredFile(stored);
-    if (req.file) {
+    if (req.file && !isExternal) {
       logAdminUpload({
         ok: false,
         uploadType: "resource",
@@ -1707,6 +1757,7 @@ router.get("/game-downloads", async (_req, res) => {
       version: r.version,
       releaseNotes: r.release_notes,
       fileUrl: r.file_url,
+      externalUrl: r.external_url || null,
       fileSize: r.file_size,
       published: r.published === 1,
       publishedAt: r.published_at,
@@ -1715,58 +1766,46 @@ router.get("/game-downloads", async (_req, res) => {
   });
 });
 
-router.post("/game-downloads", extendUploadSocketTimeouts, gameFileUpload, async (req, res) => {
-  const started = Date.now();
-  const { platform, version, releaseNotes, published } = req.body;
+/** Games use external download URLs only (no backend file upload). */
+router.post("/game-downloads", async (req, res) => {
+  const { platform, version, releaseNotes, published, externalUrl } = req.body;
   if (!platform || !version) {
-    cleanupTempFile(req.file);
     res.status(400).json({ error: "Platform and version are required" });
     return;
   }
-  let stored: PutObjectResult | null = null;
-  try {
-    const ts = now();
-    if (req.file) stored = await persistMulterFile(req.file, "game");
-    const fileUrl = stored?.url ?? null;
-    const result = await qRun(`
-      INSERT INTO game_downloads (platform, version, release_notes, file_url, file_size, published, published_at, uploader_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, platform, version, releaseNotes || "", fileUrl, stored?.size ?? null, published === "true" || published === true ? 1 : 0, published === "true" || published === true ? ts : null, req.user!.id, ts, ts);
-    logAdminUpload({
-      ok: true,
-      uploadType: "game",
-      adminId: req.user!.id,
-      username: req.user!.username,
-      filename: req.file?.originalname ?? null,
-      fileSize: stored?.size ?? req.file?.size ?? null,
-      durationMs: Date.now() - started,
-      resourceId: Number(result.lastInsertRowid),
-      ipAddress: clientIp(req),
-    });
-    logActivitySync({ req, userId: req.user!.id, eventType: "game_build_upload", eventCategory: "downloads", description: `Uploaded ${platform} build v${version}`, affectedObject: `game_download:${result.lastInsertRowid}` });
-    res.status(201).json({ id: result.lastInsertRowid });
-  } catch (err) {
-    cleanupTempFile(req.file);
-    await rollbackStoredFile(stored);
-    logAdminUpload({
-      ok: false,
-      uploadType: "game",
-      adminId: req.user!.id,
-      username: req.user!.username,
-      filename: req.file?.originalname ?? null,
-      fileSize: req.file?.size ?? null,
-      durationMs: Date.now() - started,
-      reason: err instanceof Error ? err.message : String(err),
-      ipAddress: clientIp(req),
-    });
-    throw err;
+  const checked = validateExternalDownloadUrl(externalUrl);
+  if (!checked.ok) {
+    res.status(400).json({ error: checked.error });
+    return;
   }
+  const ts = now();
+  const isPub = published === "true" || published === true;
+  const result = await qRun(`
+    INSERT INTO game_downloads (platform, version, release_notes, file_url, file_size, external_url, published, published_at, uploader_id, created_at, updated_at)
+    VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?)
+  `, platform, version, releaseNotes || "", checked.url, isPub ? 1 : 0, isPub ? ts : null, req.user!.id, ts, ts);
+  logActivitySync({
+    req,
+    userId: req.user!.id,
+    eventType: "game_build_external_url",
+    eventCategory: "downloads",
+    description: `Registered external download for ${platform} build v${version}`,
+    affectedObject: `game_download:${result.lastInsertRowid}`,
+  });
+  res.status(201).json({ id: result.lastInsertRowid });
 });
 
-router.patch("/game-downloads/:id", extendUploadSocketTimeouts, gameFileUpload, async (req, res) => {
+router.patch("/game-downloads/:id", async (req, res) => {
   const id = Number(req.params.id);
-  const existing = await qGet<{ file_url: string | null }>("SELECT file_url FROM game_downloads WHERE id = ?", id);
-  const { version, releaseNotes, published } = req.body;
+  const existing = await qGet<{ file_url: string | null; external_url: string | null }>(
+    "SELECT file_url, external_url FROM game_downloads WHERE id = ?",
+    id,
+  );
+  if (!existing) {
+    res.status(404).json({ error: "Game build not found" });
+    return;
+  }
+  const { version, releaseNotes, published, externalUrl } = req.body;
   const fields: string[] = ["updated_at = ?"];
   const vals: unknown[] = [now()];
   if (version !== undefined) { fields.push("version = ?"); vals.push(version); }
@@ -1776,53 +1815,38 @@ router.patch("/game-downloads/:id", extendUploadSocketTimeouts, gameFileUpload, 
     fields.push("published = ?"); vals.push(isPub ? 1 : 0);
     fields.push("published_at = ?"); vals.push(isPub ? now() : null);
   }
-  const started = Date.now();
-  let stored: PutObjectResult | null = null;
-  try {
-    let replacedFile: string | null = null;
-    if (req.file) {
-      stored = await persistMulterFile(req.file, "game");
-      fields.push("file_url = ?"); vals.push(stored.url);
-      fields.push("file_size = ?"); vals.push(stored.size);
-      replacedFile = existing?.file_url ?? null;
+
+  let replacedFile: string | null = null;
+  if (externalUrl !== undefined) {
+    const checked = validateExternalDownloadUrl(externalUrl);
+    if (!checked.ok) {
+      res.status(400).json({ error: checked.error });
+      return;
     }
-    vals.push(id);
-    await qRun(`UPDATE game_downloads SET ${fields.join(", ")} WHERE id = ?`, ...vals);
-    if (replacedFile) await deleteStoredUrl(replacedFile);
-    if (req.file) {
-      logAdminUpload({
-        ok: true,
-        uploadType: "game",
-        adminId: req.user!.id,
-        username: req.user!.username,
-        filename: req.file.originalname,
-        fileSize: req.file.size,
-        durationMs: Date.now() - started,
-        resourceId: id,
-        ipAddress: clientIp(req),
-      });
-    }
-    logActivitySync({ req, userId: req.user!.id, eventType: "game_build_update", eventCategory: "downloads", description: `Updated game build #${id}`, affectedObject: `game_download:${id}` });
-    res.json({ ok: true });
-  } catch (err) {
-    cleanupTempFile(req.file);
-    await rollbackStoredFile(stored);
-    if (req.file) {
-      logAdminUpload({
-        ok: false,
-        uploadType: "game",
-        adminId: req.user!.id,
-        username: req.user!.username,
-        filename: req.file.originalname,
-        fileSize: req.file.size,
-        durationMs: Date.now() - started,
-        reason: err instanceof Error ? err.message : String(err),
-        resourceId: id,
-        ipAddress: clientIp(req),
-      });
-    }
-    throw err;
+    fields.push("external_url = ?"); vals.push(checked.url);
+    fields.push("file_url = ?"); vals.push(null);
+    fields.push("file_size = ?"); vals.push(null);
+    replacedFile = existing.file_url;
+  } else if (!existing.external_url && !existing.file_url) {
+    res.status(400).json({ error: "External download URL is required" });
+    return;
+  } else if (!existing.external_url && existing.file_url) {
+    res.status(400).json({ error: "External download URL is required for game builds" });
+    return;
   }
+
+  vals.push(id);
+  await qRun(`UPDATE game_downloads SET ${fields.join(", ")} WHERE id = ?`, ...vals);
+  if (replacedFile) await deleteStoredUrl(replacedFile);
+  logActivitySync({
+    req,
+    userId: req.user!.id,
+    eventType: "game_build_update",
+    eventCategory: "downloads",
+    description: `Updated game build #${id}`,
+    affectedObject: `game_download:${id}`,
+  });
+  res.json({ ok: true });
 });
 
 router.delete("/game-downloads/:id", async (req, res) => {

@@ -9,7 +9,8 @@ import { migration008 } from "./008_link_file_access_geo.js";
 import { migration009 } from "./009_channel_sort_order.js";
 import { migration010 } from "./010_user_mood.js";
 import { migration011 } from "./011_participant_hidden_at.js";
+import { migration012 } from "./012_external_download_urls.js";
 
-export const allMigrations = [migration001, migration002, migration003, migration004, migration005, migration006, migration007, migration008, migration009, migration010, migration011];
+export const allMigrations = [migration001, migration002, migration003, migration004, migration005, migration006, migration007, migration008, migration009, migration010, migration011, migration012];
 
 export { runVersionedMigrations } from "./runner.js";

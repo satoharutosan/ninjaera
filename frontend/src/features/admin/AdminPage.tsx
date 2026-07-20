@@ -57,6 +57,12 @@ import {
 import { validateUsernameClient, USERNAME_TAKEN_ERROR } from "@/shared/username";
 import { RESOURCE_CATEGORIES } from "@/shared/resourceCategories";
 import {
+  formatGameFileSize,
+  gameSizeToFormFields,
+  parseGameFileSizeInput,
+  type GameFileSizeUnit,
+} from "@/shared/gameFileSize";
+import {
   canAccessAdminSection,
   canManageTargetUser,
   canSelectTargetUser,
@@ -150,7 +156,10 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
   const [resourceUploadBytes, setResourceUploadBytes] = useState<{ loaded: number; total: number } | null>(null);
 
   const [gameBuilds, setGameBuilds] = useState<AdminGameDownload[]>([]);
-  const [editGameBuild, setEditGameBuild] = useState<Partial<AdminGameDownload> & { platform?: string } | null>(null);
+  const [editGameBuild, setEditGameBuild] = useState<Partial<AdminGameDownload> & {
+    platform?: string;
+    fileSizeInput?: string;
+  } | null>(null);
   const [gameBuildFile, setGameBuildFile] = useState<File | null>(null);
   const [gameUploading, setGameUploading] = useState(false);
   const [gameUploadProgress, setGameUploadProgress] = useState<AdminUploadProgressState | null>(null);
@@ -555,6 +564,14 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
       toast.error("Please enter a valid URL (for example https://github.com/...)");
       return;
     }
+    const sizeParsed = parseGameFileSizeInput(
+      editGameBuild.fileSizeInput ?? "",
+      editGameBuild.fileSizeUnit || "MB",
+    );
+    if (!sizeParsed.ok) {
+      toast.error(sizeParsed.error);
+      return;
+    }
     setGameUploading(true);
     setGameUploadProgress(null);
     setGameUploadBytes(null);
@@ -565,6 +582,8 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
         releaseNotes: editGameBuild.releaseNotes || "",
         published: !!editGameBuild.published,
         externalUrl: url,
+        fileSize: sizeParsed.value,
+        fileSizeUnit: sizeParsed.unit,
       };
       if (editGameBuild.id) {
         await api.admin.updateGameDownload(editGameBuild.id, {
@@ -572,6 +591,8 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
           releaseNotes: payload.releaseNotes,
           published: payload.published,
           externalUrl: payload.externalUrl,
+          fileSize: payload.fileSize,
+          fileSizeUnit: payload.fileSizeUnit,
         });
       } else {
         await api.admin.createGameDownload(payload);
@@ -1381,7 +1402,15 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                 <div className="flex items-center justify-between mb-6">
                   <h1 className="text-2xl font-medium" style={{ color: C.onSurface, fontFamily: "Roboto" }}>Game Downloads</h1>
                   <FilledBtn onClick={() => {
-                    setEditGameBuild({ platform: "windows", version: "", releaseNotes: "", published: false, externalUrl: "" });
+                    setEditGameBuild({
+                      platform: "windows",
+                      version: "",
+                      releaseNotes: "",
+                      published: false,
+                      externalUrl: "",
+                      fileSizeInput: "",
+                      fileSizeUnit: "MB",
+                    });
                     setGameBuildFile(null);
                     setGameUploadProgress(null);
                     setGameUploadBytes(null);
@@ -1397,10 +1426,23 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                           <Chip label={`v${g.version}`} />
                           {g.published ? <Chip label="Published" color="#386A20" filled /> : <Chip label="Draft" />}
                         </div>
-                        <p className="text-xs" style={{ color: C.onSurfaceVar }}>{g.releaseNotes || "No release notes"} · {g.externalUrl ? "External URL" : g.fileSize ? `${(g.fileSize / 1048576).toFixed(1)} MB` : "No download URL"}</p>
+                        <p className="text-xs" style={{ color: C.onSurfaceVar }}>
+                          {g.releaseNotes || "No release notes"}
+                          {" · "}
+                          {formatGameFileSize(g.fileSize, g.fileSizeUnit)}
+                          {g.externalUrl ? " · External URL" : !g.fileSize ? " · No download URL" : ""}
+                        </p>
                       </div>
                       <div className="flex gap-1">
-                        <button onClick={() => { setEditGameBuild(g); setGameBuildFile(null); }} className="p-1.5 rounded-full hover:bg-black/5" style={{ color: C.primary }}><EditIcon style={{ fontSize: 16 }} /></button>
+                        <button onClick={() => {
+                          const sizeForm = gameSizeToFormFields(g.fileSize, g.fileSizeUnit);
+                          setEditGameBuild({
+                            ...g,
+                            fileSizeInput: sizeForm.fileSizeInput,
+                            fileSizeUnit: sizeForm.fileSizeUnit,
+                          });
+                          setGameBuildFile(null);
+                        }} className="p-1.5 rounded-full hover:bg-black/5" style={{ color: C.primary }}><EditIcon style={{ fontSize: 16 }} /></button>
                         <button onClick={() => setConfirm({ title: "Delete Build", body: `Delete ${g.platform} v${g.version}?`, onOk: () => handleUserAction(() => api.admin.deleteGameDownload(g.id), "Build deleted") })} className="p-1.5 rounded-full hover:bg-black/5" style={{ color: C.error }}><DeleteIcon style={{ fontSize: 16 }} /></button>
                       </div>
                     </div>
@@ -1771,6 +1813,37 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                 <p className="text-[11px] mt-1" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
                   Users download directly from this HTTPS URL (e.g. GitHub Releases). Game files are not uploaded to the server.
                 </p>
+              </div>
+              <div className="flex gap-2 items-start">
+                <div className="flex-1 min-w-0">
+                  <Field
+                    label="File Size"
+                    type="text"
+                    value={editGameBuild.fileSizeInput ?? ""}
+                    onChange={v => setEditGameBuild({
+                      ...editGameBuild,
+                      fileSizeInput: v.replace(/[^\d.]/g, "").replace(/(\..*)\./g, "$1"),
+                    })}
+                    placeholder="e.g. 500"
+                  />
+                </div>
+                <div className="relative mt-1 w-[5.5rem] shrink-0">
+                  <select
+                    value={editGameBuild.fileSizeUnit || "MB"}
+                    onChange={e => setEditGameBuild({
+                      ...editGameBuild,
+                      fileSizeUnit: e.target.value as GameFileSizeUnit,
+                    })}
+                    disabled={gameUploading}
+                    className="w-full px-3 py-3.5 rounded-[4px] border text-sm"
+                    style={{ borderColor: C.outline, color: C.onSurface, background: C.surface, fontFamily: "Roboto" }}
+                    aria-label="File size unit"
+                  >
+                    <option value="MB">MB</option>
+                    <option value="GB">GB</option>
+                  </select>
+                  <span className="absolute left-2 -top-2 px-1 text-xs" style={{ color: C.primary, background: C.surface, fontFamily: "Roboto" }}>Unit</span>
+                </div>
               </div>
               <label className="flex items-center gap-2 text-sm" style={{ color: C.onSurface, fontFamily: "Roboto" }}>
                 <input

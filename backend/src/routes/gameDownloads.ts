@@ -6,6 +6,7 @@ import { optionalAuth } from "../middleware/auth.js";
 import { logActivitySync } from "../services/activityLog.js";
 import { getStorage } from "../storage/index.js";
 import { validateExternalDownloadUrl } from "../services/externalDownloadUrl.js";
+import { gameFileSizeApiFields } from "../services/gameFileSize.js";
 
 const router = Router();
 
@@ -15,10 +16,12 @@ router.get("/game-downloads", async (_req, res) => {
   const downloads = await Promise.all(PLATFORMS.map(async platform => {
     const row = await qGet<{
       id: number; platform: string; version: string; release_notes: string;
-      file_size: number | null; published_at: string;
+      file_size: number | null; file_size_value: number | null; file_size_unit: string | null;
+      published_at: string;
       file_url: string | null; external_url: string | null;
     }>(`
-      SELECT id, platform, version, release_notes, file_size, published_at, file_url, external_url
+      SELECT id, platform, version, release_notes, file_size, file_size_value, file_size_unit,
+             published_at, file_url, external_url
       FROM game_downloads
       WHERE platform = ? AND published = 1
       ORDER BY published_at DESC, id DESC
@@ -26,13 +29,19 @@ router.get("/game-downloads", async (_req, res) => {
     `, platform);
 
     const available = !!(row?.id && (row.external_url || row.file_url));
+    const size = gameFileSizeApiFields({
+      file_size_value: row?.file_size_value,
+      file_size_unit: row?.file_size_unit,
+      file_size: row?.file_size,
+    });
     return {
       platform,
       available,
       id: row?.id ?? null,
       version: row?.version ?? null,
       releaseNotes: row?.release_notes ?? null,
-      fileSize: row?.file_size ?? null,
+      fileSize: size.fileSize,
+      fileSizeUnit: size.fileSizeUnit,
       publishedAt: row?.published_at ?? null,
     };
   }));

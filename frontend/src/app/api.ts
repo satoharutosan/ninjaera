@@ -767,6 +767,8 @@ export const api = {
       releaseNotes?: string;
       published?: boolean;
       externalUrl: string;
+      fileSize: number;
+      fileSizeUnit: "MB" | "GB";
     }) =>
       request<{ id: number }>("/admin/game-downloads", { method: "POST", body: JSON.stringify(data) }),
     updateGameDownload: (id: number, data: {
@@ -774,6 +776,8 @@ export const api = {
       releaseNotes?: string;
       published?: boolean;
       externalUrl?: string;
+      fileSize?: number;
+      fileSizeUnit?: "MB" | "GB";
     }) =>
       request<{ ok: boolean }>(`/admin/game-downloads/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
     deleteGameDownload: (id: number) => request<{ ok: boolean }>(`/admin/game-downloads/${id}`, { method: "DELETE" }),
@@ -1031,13 +1035,17 @@ export type DbConsoleColumn = {
   sensitive: boolean;
 };
 
+export type GameFileSizeUnit = "MB" | "GB";
+
 export type GameDownloadInfo = {
   platform: string;
   available: boolean;
   id: number | null;
   version: string | null;
   releaseNotes: string | null;
+  /** Admin-entered size when `fileSizeUnit` is set; otherwise legacy byte count. */
   fileSize: number | null;
+  fileSizeUnit: GameFileSizeUnit | null;
   publishedAt: string | null;
 };
 
@@ -1048,7 +1056,9 @@ export type AdminGameDownload = {
   releaseNotes: string;
   fileUrl?: string | null;
   externalUrl?: string | null;
+  /** Admin-entered size when `fileSizeUnit` is set; otherwise legacy byte count. */
   fileSize?: number;
+  fileSizeUnit?: GameFileSizeUnit | null;
   published: boolean;
   publishedAt?: string;
   uploaderName?: string;

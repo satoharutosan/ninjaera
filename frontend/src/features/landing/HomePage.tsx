@@ -61,6 +61,7 @@ import imgPvP from "@/imports/379a1912-653d-4824-8658-f27e0424fb77.webp";
 import imgCouncil from "@/imports/4360b9ce-e8c9-44c2-85fb-0ceb5225cede.webp";
 import { Page, useC, SH1, SH2, SH3, FilledBtn, Chip, OutlinedBtn } from "@/app/shared";
 import { api, type GameDownloadInfo } from "@/app/api";
+import { formatGameFileSize } from "@/shared/gameFileSize";
 import { toast } from "sonner";
 
 const PLATFORM_META: Record<string, { label: string; Icon: typeof ComputerIcon; reqs: string }> = {
@@ -68,14 +69,6 @@ const PLATFORM_META: Record<string, { label: string; Icon: typeof ComputerIcon; 
   android: { label: "Android", Icon: PhoneAndroidIcon, reqs: "Android 9.0+ · 4GB RAM" },
   ios: { label: "iOS", Icon: PhoneIphoneIcon, reqs: "iOS 15+ · iPhone 12+" },
 };
-
-function formatFileSize(bytes: number | null | undefined) {
-  if (!bytes) return "—";
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1073741824) return `${(bytes / 1048576).toFixed(1)} MB`;
-  return `${(bytes / 1073741824).toFixed(1)} GB`;
-}
 
 function formatDate(iso: string | null | undefined) {
   if (!iso) return "—";
@@ -488,7 +481,7 @@ function HomePage({ setPage, onGoToDownload }: { setPage:(p:Page)=>void; onGoToD
                   {available ? (
                     <>
                       <p className="text-xs font-medium mb-1" style={{ color:C.primary, fontFamily:"Roboto Mono,monospace" }}>v{info?.version}</p>
-                      <p className="text-xs mb-1" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>{formatFileSize(info?.fileSize)} · {formatDate(info?.publishedAt)}</p>
+                      <p className="text-xs mb-1" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>{formatGameFileSize(info?.fileSize, info?.fileSizeUnit)} · {formatDate(info?.publishedAt)}</p>
                       <p className="text-[10px] mb-5" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>{meta.reqs}</p>
                       <FilledBtn cls="w-full justify-center" onClick={() => handleGameDownload(platform, true)}><DownloadIcon style={{ fontSize:16 }} />Download</FilledBtn>
                     </>

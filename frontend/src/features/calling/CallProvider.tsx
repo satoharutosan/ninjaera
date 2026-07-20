@@ -606,9 +606,11 @@ export function CallProvider({ children }: { children: ReactNode }) {
         });
       }
       if (name === "NotAllowedError" || name === "AbortError") {
-        toast.message("Screen sharing was canceled.");
+        toast.message("Screen sharing permission was denied.");
       } else if (name === "NotSupportedError" || /not supported/i.test(msg)) {
         toast.error("Screen sharing is not supported in this browser.");
+      } else if (/establish|connection/i.test(msg)) {
+        toast.error("Unable to establish screen sharing connection.");
       } else {
         toast.error(msg || "Could not start screen sharing.");
       }
@@ -802,13 +804,13 @@ export function CallProvider({ children }: { children: ReactNode }) {
           setPeerScreenSharing(data.screenSharing);
           setRemoteBindEpoch(e => e + 1);
           if (import.meta.env.DEV) {
-            console.log("[ScreenShare] peer status", data.screenSharing, {
+            console.log("[SCREEN_SHARE] peer status", data.screenSharing, {
               remoteTrackId: peerRef.current?.getRemoteVideoTrackId(),
+              connectionState: peerRef.current?.pc.connectionState,
             });
           }
-          // No renegotiation happens for screen share anymore (pure replaceTrack),
-          // but frames can arrive slightly after the media-state signal — poll a
-          // few times so the <video> forced-rebind (bindKey) reliably repaints.
+          // replaceTrack does not fire ontrack again — bump remoteBindEpoch and
+          // refresh so Electron/Chromium re-attach <video> after resolution jumps.
           refreshRemotePreview();
           window.setTimeout(() => refreshRemotePreview(), 200);
           window.setTimeout(() => {
@@ -816,6 +818,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
             setRemoteBindEpoch(e => e + 1);
           }, 600);
           window.setTimeout(() => refreshRemotePreview(), 1200);
+          window.setTimeout(() => setRemoteBindEpoch(e => e + 1), 2000);
         }
       }),
       onRealtimeEvent<{ error: string; code?: string; callId?: string }>("call:error", ({ error, code }) => {

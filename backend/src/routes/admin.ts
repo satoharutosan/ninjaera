@@ -21,6 +21,7 @@ import {
 } from "../services/username.js";
 import { normalizeResourceCategory, RESOURCE_CATEGORY_ERROR } from "../services/resourceCategories.js";
 import { validateExternalDownloadUrl, usesExternalDownload } from "../services/externalDownloadUrl.js";
+import { parseGameFileSize, gameFileSizeApiFields } from "../services/gameFileSize.js";
 import { logActivitySync, formatPlatformLabel } from "../services/activityLog.js";
 import { emitToAdmins, emitToUser, broadcast, scheduleAdminStatsRefresh, emitConversationUpdate } from "../services/realtime.js";
 import { getAdminStatsCache, setAdminStatsCache, invalidateAdminStatsCache } from "../services/adminStatsCache.js";
@@ -1770,24 +1771,32 @@ router.get("/game-downloads", async (_req, res) => {
     ORDER BY g.platform, g.published_at DESC
   `);
   res.json({
-    downloads: rows.map(r => ({
-      id: r.id,
-      platform: r.platform,
-      version: r.version,
-      releaseNotes: r.release_notes,
-      fileUrl: r.file_url,
-      externalUrl: r.external_url || null,
-      fileSize: r.file_size,
-      published: r.published === 1,
-      publishedAt: r.published_at,
-      uploaderName: r.uploader_name,
-    })),
+    downloads: rows.map(r => {
+      const size = gameFileSizeApiFields({
+        file_size_value: r.file_size_value as number | null,
+        file_size_unit: r.file_size_unit as string | null,
+        file_size: r.file_size as number | null,
+      });
+      return {
+        id: r.id,
+        platform: r.platform,
+        version: r.version,
+        releaseNotes: r.release_notes,
+        fileUrl: r.file_url,
+        externalUrl: r.external_url || null,
+        fileSize: size.fileSize,
+        fileSizeUnit: size.fileSizeUnit,
+        published: r.published === 1,
+        publishedAt: r.published_at,
+        uploaderName: r.uploader_name,
+      };
+    }),
   });
 });
 
 /** Games use external download URLs only (no backend file upload). */
 router.post("/game-downloads", async (req, res) => {
-  const { platform, version, releaseNotes, published, externalUrl } = req.body;
+  const { platform, version, releaseNotes, published, externalUrl, fileSize, fileSizeUnit } = req.body;
   if (!platform || !version) {
     res.status(400).json({ error: "Platform and version are required" });
     return;
@@ -1797,12 +1806,20 @@ router.post("/game-downloads", async (req, res) => {
     res.status(400).json({ error: checked.error });
     return;
   }
+  const size = parseGameFileSize(fileSize, fileSizeUnit ?? "MB");
+  if (!size.ok) {
+    res.status(400).json({ error: size.error });
+    return;
+  }
   const ts = now();
   const isPub = published === "true" || published === true;
   const result = await qRun(`
-    INSERT INTO game_downloads (platform, version, release_notes, file_url, file_size, external_url, published, published_at, uploader_id, created_at, updated_at)
-    VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?)
-  `, platform, version, releaseNotes || "", checked.url, isPub ? 1 : 0, isPub ? ts : null, req.user!.id, ts, ts);
+    INSERT INTO game_downloads (
+      platform, version, release_notes, file_url, file_size, file_size_value, file_size_unit,
+      external_url, published, published_at, uploader_id, created_at, updated_at
+    )
+    VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `, platform, version, releaseNotes || "", size.bytes, size.value, size.unit, checked.url, isPub ? 1 : 0, isPub ? ts : null, req.user!.id, ts, ts);
   logActivitySync({
     req,
     userId: req.user!.id,
@@ -1824,7 +1841,7 @@ router.patch("/game-downloads/:id", async (req, res) => {
     res.status(404).json({ error: "Game build not found" });
     return;
   }
-  const { version, releaseNotes, published, externalUrl } = req.body;
+  const { version, releaseNotes, published, externalUrl, fileSize, fileSizeUnit } = req.body;
   const fields: string[] = ["updated_at = ?"];
   const vals: unknown[] = [now()];
   if (version !== undefined) { fields.push("version = ?"); vals.push(version); }
@@ -1833,6 +1850,20 @@ router.patch("/game-downloads/:id", async (req, res) => {
     const isPub = published === "true" || published === true;
     fields.push("published = ?"); vals.push(isPub ? 1 : 0);
     fields.push("published_at = ?"); vals.push(isPub ? now() : null);
+  }
+
+  if (fileSize !== undefined || fileSizeUnit !== undefined) {
+    const size = parseGameFileSize(
+      fileSize,
+      fileSizeUnit !== undefined ? fileSizeUnit : "MB",
+    );
+    if (!size.ok) {
+      res.status(400).json({ error: size.error });
+      return;
+    }
+    fields.push("file_size = ?"); vals.push(size.bytes);
+    fields.push("file_size_value = ?"); vals.push(size.value);
+    fields.push("file_size_unit = ?"); vals.push(size.unit);
   }
 
   let replacedFile: string | null = null;
@@ -1844,7 +1875,6 @@ router.patch("/game-downloads/:id", async (req, res) => {
     }
     fields.push("external_url = ?"); vals.push(checked.url);
     fields.push("file_url = ?"); vals.push(null);
-    fields.push("file_size = ?"); vals.push(null);
     replacedFile = existing.file_url;
   } else if (!existing.external_url && !existing.file_url) {
     res.status(400).json({ error: "External download URL is required" });

@@ -15,22 +15,44 @@ function webrtcLog(...args: unknown[]) {
 }
 
 function screenLog(...args: unknown[]) {
-  if (isDev) console.log("[ScreenShare]", ...args);
+  if (isDev) console.log("[SCREEN_SHARE]", ...args);
 }
 
-/** Tiny live track so voice calls still negotiate sendrecv video. */
+function trackLog(...args: unknown[]) {
+  if (isDev) console.log("[TRACK]", ...args);
+}
+
+function streamLog(...args: unknown[]) {
+  if (isDev) console.log("[STREAM]", ...args);
+}
+
+function isElectronRuntime(): boolean {
+  if (typeof navigator === "undefined") return false;
+  if (/Electron/i.test(navigator.userAgent)) return true;
+  try {
+    return !!(window as unknown as { ninja?: unknown }).ninja;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Live placeholder so voice calls still negotiate sendrecv video at a
+ * screen-share-capable resolution. A 16×16 canvas caused Chromium/Electron
+ * encoders to stick at tiny dimensions after replaceTrack(screen).
+ */
 function createPlaceholderVideoTrack(): { track: MediaStreamTrack; dispose: () => void } {
   const canvas = document.createElement("canvas");
-  canvas.width = 16;
-  canvas.height = 16;
+  canvas.width = 1280;
+  canvas.height = 720;
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("Canvas unavailable");
   const paint = () => {
     ctx.fillStyle = "#000";
-    ctx.fillRect(0, 0, 16, 16);
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
   };
   paint();
-  const stream = canvas.captureStream(5);
+  const stream = canvas.captureStream(2);
   const track = stream.getVideoTracks()[0];
   if (!track) throw new Error("No placeholder track");
   const timer = window.setInterval(paint, 500);
@@ -196,6 +218,46 @@ export class CallPeer {
     throw new Error("Video sender unavailable");
   }
 
+  /**
+   * After replaceTrack (camera ↔ screen), reset encodings so Electron/Chromium
+   * do not keep the previous tiny placeholder scale/bitrate.
+   */
+  private async tuneVideoSender(sender: RTCRtpSender, mode: "screen" | "camera") {
+    try {
+      const params = sender.getParameters();
+      if (!params.encodings || params.encodings.length === 0) {
+        params.encodings = [{}];
+      }
+      for (const enc of params.encodings) {
+        enc.scaleResolutionDownBy = 1;
+        if (mode === "screen") {
+          enc.maxFramerate = 30;
+          enc.maxBitrate = 3_000_000;
+        } else {
+          enc.maxFramerate = 30;
+          enc.maxBitrate = 1_500_000;
+        }
+      }
+      try {
+        (params as RTCRtpSendParameters & { degradationPreference?: string }).degradationPreference =
+          mode === "screen" ? "maintain-resolution" : "balanced";
+      } catch { /* */ }
+      await sender.setParameters(params);
+      webrtcLog("[ICE] setParameters", mode, params.encodings);
+    } catch (e) {
+      webrtcLog("setParameters failed", e);
+    }
+    try {
+      const keyed = sender as RTCRtpSender & { generateKeyFrame?: () => Promise<void> };
+      if (typeof keyed.generateKeyFrame === "function") {
+        await keyed.generateKeyFrame();
+        trackLog("generateKeyFrame ok", mode);
+      }
+    } catch (e) {
+      trackLog("generateKeyFrame skipped", e);
+    }
+  }
+
   private syncReceivers() {
     if (!this.mediaReady) return;
     try {
@@ -211,6 +273,12 @@ export class CallPeer {
     // Handlers refresh from buildRemoteVideoStream/buildRemoteAudioStream.
     // Pass a video-only stream so callers never bind audio into <video>.
     const video = this.buildRemoteVideoStream();
+    streamLog("emitRemote", {
+      hasVideo: !!video,
+      videoTrack: this.remoteVideo?.id?.slice(0, 12),
+      muted: this.remoteVideo?.muted,
+      readyState: this.remoteVideo?.readyState,
+    });
     this.handlers.onRemoteStream(video || new MediaStream());
   }
 
@@ -516,22 +584,34 @@ export class CallPeer {
       throw err;
     }
 
-    screenLog("Started by local user", { polite: this.polite, role: this.polite ? "answerer" : "offerer" });
+    const electron = isElectronRuntime();
+    screenLog("Started by local user", {
+      polite: this.polite,
+      role: this.polite ? "answerer" : "offerer",
+      electron,
+      connectionState: this.pc.connectionState,
+    });
 
     let display: MediaStream;
     try {
+      // Electron's desktopCapturer path is more reliable with looser constraints;
+      // strict ideal 1920×1080 has produced empty/muted tracks on some builds.
       display = await navigator.mediaDevices.getDisplayMedia({
-        video: {
-          frameRate: { ideal: 30, max: 30 },
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
-        } as MediaTrackConstraints,
+        video: electron
+          ? ({
+              frameRate: { ideal: 30, max: 30 },
+            } as MediaTrackConstraints)
+          : ({
+              frameRate: { ideal: 30, max: 30 },
+              width: { ideal: 1920 },
+              height: { ideal: 1080 },
+            } as MediaTrackConstraints),
         audio: false,
       });
     } catch (e) {
       const name = e instanceof Error ? e.name : "";
       if (name === "NotAllowedError" || name === "AbortError") {
-        const err = new Error("Screen sharing was canceled.");
+        const err = new Error("Screen sharing permission was denied.");
         (err as Error & { name: string }).name = "NotAllowedError";
         throw err;
       }
@@ -541,13 +621,27 @@ export class CallPeer {
     const track = display.getVideoTracks()[0];
     if (!track) throw new Error("No screen track");
 
-    screenLog("Track created", {
+    trackLog("Local screen track created", {
       kind: track.kind,
       id: track.id,
       readyState: track.readyState,
       enabled: track.enabled,
       muted: track.muted,
+      settings: typeof track.getSettings === "function" ? track.getSettings() : null,
     });
+
+    // Desktop capture can start muted until the first frame — wait briefly.
+    if (track.muted) {
+      await new Promise<void>((resolve) => {
+        const done = () => {
+          track.removeEventListener("unmute", done);
+          resolve();
+        };
+        track.addEventListener("unmute", done);
+        window.setTimeout(done, 1500);
+      });
+      trackLog("After unmute wait", { muted: track.muted, readyState: track.readyState });
+    }
 
     if (track.readyState !== "live") {
       try { track.stop(); } catch { /* */ }
@@ -588,11 +682,11 @@ export class CallPeer {
         signalingState: this.pc.signalingState,
         senderTrack: sender.track?.id,
       });
-      throw new Error("Could not switch to screen share.");
+      throw new Error("Unable to establish screen sharing connection.");
     }
 
     const afterId = this.findVideoSender().track?.id ?? null;
-    webrtcLog("Replacing camera track with screen track", { beforeId, afterId, screenId: track.id });
+    trackLog("Replacing camera/placeholder with screen", { beforeId, afterId, screenId: track.id });
     if (afterId !== track.id) {
       webrtcLog("ERROR: sender.track was not updated to screen track", {
         sender: afterId,
@@ -604,6 +698,7 @@ export class CallPeer {
       try { track.stop(); } catch { /* */ }
       throw new Error("Screen track was not attached to the video sender.");
     }
+    await this.tuneVideoSender(sender, "screen");
     webrtcLog("SUCCESS — video sender now carries screen track");
     // No renegotiation: the video m-line is already sendrecv on both sides.
     void this.verifySenderFrames("post-screen-share-start", track.id);
@@ -652,6 +747,7 @@ export class CallPeer {
         const sender = this.findVideoSender();
         webrtcLog("Before restore replaceTrack:", sender.track?.id);
         await sender.replaceTrack(restore);
+        await this.tuneVideoSender(sender, "camera");
         webrtcLog("After restore replaceTrack:", sender.track?.id);
         void this.verifySenderFrames("post-screen-share-stop", restore.id);
       } catch (e) {

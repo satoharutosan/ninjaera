@@ -70,26 +70,27 @@ function DeviceSelect({
  * Binds a video-only MediaStream to <video>.
  *
  * IDEMPOTENT binding: srcObject is set only when the element is not already
- * showing this exact stream/track. In the single-transceiver design the remote
- * receiver track is the SAME object across camera↔screen switches (only the
- * frames change), so the correct behaviour is to bind once and keep playing.
- * The previous code tore down (srcObject = null) and re-attached on every
- * refresh — and refresh fires many times per second — which stopped the
- * element from ever painting the incoming RTP frames (permanent black tile).
+ * showing this exact stream/track — unless `rebindToken` changes (screen-share
+ * start/stop). Electron often needs a detach/reattach after a large resolution
+ * jump on the same receiver track (replaceTrack does not fire ontrack again).
  */
 function VideoTile({
   stream,
   muted,
   label,
   videoRef: videoRefProp,
+  rebindToken = 0,
 }: {
   stream: MediaStream | null;
   muted?: boolean;
   label: string;
   videoRef?: RefObject<HTMLVideoElement | null>;
+  /** Bump to force srcObject rebind (e.g. remoteBindEpoch on screen share). */
+  rebindToken?: number;
 }) {
   const localRef = useRef<HTMLVideoElement>(null);
   const ref = videoRefProp ?? localRef;
+  const lastRebindRef = useRef(0);
   const videoTrack = stream?.getVideoTracks()[0] ?? null;
   const hasLiveVideo = !!videoTrack && videoTrack.readyState === "live";
   const trackId = videoTrack?.id ?? "none";
@@ -106,15 +107,23 @@ function VideoTile({
     const already = el.srcObject === stream
       || (el.srcObject instanceof MediaStream
         && el.srcObject.getVideoTracks()[0] === videoTrack);
+    const force = rebindToken !== lastRebindRef.current;
+    if (force) lastRebindRef.current = rebindToken;
 
-    if (!already) {
+    if (!already || force) {
+      // Detach first so Chromium/Electron reset the decoder for resolution jumps.
+      if (el.srcObject) {
+        try { el.srcObject = null; } catch { /* */ }
+      }
       el.srcObject = stream;
       if (import.meta.env.DEV) {
-        console.log("[VIDEO] stream attached", {
+        console.log("[STREAM] video attached", {
           localPreview: !!muted,
           trackId: trackId.slice(0, 12),
           mutedTrack: videoTrack.muted,
           readyState: videoTrack.readyState,
+          rebindToken,
+          force,
         });
       }
     }
@@ -125,7 +134,7 @@ function VideoTile({
     return () => {
       videoTrack.removeEventListener("unmute", play);
     };
-  }, [stream, trackId, muted, videoTrack]);
+  }, [stream, trackId, muted, videoTrack, rebindToken, ref]);
 
   if (!stream || (!hasLiveVideo && muted)) {
     return (
@@ -207,10 +216,13 @@ function ScreenReceiveWatch({
   peerSharing,
   videoElRef,
   getStats,
+  onNeedsRebind,
 }: {
   peerSharing: boolean;
   videoElRef: RefObject<HTMLVideoElement | null>;
   getStats?: () => Promise<RTCStatsReport> | undefined;
+  /** Called when RTP frames arrive but the <video> still has no real paint. */
+  onNeedsRebind?: () => void;
 }) {
   const [fail, setFail] = useState(false);
 
@@ -222,6 +234,7 @@ function ScreenReceiveWatch({
     setFail(false);
     const started = performance.now();
     let lastFrames = 0;
+    let rebound = false;
     const id = window.setInterval(async () => {
       const el = videoElRef.current;
       const w = el?.videoWidth ?? 0;
@@ -242,17 +255,24 @@ function ScreenReceiveWatch({
         if (frames > lastFrames) {
           lastFrames = frames;
           setFail(false);
-          // Frames arriving — keep watching until video element paints or timeout softens.
+          // Frames arriving but element still tiny — force a decoder rebind once.
+          if (!rebound && performance.now() - started > 2_500) {
+            rebound = true;
+            if (import.meta.env.DEV) {
+              console.log("[SCREEN_SHARE] frames received but video not painting — rebind");
+            }
+            onNeedsRebind?.();
+          }
         }
       } catch { /* */ }
-      // Longer window for TURN / slow first frames; only fail if still blank.
-      if (performance.now() - started > 12_000) {
+      // Only treat as hard failure when no inbound frames arrived at all.
+      if (performance.now() - started > 15_000) {
         if (w <= 32 && h <= 32 && lastFrames === 0) setFail(true);
         window.clearInterval(id);
       }
     }, 500);
     return () => window.clearInterval(id);
-  }, [peerSharing, videoElRef, getStats]);
+  }, [peerSharing, videoElRef, getStats, onNeedsRebind]);
 
   if (!fail || !peerSharing) return null;
   return (
@@ -411,14 +431,21 @@ export function CallOverlays() {
   const [chatUnread, setChatUnread] = useState(0);
   const [badgePulse, setBadgePulse] = useState(false);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
+  /** Extra remounts when RTP arrives but Electron/Chromium refuses to paint. */
+  const [paintKick, setPaintKick] = useState(0);
 
   // Reset chat UI when leaving a call
   useEffect(() => {
     if (call.phase !== "active" && call.phase !== "connecting") {
       setChatOpen(false);
       setChatUnread(0);
+      setPaintKick(0);
     }
   }, [call.phase]);
+
+  useEffect(() => {
+    if (!call.peerScreenSharing) setPaintKick(0);
+  }, [call.peerScreenSharing]);
 
   const closeChat = useCallback(() => setChatOpen(false), []);
   const toggleChat = useCallback(() => {
@@ -556,9 +583,11 @@ export function CallOverlays() {
           >
             {/* Remote video is always muted; audio plays via RemoteAudioSink. */}
             <VideoTile
+              key={`remote-${call.remoteBindEpoch}-${paintKick}`}
               stream={call.remoteStream}
               muted
               videoRef={remoteVideoRef}
+              rebindToken={call.remoteBindEpoch + paintKick}
               label={
                 call.phase === "connecting"
                   ? "Connecting…"
@@ -573,6 +602,7 @@ export function CallOverlays() {
               peerSharing={call.peerScreenSharing}
               videoElRef={remoteVideoRef}
               getStats={call.getPeerStats}
+              onNeedsRebind={() => setPaintKick((n) => n + 1)}
             />
             <RemoteStreamDebug
               videoElRef={remoteVideoRef}

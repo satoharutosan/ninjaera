@@ -461,6 +461,24 @@ export function CallOverlays() {
     window.setTimeout(() => setBadgePulse(false), 400);
   }, []);
 
+  // Dev-only: which gate keeps Share disabled (must stay above early returns).
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    if (call.phase !== "active" && call.phase !== "connecting") return;
+    const disabled = call.phase !== "active";
+    const reasons: string[] = [];
+    if (call.phase !== "active") reasons.push(`phase=${call.phase} (need active)`);
+    console.info("[SCREEN_SHARE] button gate", {
+      platform: getNinja() ? "electron" : "web",
+      phase: call.phase,
+      connectionState: call.connectionState,
+      screenSharing: call.screenSharing,
+      displayCapture: typeof navigator.mediaDevices?.getDisplayMedia === "function",
+      disabled,
+      disabledReason: reasons.length ? reasons.join("; ") : "none (enabled)",
+    });
+  }, [call.phase, call.connectionState, call.screenSharing]);
+
   if (call.phase === "incoming" && call.invite) {
     return (
       <div className="fixed inset-x-0 bottom-0 z-[80] flex items-center justify-center bg-black/60 p-4" style={{ top: getNinja() ? DESKTOP_CHROME_TOP : 0 }} role="dialog" aria-modal="true" aria-label="Incoming call">
@@ -557,6 +575,11 @@ export function CallOverlays() {
   const chatActive = call.phase === "active" && !!conversationId;
   const showLocalSwitch = call.screenSharing;
   const peerName = call.invite?.callerName || "Peer";
+  // Screen share must be available once the call UI is active. Do NOT gate on
+  // pc.connectionState === "connected" — Web↔Electron calls often keep A/V
+  // working while React still sees "connecting"/"new", which left the button
+  // disabled forever (regression). Sender readiness is checked inside shareScreen.
+  const screenShareDisabled = call.phase !== "active";
 
   const viewBtn = (active: boolean) => ({
     background: active ? C.primary : "rgba(0,0,0,0.5)",
@@ -683,7 +706,7 @@ export function CallOverlays() {
           <button
             type="button"
             aria-label={call.screenSharing ? "Stop sharing" : "Share screen"}
-            disabled={call.phase !== "active" || (call.connectionState !== "connected" && call.connectionState !== "completed" && !call.screenSharing)}
+            disabled={screenShareDisabled}
             onClick={() => void (call.screenSharing ? call.stopScreenShare() : call.shareScreen())}
             className="w-12 h-12 rounded-full flex items-center justify-center text-white hover:opacity-90 transition-opacity disabled:opacity-40 disabled:pointer-events-none"
             style={{ background: call.screenSharing ? C.primary : "#49454F" }}

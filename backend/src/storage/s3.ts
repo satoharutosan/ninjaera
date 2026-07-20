@@ -1,11 +1,13 @@
+import fs from "fs";
 import {
   S3Client,
-  PutObjectCommand,
   DeleteObjectCommand,
   GetObjectCommand,
 } from "@aws-sdk/client-s3";
+import { Upload } from "@aws-sdk/lib-storage";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import type { PutObjectInput, PutObjectResult, StorageProvider } from "./types.js";
+import { resolvePutBody } from "./putBody.js";
 
 export type S3StorageOptions = {
   endpoint?: string;
@@ -49,31 +51,49 @@ export function createS3Storage(opts: S3StorageOptions): StorageProvider {
     }
   }
 
+  function contentDisposition(contentType: string): string {
+    return contentType.startsWith("image/")
+      || contentType.startsWith("video/")
+      || contentType.startsWith("audio/")
+      || contentType === "application/pdf"
+      ? "inline"
+      : "attachment";
+  }
+
   return {
     provider: "s3",
     localRoot: null,
 
     async putObject(input: PutObjectInput): Promise<PutObjectResult> {
       const key = input.key.replace(/^[/\\]+/, "").replace(/\.\./g, "");
-      const buf = Buffer.isBuffer(input.body) ? input.body : Buffer.from(input.body);
-      // Prefer validated Content-Type from the upload pipeline; never trust HTML/SVG as images.
       const contentType = input.contentType || "application/octet-stream";
-      await client.send(new PutObjectCommand({
-        Bucket: opts.bucket,
-        Key: key,
-        Body: buf,
-        ContentType: contentType,
-        ContentDisposition: contentType.startsWith("image/")
-          || contentType.startsWith("video/")
-          || contentType.startsWith("audio/")
-          || contentType === "application/pdf"
-          ? "inline"
-          : "attachment",
-      }));
+      const resolved = resolvePutBody(input);
+      const size = resolved.size
+        || (input.filePath && fs.existsSync(input.filePath) ? fs.statSync(input.filePath).size : 0);
+
+      const isBuffer = Buffer.isBuffer(resolved.body) || resolved.body instanceof Uint8Array;
+      // Multipart Upload streams from disk/path without buffering the whole object.
+      const upload = new Upload({
+        client,
+        params: {
+          Bucket: opts.bucket,
+          Key: key,
+          Body: resolved.body as never,
+          ContentType: contentType,
+          ContentDisposition: contentDisposition(contentType),
+          // Only set ContentLength for in-memory bodies; streams are sized by multipart parts.
+          ...(isBuffer && size > 0 ? { ContentLength: size } : {}),
+        },
+        queueSize: 4,
+        partSize: 8 * 1024 * 1024,
+        leavePartsOnError: false,
+      });
+
+      await upload.done();
+
       // Keep app-relative URLs so private objects are not permanently public via CDN.
-      // Signed URLs are minted at download time.
       const url = `/uploads/${key}`;
-      return { url, key, size: buf.length };
+      return { url, key, size: size || 0 };
     },
 
     async deleteObject(urlOrKey: string) {
@@ -88,7 +108,6 @@ export function createS3Storage(opts: S3StorageOptions): StorageProvider {
 
     async getPublicUrl(urlOrKey: string) {
       const key = keyFromUrl(urlOrKey) || urlOrKey.replace(/^[/\\]+/, "").replace(/\.\./g, "");
-      // Prefer app-relative path; signed URLs should be used for private downloads.
       if (publicBase) return `${publicBase}/${key}`;
       return `/uploads/${key}`;
     },

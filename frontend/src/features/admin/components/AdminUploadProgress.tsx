@@ -31,6 +31,10 @@ export function AdminUploadProgress({
   const C = useC();
   const indeterminate = state.phase === "processing" || state.percent < 0;
   const value = state.phase === "processing" ? 100 : Math.max(0, Math.min(100, state.percent));
+  const bytesLabel =
+    typeof loaded === "number" && typeof total === "number" && total > 0
+      ? `${formatBytes(loaded)} / ${formatBytes(total)}`
+      : null;
   const status =
     state.phase === "processing"
       ? "Processing on server…"
@@ -51,11 +55,13 @@ export function AdminUploadProgress({
           <p className="text-sm font-medium truncate" style={{ color: C.onSurface, fontFamily: "Roboto" }}>
             {state.phase === "processing" ? "Finishing upload…" : `Uploading ${state.filename}`}
           </p>
+          {bytesLabel && state.phase === "uploading" && (
+            <p className="text-sm mt-0.5 tabular-nums" style={{ color: C.onSurface, fontFamily: "Roboto" }}>
+              {bytesLabel}
+            </p>
+          )}
           <p className="text-xs mt-0.5" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
             {status}
-            {typeof loaded === "number" && typeof total === "number" && total > 0 && state.phase === "uploading"
-              ? ` · ${formatBytes(loaded)} / ${formatBytes(total)}`
-              : null}
           </p>
         </div>
         {!indeterminate && (

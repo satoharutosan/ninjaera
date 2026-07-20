@@ -1,4 +1,9 @@
 import path from "path";
+import {
+  ADMIN_GAME_MAX_BYTES,
+  ADMIN_LINK_FILE_MAX_BYTES,
+  ADMIN_RESOURCE_MAX_BYTES,
+} from "../config/uploadLimits.js";
 
 export type UploadKind =
   | "avatar"
@@ -125,7 +130,7 @@ const RULES: Record<UploadKind, Rule> = {
       ".png", ".jpg", ".jpeg", ".webp",
       ".txt", ".json", ".unitypackage", ".assetbundle",
     ]),
-    maxBytes: 100 * 1024 * 1024,
+    maxBytes: ADMIN_RESOURCE_MAX_BYTES,
   },
   gameFile: {
     mimes: new Set([
@@ -135,7 +140,7 @@ const RULES: Record<UploadKind, Rule> = {
       "application/vnd.android.package-archive",
     ]),
     exts: new Set([".zip", ".exe", ".apk", ".dmg", ".pkg", ".msi", ".7z"]),
-    maxBytes: 500 * 1024 * 1024,
+    maxBytes: ADMIN_GAME_MAX_BYTES,
   },
   linkFile: {
     mimes: new Set([
@@ -145,7 +150,7 @@ const RULES: Record<UploadKind, Rule> = {
     ]),
     exts: new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".mp4", ".pdf"]),
     magic: [...IMAGE_MAGIC, PDF_MAGIC, MP4_MAGIC],
-    maxBytes: 100 * 1024 * 1024,
+    maxBytes: ADMIN_LINK_FILE_MAX_BYTES,
   },
 };
 

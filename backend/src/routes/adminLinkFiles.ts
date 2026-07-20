@@ -12,12 +12,13 @@ import {
   validateAlias,
   type LinkFileRow,
 } from "../services/linkFiles.js";
+import { ADMIN_LINK_FILE_MAX_BYTES } from "../config/uploadLimits.js";
 
 const router = Router();
 const now = () => new Date().toISOString();
 
 const linkUpload = createTempDiskUploader({
-  limits: { fileSize: 100 * 1024 * 1024 },
+  limits: { fileSize: ADMIN_LINK_FILE_MAX_BYTES },
   prefix: "external",
 });
 

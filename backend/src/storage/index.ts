@@ -130,17 +130,29 @@ export async function storeUploadedFile(opts: {
   const fs = await import("fs");
   const s = getStorage();
   const key = makeObjectKey(opts.prefix || "file", opts.originalname, opts.mimetype);
-  let body: Buffer;
-  if (opts.buffer) body = opts.buffer;
-  else if (opts.path) body = fs.readFileSync(opts.path);
-  else throw new Error("storeUploadedFile requires buffer or path");
 
-  const result = await s.putObject({
-    key,
-    body,
-    contentType: opts.mimetype,
-    originalName: opts.originalname,
-  });
+  // Large admin uploads arrive as a temp disk path — stream it; never readFileSync into RAM.
+  let result: PutObjectResult;
+  if (opts.path) {
+    const size = fs.statSync(opts.path).size;
+    result = await s.putObject({
+      key,
+      filePath: opts.path,
+      contentLength: size,
+      contentType: opts.mimetype,
+      originalName: opts.originalname,
+    });
+  } else if (opts.buffer) {
+    result = await s.putObject({
+      key,
+      body: opts.buffer,
+      contentLength: opts.buffer.length,
+      contentType: opts.mimetype,
+      originalName: opts.originalname,
+    });
+  } else {
+    throw new Error("storeUploadedFile requires buffer or path");
+  }
 
   await registerUploadedAsset({
     ...result,

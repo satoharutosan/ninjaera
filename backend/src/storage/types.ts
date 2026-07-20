@@ -1,11 +1,22 @@
 /** Storage provider abstraction for user-uploaded files. */
 
+import type { Readable } from "stream";
+
 export type StorageProviderName = "local" | "s3" | "cloudinary";
 
 export type PutObjectInput = {
   /** Destination key / relative path, e.g. `avatars/avatar-….webp` */
   key: string;
-  body: Buffer | Uint8Array;
+  /**
+   * Small uploads may pass a Buffer. Prefer `filePath` / `stream` for large
+   * admin game/resource files so the process never holds the whole file in RAM.
+   */
+  body?: Buffer | Uint8Array;
+  /** Absolute path on disk (multer temp) — streamed by providers. */
+  filePath?: string;
+  stream?: Readable;
+  /** Known byte length (from multer / fs.stat). Required for accurate progress & S3. */
+  contentLength?: number;
   contentType?: string;
   originalName?: string;
 };

@@ -109,8 +109,8 @@ export class ApiError extends Error {
 }
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 15000;
-/** Large admin/game/resource uploads (backend allows up to ~500MB) need far more than the JSON default. */
-const UPLOAD_REQUEST_TIMEOUT_MS = 30 * 60 * 1000;
+/** Large admin game/resource uploads — keep in sync with backend HTTP_UPLOAD_TIMEOUT_MS (default 1h). */
+const UPLOAD_REQUEST_TIMEOUT_MS = 60 * 60 * 1000;
 
 /** Real browser→API transfer progress (bytes uploaded / Content-Length). */
 export type UploadProgress = {

@@ -267,12 +267,21 @@ async function main() {
   const httpServer = http.createServer(app);
   initRealtime(httpServer, corsOrigins.join(","));
 
+  // Large admin game/resource uploads can run well past Node's 5‑minute defaults.
+  // 0 disables requestTimeout; keep headersTimeout slightly above any practical upload.
+  const uploadTimeoutMs = Number(process.env.HTTP_UPLOAD_TIMEOUT_MS) || 60 * 60 * 1000;
+  httpServer.requestTimeout = uploadTimeoutMs;
+  httpServer.headersTimeout = uploadTimeoutMs + 60_000;
+  httpServer.keepAliveTimeout = Math.max(120_000, httpServer.keepAliveTimeout || 0);
+  httpServer.setTimeout(uploadTimeoutMs);
+
   // Bind all interfaces so Railway/proxy health checks can reach the process.
   const host = process.env.HOST || "0.0.0.0";
   httpServer.listen(PORT, host, () => {
     console.log(`Ninja Era API listening on http://${host}:${PORT}`);
     console.log(`  database: ${dbAsync.provider}`);
     console.log(`  storage:  ${storage.provider}`);
+    console.log(`  http upload timeout: ${uploadTimeoutMs}ms`);
     // Email is lazy + gated by EMAIL_ENABLED — never blocks calls/WebRTC/sockets.
     void verifyMailOnStartup();
   });

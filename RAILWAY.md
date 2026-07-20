@@ -175,7 +175,7 @@ Folder layout inside Cloudinary: `avatars/`, `channels/`, `team/`, `messages/ima
 
 ### Alternative: S3 / R2
 
-Use for very large game builds that exceed Cloudinary plan limits.
+**Preferred for multi‑GB game/resource builds.** Cloudinary plan limits and chunked upload ceilings often reject very large packages. S3/R2 uses multipart streaming from the API (no full-file RAM buffer).
 
 | Variable | Notes |
 |----------|-------|
@@ -185,6 +185,20 @@ Use for very large game builds that exceed Cloudinary plan limits.
 | `S3_FORCE_PATH_STYLE` | `true` for R2/MinIO often |
 
 Local `STORAGE_PROVIDER=local` is for development only.
+
+### Large admin uploads
+
+Admin Game/Resource uploads stream through disk temp → storage (never `readFileSync` into RAM).
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `ADMIN_GAME_MAX_BYTES` | 20 GiB | Multer ceiling for game builds |
+| `ADMIN_RESOURCE_MAX_BYTES` | 5 GiB | Multer ceiling for resources |
+| `ADMIN_LINK_FILE_MAX_BYTES` | 500 MiB | Link File Management |
+| `HTTP_UPLOAD_TIMEOUT_MS` | 3600000 (1h) | Node `requestTimeout` / socket timeout |
+| `UPLOAD_TEMP_DIR` | `$UPLOAD_DIR/.tmp-uploads` or data dir | Prefer a Railway volume path, not tiny `/tmp` |
+
+**Railway edge note:** inbound request bodies must keep transferring; very slow multi‑GB uploads can still be closed by the platform edge even when Node timeouts are raised. Prefer S3/R2 and a stable admin connection for the largest builds.
 
 ## Super Admin bootstrap
 

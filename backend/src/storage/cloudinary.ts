@@ -2,15 +2,18 @@
  * Cloudinary storage provider.
  *
  * Uploads go: Browser → Backend → Cloudinary → secure HTTPS URL stored in DB.
- * No files are written to the Railway container filesystem.
+ * Large admin files use upload_large / streamed upload_stream — never Buffer the whole file.
  *
  * Folders (via makeObjectKey / prefix mapping):
  *   avatars/  channels/  team/  messages/{images,voice,video,files}/
  *   resources/  contacts/  screenshots/  temp/
  */
+import fs from "fs";
+import type { Readable } from "stream";
 import { v2 as cloudinary } from "cloudinary";
 import type { UploadApiResponse, UploadApiOptions } from "cloudinary";
 import type { PutObjectInput, PutObjectResult, StorageProvider } from "./types.js";
+import { resolvePutBody } from "./putBody.js";
 
 export type CloudinaryStorageOptions = {
   cloudName: string;
@@ -19,6 +22,10 @@ export type CloudinaryStorageOptions = {
   /** Optional folder root prefix (default: ninja-era). */
   rootFolder?: string;
 };
+
+/** Chunked uploads for files above this size (Cloudinary recommendation ~20MB). */
+const LARGE_UPLOAD_BYTES = 20 * 1024 * 1024;
+const CHUNK_SIZE = 6_000_000;
 
 function sanitizeKey(raw: string): string {
   return raw.replace(/^[/\\]+/, "").replace(/\.\./g, "").replace(/\\/g, "/");
@@ -56,7 +63,6 @@ export function parseCloudinaryRef(
     if (!u.hostname.includes("res.cloudinary.com") && !u.hostname.includes("cloudinary.com")) {
       return null;
     }
-    // Path: /{cloud}/<resource_type>/upload/[v123/][transforms/]{public_id}.{ext}
     const parts = u.pathname.replace(/^\//, "").split("/");
     const cloudIdx = parts[0] === cloudName ? 0 : parts.findIndex((p) => p === cloudName);
     if (cloudIdx < 0) return null;
@@ -64,10 +70,7 @@ export function parseCloudinaryRef(
     const uploadIdx = parts.indexOf("upload", cloudIdx);
     if (uploadIdx < 0) return null;
     let rest = parts.slice(uploadIdx + 1);
-    // Drop version token v123456
     if (rest[0] && /^v\d+$/.test(rest[0])) rest = rest.slice(1);
-    // Drop transformation segments (contain commas or underscore-heavy tokens with =)
-    // Keep it simple: if a segment looks like a transform (contains ","), skip until after.
     while (rest.length > 1 && (rest[0]!.includes(",") || /_(w|h|c|g|q|f)_/.test(rest[0]!))) {
       rest = rest.slice(1);
     }
@@ -100,6 +103,43 @@ function uploadBuffer(
   });
 }
 
+function uploadReadable(
+  readable: Readable,
+  options: UploadApiOptions,
+): Promise<UploadApiResponse> {
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(options, (err, result) => {
+      if (err || !result) {
+        reject(err || new Error("Cloudinary upload returned no result"));
+        return;
+      }
+      resolve(result);
+    });
+    readable.on("error", reject);
+    readable.pipe(stream);
+  });
+}
+
+/** Chunked upload from a disk path — required for multi‑hundred‑MB / GB files. */
+function uploadLargePath(
+  filePath: string,
+  options: UploadApiOptions,
+): Promise<UploadApiResponse> {
+  return new Promise((resolve, reject) => {
+    cloudinary.uploader.upload_large(
+      filePath,
+      { ...options, chunk_size: CHUNK_SIZE },
+      (err, result) => {
+        if (err || !result) {
+          reject(err || new Error("Cloudinary upload_large returned no result"));
+          return;
+        }
+        resolve(result);
+      },
+    );
+  });
+}
+
 export function createCloudinaryStorage(opts: CloudinaryStorageOptions): StorageProvider {
   cloudinary.config({
     cloud_name: opts.cloudName,
@@ -117,17 +157,15 @@ export function createCloudinaryStorage(opts: CloudinaryStorageOptions): Storage
 
     async putObject(input: PutObjectInput): Promise<PutObjectResult> {
       const key = sanitizeKey(input.key);
-      const buf = Buffer.isBuffer(input.body) ? input.body : Buffer.from(input.body);
       const resourceType = cloudinaryResourceType(input.contentType);
 
-      // key may already include folder path, e.g. avatars/avatar-ts-rand.webp
       const lastSlash = key.lastIndexOf("/");
       const folderPart = lastSlash >= 0 ? key.slice(0, lastSlash) : "";
       const filePart = lastSlash >= 0 ? key.slice(lastSlash + 1) : key;
       const publicIdBase = filePart.replace(/\.[a-z0-9]+$/i, "");
       const folder = [root, folderPart].filter(Boolean).join("/");
 
-      const result = await uploadBuffer(buf, {
+      const uploadOpts: UploadApiOptions = {
         folder: folder || undefined,
         public_id: publicIdBase,
         resource_type: resourceType,
@@ -135,7 +173,27 @@ export function createCloudinaryStorage(opts: CloudinaryStorageOptions): Storage
         unique_filename: false,
         use_filename: false,
         type: "upload",
-      });
+      };
+
+      let result: UploadApiResponse;
+      const sizeHint = input.contentLength
+        ?? (input.filePath && fs.existsSync(input.filePath) ? fs.statSync(input.filePath).size : 0);
+
+      if (input.filePath && fs.existsSync(input.filePath)) {
+        if (sizeHint >= LARGE_UPLOAD_BYTES) {
+          result = await uploadLargePath(input.filePath, uploadOpts);
+        } else {
+          result = await uploadReadable(fs.createReadStream(input.filePath), uploadOpts);
+        }
+      } else {
+        const resolved = resolvePutBody(input);
+        if (Buffer.isBuffer(resolved.body) || resolved.body instanceof Uint8Array) {
+          const buf = Buffer.isBuffer(resolved.body) ? resolved.body : Buffer.from(resolved.body);
+          result = await uploadBuffer(buf, uploadOpts);
+        } else {
+          result = await uploadReadable(resolved.body as Readable, uploadOpts);
+        }
+      }
 
       const publicId = result.public_id;
       const secureUrl = result.secure_url;
@@ -146,7 +204,7 @@ export function createCloudinaryStorage(opts: CloudinaryStorageOptions): Storage
       return {
         url: secureUrl,
         key: publicId,
-        size: result.bytes || buf.length,
+        size: result.bytes || sizeHint || 0,
         publicId,
         resourceType,
         originalName: input.originalName,
@@ -158,7 +216,6 @@ export function createCloudinaryStorage(opts: CloudinaryStorageOptions): Storage
       const ref = parseCloudinaryRef(urlOrKey, cloudName);
       if (!ref) return;
       try {
-        // Try known resource type first, then fall back through types (audio may be video or raw).
         const types: Array<"image" | "video" | "raw"> = [ref.resourceType, "image", "video", "raw"];
         const tried = new Set<string>();
         for (const rt of types) {

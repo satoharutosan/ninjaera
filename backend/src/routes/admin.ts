@@ -36,16 +36,53 @@ import {
   updateTableRow,
 } from "../services/adminDatabaseConsole.js";
 import { tombstoneSenderFields, DELETED_USER_DISPLAY_NAME } from "../services/deletedUser.js";
-import { deleteStoredUrl } from "../storage/index.js";
+import { deleteStoredUrl, getStorage } from "../storage/index.js";
 import { createMemoryUploader, createTempDiskUploader, cleanupTempFile, persistMulterFile } from "../storage/multerUpload.js";
 import { validateUpload } from "../services/uploadValidation.js";
+import {
+  ADMIN_GAME_MAX_BYTES,
+  ADMIN_RESOURCE_MAX_BYTES,
+  formatBytesLimit,
+} from "../config/uploadLimits.js";
 import adminLinkFileRoutes from "./adminLinkFiles.js";
 
 const router = Router();
 const now = () => new Date().toISOString();
 
-// Resources can be sizable (docs, archives); stream via a temp file, then push through storage.
-const upload = createTempDiskUploader({ limits: { fileSize: 100 * 1024 * 1024 }, prefix: "resource" });
+function logAdminUpload(event: {
+  ok: boolean;
+  uploadType: "resource" | "game";
+  adminId: number;
+  username?: string | null;
+  filename?: string | null;
+  fileSize?: number | null;
+  durationMs: number;
+  reason?: string;
+  resourceId?: number | null;
+}) {
+  const completedAt = now();
+  const startedAt = new Date(Date.now() - Math.max(0, event.durationMs)).toISOString();
+  try {
+    const provider = getStorage().provider;
+    console.info("[admin-upload]", JSON.stringify({
+      ...event,
+      storageProvider: provider,
+      startedAt,
+      completedAt,
+      status: event.ok ? "success" : "failure",
+    }));
+  } catch {
+    console.info("[admin-upload]", JSON.stringify({
+      ...event,
+      startedAt,
+      completedAt,
+      status: event.ok ? "success" : "failure",
+    }));
+  }
+}
+
+// Resources / game builds: disk-backed multer + streamed storage (no full-file RAM buffer).
+const upload = createTempDiskUploader({ limits: { fileSize: ADMIN_RESOURCE_MAX_BYTES }, prefix: "resource" });
 
 const CHANNEL_AVATAR_MAX_BYTES = 5 * 1024 * 1024;
 const CHANNEL_AVATAR_MIMES = new Set(["image/png", "image/jpeg", "image/webp"]);
@@ -96,8 +133,46 @@ function channelAvatarMiddleware(req: import("express").Request, res: import("ex
   });
 }
 
-// Game builds can reach 500MB; always stream to a temp file before pushing to storage.
-const gameUpload = createTempDiskUploader({ limits: { fileSize: 500 * 1024 * 1024 }, prefix: "game" });
+const gameUpload = createTempDiskUploader({ limits: { fileSize: ADMIN_GAME_MAX_BYTES }, prefix: "game" });
+
+/** Disable Node socket idle timeouts for long-running large-file transfers. */
+function extendUploadSocketTimeouts(
+  req: import("express").Request,
+  res: import("express").Response,
+  next: import("express").NextFunction,
+) {
+  req.setTimeout(0);
+  res.setTimeout(0);
+  next();
+}
+
+function multerSizeLimitMiddleware(
+  uploader: ReturnType<typeof createTempDiskUploader>,
+  field: string,
+  maxBytes: number,
+  label: string,
+) {
+  return (req: import("express").Request, res: import("express").Response, next: import("express").NextFunction) => {
+    uploader.single(field)(req, res, (err: unknown) => {
+      if (err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE") {
+        res.status(413).json({
+          error: `${label} exceeds the maximum size of ${formatBytesLimit(maxBytes)}.`,
+          code: "FILE_TOO_LARGE",
+          maxBytes,
+        });
+        return;
+      }
+      if (err) {
+        res.status(400).json({ error: err instanceof Error ? err.message : "Invalid upload" });
+        return;
+      }
+      next();
+    });
+  };
+}
+
+const resourceFileUpload = multerSizeLimitMiddleware(upload, "file", ADMIN_RESOURCE_MAX_BYTES, "Resource file");
+const gameFileUpload = multerSizeLimitMiddleware(gameUpload, "file", ADMIN_GAME_MAX_BYTES, "Game build");
 
 router.use(requireAuth, requireAdmin);
 router.use(adminLinkFileRoutes);
@@ -1392,7 +1467,8 @@ router.get("/resources", async (_req, res) => {
   });
 });
 
-router.post("/resources", upload.single("file"), async (req, res) => {
+router.post("/resources", extendUploadSocketTimeouts, resourceFileUpload, async (req, res) => {
+  const started = Date.now();
   const { title, category, description, version, sortOrder, enabled, visibility } = req.body;
   if (!title || !category) {
     cleanupTempFile(req.file);
@@ -1405,20 +1481,53 @@ router.post("/resources", upload.single("file"), async (req, res) => {
     res.status(400).json({ error: RESOURCE_CATEGORY_ERROR });
     return;
   }
-  const ts = now();
-  const stored = req.file ? await persistMulterFile(req.file, "resource") : null;
-  const fileUrl = stored?.url ?? null;
-  const fileSize = stored?.size ?? null;
-  const vis = String(visibility || "PUBLIC").toUpperCase() === "PRIVATE" ? "PRIVATE" : "PUBLIC";
-  const result = await qRun(`
-    INSERT INTO resources (title, category, description, content_url, published_at, enabled, uploader_id, file_size, version, sort_order, visibility)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `, title, normalizedCategory, description || "", fileUrl, ts, enabled === "false" ? 0 : 1, req.user!.id, fileSize, version || null, Number(sortOrder) || 0, vis);
-  scheduleAdminStatsRefresh();
-  res.status(201).json({ id: result.lastInsertRowid });
+  try {
+    const ts = now();
+    const stored = req.file ? await persistMulterFile(req.file, "resource") : null;
+    const fileUrl = stored?.url ?? null;
+    const fileSize = stored?.size ?? null;
+    const vis = String(visibility || "PUBLIC").toUpperCase() === "PRIVATE" ? "PRIVATE" : "PUBLIC";
+    const result = await qRun(`
+      INSERT INTO resources (title, category, description, content_url, published_at, enabled, uploader_id, file_size, version, sort_order, visibility)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, title, normalizedCategory, description || "", fileUrl, ts, enabled === "false" ? 0 : 1, req.user!.id, fileSize, version || null, Number(sortOrder) || 0, vis);
+    logAdminUpload({
+      ok: true,
+      uploadType: "resource",
+      adminId: req.user!.id,
+      username: req.user!.username,
+      filename: req.file?.originalname ?? null,
+      fileSize,
+      durationMs: Date.now() - started,
+      resourceId: Number(result.lastInsertRowid),
+    });
+    logActivitySync({
+      req,
+      userId: req.user!.id,
+      eventType: "resource_upload",
+      eventCategory: "resources",
+      description: `Uploaded resource "${title}"`,
+      affectedObject: `resource:${result.lastInsertRowid}`,
+    });
+    scheduleAdminStatsRefresh();
+    res.status(201).json({ id: result.lastInsertRowid });
+  } catch (err) {
+    cleanupTempFile(req.file);
+    logAdminUpload({
+      ok: false,
+      uploadType: "resource",
+      adminId: req.user!.id,
+      username: req.user!.username,
+      filename: req.file?.originalname ?? null,
+      fileSize: req.file?.size ?? null,
+      durationMs: Date.now() - started,
+      reason: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
+  }
 });
 
-router.patch("/resources/:id", upload.single("file"), async (req, res) => {
+router.patch("/resources/:id", extendUploadSocketTimeouts, resourceFileUpload, async (req, res) => {
   const id = Number(req.params.id);
   const existing = await qGet<{ content_url: string | null }>("SELECT * FROM resources WHERE id = ?", id);
   if (!existing) {
@@ -1448,19 +1557,50 @@ router.patch("/resources/:id", upload.single("file"), async (req, res) => {
     fields.push("visibility = ?");
     vals.push(String(visibility).toUpperCase() === "PRIVATE" ? "PRIVATE" : "PUBLIC");
   }
-  let replacedFile: string | null = null;
-  if (req.file) {
-    const stored = await persistMulterFile(req.file, "resource");
-    fields.push("content_url = ?"); vals.push(stored.url);
-    fields.push("file_size = ?"); vals.push(stored.size);
-    replacedFile = existing.content_url;
+  const started = Date.now();
+  try {
+    let replacedFile: string | null = null;
+    if (req.file) {
+      const stored = await persistMulterFile(req.file, "resource");
+      fields.push("content_url = ?"); vals.push(stored.url);
+      fields.push("file_size = ?"); vals.push(stored.size);
+      replacedFile = existing.content_url;
+    }
+    if (!fields.length) { res.status(400).json({ error: "No fields to update" }); return; }
+    vals.push(id);
+    await qRun(`UPDATE resources SET ${fields.join(", ")} WHERE id = ?`, ...vals);
+    if (replacedFile) await deleteStoredUrl(replacedFile);
+    if (req.file) {
+      logAdminUpload({
+        ok: true,
+        uploadType: "resource",
+        adminId: req.user!.id,
+        username: req.user!.username,
+        filename: req.file.originalname,
+        fileSize: req.file.size,
+        durationMs: Date.now() - started,
+        resourceId: id,
+      });
+    }
+    scheduleAdminStatsRefresh();
+    res.json({ ok: true });
+  } catch (err) {
+    cleanupTempFile(req.file);
+    if (req.file) {
+      logAdminUpload({
+        ok: false,
+        uploadType: "resource",
+        adminId: req.user!.id,
+        username: req.user!.username,
+        filename: req.file.originalname,
+        fileSize: req.file.size,
+        durationMs: Date.now() - started,
+        reason: err instanceof Error ? err.message : String(err),
+        resourceId: id,
+      });
+    }
+    throw err;
   }
-  if (!fields.length) { res.status(400).json({ error: "No fields to update" }); return; }
-  vals.push(id);
-  await qRun(`UPDATE resources SET ${fields.join(", ")} WHERE id = ?`, ...vals);
-  if (replacedFile) await deleteStoredUrl(replacedFile);
-  scheduleAdminStatsRefresh();
-  res.json({ ok: true });
 });
 
 router.delete("/resources/:id", async (req, res) => {
@@ -1494,25 +1634,51 @@ router.get("/game-downloads", async (_req, res) => {
   });
 });
 
-router.post("/game-downloads", gameUpload.single("file"), async (req, res) => {
+router.post("/game-downloads", extendUploadSocketTimeouts, gameFileUpload, async (req, res) => {
+  const started = Date.now();
   const { platform, version, releaseNotes, published } = req.body;
   if (!platform || !version) {
     cleanupTempFile(req.file);
     res.status(400).json({ error: "Platform and version are required" });
     return;
   }
-  const ts = now();
-  const stored = req.file ? await persistMulterFile(req.file, "game") : null;
-  const fileUrl = stored?.url ?? null;
-  const result = await qRun(`
-    INSERT INTO game_downloads (platform, version, release_notes, file_url, file_size, published, published_at, uploader_id, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `, platform, version, releaseNotes || "", fileUrl, stored?.size ?? null, published === "true" || published === true ? 1 : 0, published === "true" || published === true ? ts : null, req.user!.id, ts, ts);
-  logActivitySync({ req, userId: req.user!.id, eventType: "game_build_upload", eventCategory: "downloads", description: `Uploaded ${platform} build v${version}`, affectedObject: `game_download:${result.lastInsertRowid}` });
-  res.status(201).json({ id: result.lastInsertRowid });
+  try {
+    const ts = now();
+    const stored = req.file ? await persistMulterFile(req.file, "game") : null;
+    const fileUrl = stored?.url ?? null;
+    const result = await qRun(`
+      INSERT INTO game_downloads (platform, version, release_notes, file_url, file_size, published, published_at, uploader_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, platform, version, releaseNotes || "", fileUrl, stored?.size ?? null, published === "true" || published === true ? 1 : 0, published === "true" || published === true ? ts : null, req.user!.id, ts, ts);
+    logAdminUpload({
+      ok: true,
+      uploadType: "game",
+      adminId: req.user!.id,
+      username: req.user!.username,
+      filename: req.file?.originalname ?? null,
+      fileSize: stored?.size ?? req.file?.size ?? null,
+      durationMs: Date.now() - started,
+      resourceId: Number(result.lastInsertRowid),
+    });
+    logActivitySync({ req, userId: req.user!.id, eventType: "game_build_upload", eventCategory: "downloads", description: `Uploaded ${platform} build v${version}`, affectedObject: `game_download:${result.lastInsertRowid}` });
+    res.status(201).json({ id: result.lastInsertRowid });
+  } catch (err) {
+    cleanupTempFile(req.file);
+    logAdminUpload({
+      ok: false,
+      uploadType: "game",
+      adminId: req.user!.id,
+      username: req.user!.username,
+      filename: req.file?.originalname ?? null,
+      fileSize: req.file?.size ?? null,
+      durationMs: Date.now() - started,
+      reason: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
+  }
 });
 
-router.patch("/game-downloads/:id", gameUpload.single("file"), async (req, res) => {
+router.patch("/game-downloads/:id", extendUploadSocketTimeouts, gameFileUpload, async (req, res) => {
   const id = Number(req.params.id);
   const existing = await qGet<{ file_url: string | null }>("SELECT file_url FROM game_downloads WHERE id = ?", id);
   const { version, releaseNotes, published } = req.body;
@@ -1525,18 +1691,49 @@ router.patch("/game-downloads/:id", gameUpload.single("file"), async (req, res) 
     fields.push("published = ?"); vals.push(isPub ? 1 : 0);
     fields.push("published_at = ?"); vals.push(isPub ? now() : null);
   }
-  let replacedFile: string | null = null;
-  if (req.file) {
-    const stored = await persistMulterFile(req.file, "game");
-    fields.push("file_url = ?"); vals.push(stored.url);
-    fields.push("file_size = ?"); vals.push(stored.size);
-    replacedFile = existing?.file_url ?? null;
+  const started = Date.now();
+  try {
+    let replacedFile: string | null = null;
+    if (req.file) {
+      const stored = await persistMulterFile(req.file, "game");
+      fields.push("file_url = ?"); vals.push(stored.url);
+      fields.push("file_size = ?"); vals.push(stored.size);
+      replacedFile = existing?.file_url ?? null;
+    }
+    vals.push(id);
+    await qRun(`UPDATE game_downloads SET ${fields.join(", ")} WHERE id = ?`, ...vals);
+    if (replacedFile) await deleteStoredUrl(replacedFile);
+    if (req.file) {
+      logAdminUpload({
+        ok: true,
+        uploadType: "game",
+        adminId: req.user!.id,
+        username: req.user!.username,
+        filename: req.file.originalname,
+        fileSize: req.file.size,
+        durationMs: Date.now() - started,
+        resourceId: id,
+      });
+    }
+    logActivitySync({ req, userId: req.user!.id, eventType: "game_build_update", eventCategory: "downloads", description: `Updated game build #${id}`, affectedObject: `game_download:${id}` });
+    res.json({ ok: true });
+  } catch (err) {
+    cleanupTempFile(req.file);
+    if (req.file) {
+      logAdminUpload({
+        ok: false,
+        uploadType: "game",
+        adminId: req.user!.id,
+        username: req.user!.username,
+        filename: req.file.originalname,
+        fileSize: req.file.size,
+        durationMs: Date.now() - started,
+        reason: err instanceof Error ? err.message : String(err),
+        resourceId: id,
+      });
+    }
+    throw err;
   }
-  vals.push(id);
-  await qRun(`UPDATE game_downloads SET ${fields.join(", ")} WHERE id = ?`, ...vals);
-  if (replacedFile) await deleteStoredUrl(replacedFile);
-  logActivitySync({ req, userId: req.user!.id, eventType: "game_build_update", eventCategory: "downloads", description: `Updated game build #${id}`, affectedObject: `game_download:${id}` });
-  res.json({ ok: true });
 });
 
 router.delete("/game-downloads/:id", async (req, res) => {

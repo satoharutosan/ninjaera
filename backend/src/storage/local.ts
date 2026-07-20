@@ -1,6 +1,9 @@
 import fs from "fs";
 import path from "path";
+import { pipeline } from "stream/promises";
+import type { Readable } from "stream";
 import type { PutObjectInput, PutObjectResult, StorageProvider } from "./types.js";
+import { resolvePutBody } from "./putBody.js";
 
 export type LocalStorageOptions = {
   rootDir: string;
@@ -50,9 +53,24 @@ export function createLocalStorage(opts: LocalStorageOptions): StorageProvider {
       if (!dest) throw new Error("Invalid storage key");
       const dir = path.dirname(dest);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      const buf = Buffer.isBuffer(input.body) ? input.body : Buffer.from(input.body);
-      fs.writeFileSync(dest, buf);
-      return { url: `${prefix}/${key.replace(/\\/g, "/")}`, key, size: buf.length };
+
+      // Same-volume copy avoids buffering multi‑GB files in Node heap.
+      if (input.filePath && fs.existsSync(input.filePath)) {
+        await fs.promises.copyFile(input.filePath, dest);
+        const size = input.contentLength ?? (await fs.promises.stat(dest)).size;
+        return { url: `${prefix}/${key.replace(/\\/g, "/")}`, key, size };
+      }
+
+      const resolved = resolvePutBody(input);
+      if (Buffer.isBuffer(resolved.body) || resolved.body instanceof Uint8Array) {
+        const buf = Buffer.isBuffer(resolved.body) ? resolved.body : Buffer.from(resolved.body);
+        await fs.promises.writeFile(dest, buf);
+        return { url: `${prefix}/${key.replace(/\\/g, "/")}`, key, size: buf.length };
+      }
+
+      await pipeline(resolved.body as Readable, fs.createWriteStream(dest));
+      const size = input.contentLength ?? (await fs.promises.stat(dest)).size;
+      return { url: `${prefix}/${key.replace(/\\/g, "/")}`, key, size };
     },
 
     async deleteObject(urlOrKey: string) {

@@ -683,8 +683,9 @@ export function CallOverlays() {
           <button
             type="button"
             aria-label={call.screenSharing ? "Stop sharing" : "Share screen"}
+            disabled={call.phase !== "active" || (call.connectionState !== "connected" && call.connectionState !== "completed" && !call.screenSharing)}
             onClick={() => void (call.screenSharing ? call.stopScreenShare() : call.shareScreen())}
-            className="w-12 h-12 rounded-full flex items-center justify-center text-white hover:opacity-90 transition-opacity"
+            className="w-12 h-12 rounded-full flex items-center justify-center text-white hover:opacity-90 transition-opacity disabled:opacity-40 disabled:pointer-events-none"
             style={{ background: call.screenSharing ? C.primary : "#49454F" }}
           >
             {call.screenSharing ? <StopScreenShareIcon /> : <ScreenShareIcon />}

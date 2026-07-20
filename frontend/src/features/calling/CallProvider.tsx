@@ -579,6 +579,11 @@ export function CallProvider({ children }: { children: ReactNode }) {
       toast.error("Call is not connected yet");
       return;
     }
+    if (!peer.isMediaReady()) {
+      peer.dumpMediaTopology("share-blocked-not-ready");
+      toast.message("Wait until the call is fully connected before sharing your screen.");
+      return;
+    }
     try {
       await peer.startScreenShare();
       setScreenSharing(true);
@@ -603,12 +608,16 @@ export function CallProvider({ children }: { children: ReactNode }) {
           msg,
           connectionState: peer.pc.connectionState,
           signalingState: peer.pc.signalingState,
+          mediaReady: peer.isMediaReady(),
         });
+        peer.dumpMediaTopology("share-failed");
       }
       if (name === "NotAllowedError" || name === "AbortError") {
         toast.message("Screen sharing permission was denied.");
       } else if (name === "NotSupportedError" || /not supported/i.test(msg)) {
         toast.error("Screen sharing is not supported in this browser.");
+      } else if (/Video sender unavailable/i.test(msg)) {
+        toast.error("Video sender unavailable — wait until the call is connected, then try again.");
       } else if (/establish|connection/i.test(msg)) {
         toast.error("Unable to establish screen sharing connection.");
       } else {

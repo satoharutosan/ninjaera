@@ -203,47 +203,158 @@ export class CallPeer {
     };
   }
 
-  /** Resolve the live video RTCRtpSender — never assume getSenders()[0]. */
-  private findVideoSender(): RTCRtpSender {
-    if (!this.mediaReady) throw new Error("Video sender unavailable");
-    const byTransceiver = this.videoTransceiver.sender;
-    if (byTransceiver) return byTransceiver;
-    const found = this.pc.getSenders().find(s => s.track?.kind === "video");
-    if (found) return found;
-    const emptyVideo = this.pc.getSenders().find(s => {
-      const params = s.getParameters?.();
-      return !!params && (!s.track || s.track.kind === "video");
+  /** Dump peer media topology for diagnostics (dev). */
+  dumpMediaTopology(label: string) {
+    if (!isDev) return;
+    webrtcLog(`topology (${label})`, {
+      mediaReady: this.mediaReady,
+      polite: this.polite,
+      connectionState: this.pc.connectionState,
+      signalingState: this.pc.signalingState,
+      iceConnectionState: this.pc.iceConnectionState,
+      senders: this.pc.getSenders().map((s) => ({
+        kind: s.track?.kind ?? "null",
+        id: s.track?.id?.slice(0, 12),
+        readyState: s.track?.readyState,
+        enabled: s.track?.enabled,
+        muted: s.track?.muted,
+      })),
+      receivers: this.pc.getReceivers().map((r) => ({
+        kind: r.track?.kind,
+        id: r.track?.id?.slice(0, 12),
+        readyState: r.track?.readyState,
+        muted: r.track?.muted,
+      })),
+      transceivers: this.pc.getTransceivers().map((t) => ({
+        mid: t.mid,
+        direction: t.direction,
+        currentDirection: t.currentDirection,
+        send: t.sender.track?.kind ?? "null",
+        recv: t.receiver.track?.kind ?? "null",
+      })),
     });
-    if (emptyVideo) return emptyVideo;
+  }
+
+  /** True once audio+video m-lines exist and local tracks are attached. */
+  isMediaReady(): boolean {
+    if (this.mediaReady && this.videoTransceiver?.sender) return true;
+    return !!this.resolveVideoTransceiver()?.sender;
+  }
+
+  private resolveVideoTransceiver(): RTCRtpTransceiver | null {
+    const list = this.pc.getTransceivers();
+    return (
+      list.find((t) => t.receiver?.track?.kind === "video")
+      || list.find((t) => t.sender?.track?.kind === "video")
+      || list.find((t) => {
+        try {
+          return (t.sender.getParameters()?.codecs || []).some((c) =>
+            String(c.mimeType || "").toLowerCase().startsWith("video/"),
+          );
+        } catch {
+          return false;
+        }
+      })
+      || null
+    );
+  }
+
+  private resolveAudioTransceiver(): RTCRtpTransceiver | null {
+    const list = this.pc.getTransceivers();
+    return (
+      list.find((t) => t.receiver?.track?.kind === "audio")
+      || list.find((t) => t.sender?.track?.kind === "audio")
+      || null
+    );
+  }
+
+  /**
+   * Resolve the live video RTCRtpSender from the peer connection — never assume
+   * getSenders()[0], and recover if the cached transceiver pointer went stale.
+   */
+  private findVideoSender(): RTCRtpSender {
+    const cached = this.mediaReady ? this.videoTransceiver?.sender : null;
+    if (cached) return cached;
+
+    const tr = this.resolveVideoTransceiver();
+    if (tr?.sender) {
+      this.videoTransceiver = tr;
+      const audio = this.resolveAudioTransceiver();
+      if (audio) this.audioTransceiver = audio;
+      this.mediaReady = true;
+      return tr.sender;
+    }
+
+    const withVideoTrack = this.pc.getSenders().find((s) => s.track?.kind === "video");
+    if (withVideoTrack) return withVideoTrack;
+
+    // Negotiated video sender with track temporarily null (between replaceTrack).
+    const byCodec = this.pc.getSenders().find((s) => {
+      try {
+        return (s.getParameters()?.codecs || []).some((c) =>
+          String(c.mimeType || "").toLowerCase().startsWith("video/"),
+        );
+      } catch {
+        return false;
+      }
+    });
+    if (byCodec) return byCodec;
+
+    this.dumpMediaTopology("video-sender-missing");
     throw new Error("Video sender unavailable");
   }
 
   /**
-   * After replaceTrack (camera ↔ screen), reset encodings so Electron/Chromium
-   * do not keep the previous tiny placeholder scale/bitrate.
+   * Ensure the video pipeline is ready before opening the screen picker.
+   * Callee may still be waiting on the offer — attach if m-lines already exist.
+   */
+  private async ensureVideoSenderReady(): Promise<RTCRtpSender> {
+    if (this.polite && !this.mediaReady) {
+      const videoT = this.resolveVideoTransceiver();
+      if (videoT) {
+        await this.ensureLocalAttached();
+      }
+    }
+    if (!this.isMediaReady()) {
+      this.dumpMediaTopology("ensure-video-sender-not-ready");
+      throw new Error(
+        "Video sender unavailable — wait until the call is fully connected before sharing your screen.",
+      );
+    }
+    try {
+      if (this.videoTransceiver) this.videoTransceiver.direction = "sendrecv";
+    } catch { /* */ }
+    return this.findVideoSender();
+  }
+
+  /**
+   * After replaceTrack (camera ↔ screen), retune EXISTING encodings only.
+   * Never add encodings after negotiation — that InvalidModificationError can
+   * leave the sender in a broken state on Chromium/Electron.
    */
   private async tuneVideoSender(sender: RTCRtpSender, mode: "screen" | "camera") {
     try {
       const params = sender.getParameters();
       if (!params.encodings || params.encodings.length === 0) {
-        params.encodings = [{}];
-      }
-      for (const enc of params.encodings) {
-        enc.scaleResolutionDownBy = 1;
-        if (mode === "screen") {
-          enc.maxFramerate = 30;
-          enc.maxBitrate = 3_000_000;
-        } else {
-          enc.maxFramerate = 30;
-          enc.maxBitrate = 1_500_000;
+        webrtcLog("setParameters skipped — no negotiated encodings", mode);
+      } else {
+        for (const enc of params.encodings) {
+          enc.scaleResolutionDownBy = 1;
+          if (mode === "screen") {
+            enc.maxFramerate = 30;
+            enc.maxBitrate = 3_000_000;
+          } else {
+            enc.maxFramerate = 30;
+            enc.maxBitrate = 1_500_000;
+          }
         }
+        try {
+          (params as RTCRtpSendParameters & { degradationPreference?: string }).degradationPreference =
+            mode === "screen" ? "maintain-resolution" : "balanced";
+        } catch { /* */ }
+        await sender.setParameters(params);
+        webrtcLog("setParameters ok", mode, params.encodings);
       }
-      try {
-        (params as RTCRtpSendParameters & { degradationPreference?: string }).degradationPreference =
-          mode === "screen" ? "maintain-resolution" : "balanced";
-      } catch { /* */ }
-      await sender.setParameters(params);
-      webrtcLog("[ICE] setParameters", mode, params.encodings);
     } catch (e) {
       webrtcLog("setParameters failed", e);
     }
@@ -255,6 +366,27 @@ export class CallPeer {
       }
     } catch (e) {
       trackLog("generateKeyFrame skipped", e);
+    }
+  }
+
+  /** Offerer or polite peer may force an offer when replaceTrack alone does not send frames. */
+  private async renegotiateForScreen(reason: string) {
+    if (this.closed) return;
+    if (this.makingOffer || this.pc.signalingState !== "stable") {
+      webrtcLog("renegotiate deferred", { reason, signalingState: this.pc.signalingState });
+      return;
+    }
+    try {
+      this.makingOffer = true;
+      webrtcLog("renegotiate for screen share", { reason, polite: this.polite });
+      await this.pc.setLocalDescription();
+      if (this.pc.localDescription) {
+        this.handlers.onSignal({ kind: "offer", sdp: this.pc.localDescription });
+      }
+    } catch (e) {
+      webrtcLog("renegotiate failed", e);
+    } finally {
+      this.makingOffer = false;
     }
   }
 
@@ -292,22 +424,28 @@ export class CallPeer {
   }
 
   /** Verifies RTP is actually flowing on the video sender after replaceTrack. */
-  private async verifySenderFrames(label: string, expectTrackId: string) {
-    if (this.closed) return;
+  private async verifySenderFrames(label: string, expectTrackId: string): Promise<number> {
+    if (this.closed) return 0;
     try {
-      await new Promise(r => window.setTimeout(r, 700));
+      await new Promise((r) => window.setTimeout(r, 800));
+      let frames = 0;
       const stats = await this.pc.getStats();
       stats.forEach((r) => {
         if (r.type === "outbound-rtp" && (r as { kind?: string }).kind === "video") {
-          const o = r as unknown as { framesSent?: number; bytesSent?: number };
+          const o = r as unknown as { framesSent?: number; bytesSent?: number; frameWidth?: number; frameHeight?: number };
+          frames = Math.max(frames, o.framesSent || 0);
           webrtcLog(`[frames sending] ${label}`, {
             trackId: expectTrackId.slice(0, 12),
             framesSent: o.framesSent,
             bytesSent: o.bytesSent,
+            size: `${o.frameWidth || 0}x${o.frameHeight || 0}`,
           });
         }
       });
-    } catch { /* */ }
+      return frames;
+    } catch {
+      return 0;
+    }
   }
 
   private async logVideoStats(label: string) {
@@ -395,6 +533,7 @@ export class CallPeer {
         withVideo,
         video: this.getVideoDirection(),
       });
+      this.dumpMediaTopology("caller-ready");
     } else {
       // Callee attaches these onto the offer's transceivers in ensureLocalAttached.
       webrtcLog("Callee local tracks captured (await offer)", {
@@ -412,14 +551,17 @@ export class CallPeer {
    */
   private async ensureLocalAttached() {
     if (this.mediaReady || !this.polite) return;
-    const transceivers = this.pc.getTransceivers();
-    const audioT = transceivers.find(t => t.receiver.track?.kind === "audio");
-    const videoT = transceivers.find(t => t.receiver.track?.kind === "video");
+    const audioT = this.resolveAudioTransceiver();
+    const videoT = this.resolveVideoTransceiver();
 
     if (!audioT || !videoT) {
       webrtcLog("Callee offer missing audio/video m-lines", {
-        count: transceivers.length,
-        kinds: transceivers.map(t => t.receiver.track?.kind),
+        count: this.pc.getTransceivers().length,
+        kinds: this.pc.getTransceivers().map((t) => ({
+          send: t.sender.track?.kind,
+          recv: t.receiver.track?.kind,
+          mid: t.mid,
+        })),
       });
       throw new Error("Call negotiation failed — missing media lines");
     }
@@ -440,6 +582,7 @@ export class CallPeer {
     webrtcLog("Callee attached local tracks to offer transceivers", {
       video: this.getVideoDirection(),
     });
+    this.dumpMediaTopology("callee-attached");
   }
 
   async handleSignal(signal: IceSignal) {
@@ -584,6 +727,16 @@ export class CallPeer {
       throw err;
     }
 
+    // Fail BEFORE opening the picker if the video m-line is not ready.
+    const senderBeforePicker = await this.ensureVideoSenderReady();
+    webrtcLog("Video sender found (pre-picker)", {
+      track: senderBeforePicker.track?.kind ?? "null",
+      id: senderBeforePicker.track?.id?.slice(0, 12),
+      direction: this.videoTransceiver?.direction,
+      currentDirection: this.videoTransceiver?.currentDirection,
+    });
+    this.dumpMediaTopology("pre-screen-share");
+
     const electron = isElectronRuntime();
     screenLog("Started by local user", {
       polite: this.polite,
@@ -594,13 +747,10 @@ export class CallPeer {
 
     let display: MediaStream;
     try {
-      // Electron's desktopCapturer path is more reliable with looser constraints;
-      // strict ideal 1920×1080 has produced empty/muted tracks on some builds.
+      // Electron desktopCapturer is more reliable with looser constraints.
       display = await navigator.mediaDevices.getDisplayMedia({
         video: electron
-          ? ({
-              frameRate: { ideal: 30, max: 30 },
-            } as MediaTrackConstraints)
+          ? ({ frameRate: { ideal: 30, max: 30 } } as MediaTrackConstraints)
           : ({
               frameRate: { ideal: 30, max: 30 },
               width: { ideal: 1920 },
@@ -618,8 +768,24 @@ export class CallPeer {
       throw e;
     }
 
-    const track = display.getVideoTracks()[0];
+    // Re-resolve after the picker — connection may have progressed while waiting.
+    const sender = await this.ensureVideoSenderReady();
+
+    let track = display.getVideoTracks()[0];
     if (!track) throw new Error("No screen track");
+
+    // Electron: some builds only encode reliably after cloning the capturer track.
+    if (electron) {
+      try {
+        const cloned = track.clone();
+        track.stop();
+        track = cloned;
+        display = new MediaStream([cloned]);
+        trackLog("Electron screen track cloned for sender");
+      } catch (e) {
+        trackLog("clone skipped", e);
+      }
+    }
 
     trackLog("Local screen track created", {
       kind: track.kind,
@@ -630,7 +796,6 @@ export class CallPeer {
       settings: typeof track.getSettings === "function" ? track.getSettings() : null,
     });
 
-    // Desktop capture can start muted until the first frame — wait briefly.
     if (track.muted) {
       await new Promise<void>((resolve) => {
         const done = () => {
@@ -663,9 +828,9 @@ export class CallPeer {
       } catch { /* */ }
     }
 
-    const sender = this.findVideoSender();
     const beforeId = sender.track?.id ?? null;
-    webrtcLog("Before replaceTrack:", beforeId);
+    const baselineFrames = await this.readOutboundVideoFrames();
+    webrtcLog("Before replaceTrack:", beforeId, "baselineFrames", baselineFrames);
 
     this.screenTrack = track;
     this.sendingScreen = true;
@@ -698,10 +863,25 @@ export class CallPeer {
       try { track.stop(); } catch { /* */ }
       throw new Error("Screen track was not attached to the video sender.");
     }
+
+    try {
+      this.videoTransceiver.direction = "sendrecv";
+    } catch { /* */ }
+
     await this.tuneVideoSender(sender, "screen");
     webrtcLog("SUCCESS — video sender now carries screen track");
-    // No renegotiation: the video m-line is already sendrecv on both sides.
-    void this.verifySenderFrames("post-screen-share-start", track.id);
+
+    const framesAfter = await this.verifySenderFrames("post-screen-share-start", track.id);
+    // If the encoder did not advance, renegotiate once so both peers refresh the m-line.
+    if (framesAfter <= baselineFrames) {
+      screenLog("No new outbound frames after replaceTrack — renegotiating", {
+        baselineFrames,
+        framesAfter,
+        electron,
+      });
+      await this.renegotiateForScreen("no-outbound-frames-after-replace");
+      await this.verifySenderFrames("post-screen-renegotiate", track.id);
+    }
 
     track.onended = () => {
       screenLog("Track ended (browser UI stop)");
@@ -716,7 +896,23 @@ export class CallPeer {
       currentDirection: this.videoTransceiver.currentDirection,
       connectionState: this.pc.connectionState,
     });
+    this.dumpMediaTopology("post-screen-share");
     return track;
+  }
+
+  private async readOutboundVideoFrames(): Promise<number> {
+    try {
+      let frames = 0;
+      const stats = await this.pc.getStats();
+      stats.forEach((r) => {
+        if (r.type === "outbound-rtp" && (r as { kind?: string }).kind === "video") {
+          frames = Math.max(frames, (r as { framesSent?: number }).framesSent || 0);
+        }
+      });
+      return frames;
+    } catch {
+      return 0;
+    }
   }
 
   async stopScreenShare(): Promise<void> {
@@ -837,11 +1033,17 @@ export class CallPeer {
 
   /** "direction/currentDirection" of the video transceiver for diagnostics. */
   getVideoDirection(): string {
-    if (!this.mediaReady) return "no-media";
-    const dir = this.videoTransceiver.direction;
-    const cur = this.videoTransceiver.currentDirection ?? "?";
-    const senderTrack = this.videoTransceiver.sender.track;
-    return `${dir}/${cur} send:${senderTrack ? senderTrack.kind : "none"}${senderTrack && !senderTrack.enabled ? "(off)" : ""}`;
+    if (!this.isMediaReady()) return "no-media";
+    try {
+      const tr = this.videoTransceiver || this.resolveVideoTransceiver();
+      if (!tr) return "no-video-transceiver";
+      const dir = tr.direction;
+      const cur = tr.currentDirection ?? "?";
+      const senderTrack = tr.sender.track;
+      return `${dir}/${cur} send:${senderTrack ? senderTrack.kind : "none"}${senderTrack && !senderTrack.enabled ? "(off)" : ""}`;
+    } catch {
+      return "error";
+    }
   }
 
   close() {

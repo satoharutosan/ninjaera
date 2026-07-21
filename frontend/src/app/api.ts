@@ -560,6 +560,22 @@ export const api = {
       request<{ ok: boolean }>("/contact", { method: "POST", body: JSON.stringify(data) }),
   },
 
+  /** Silent first-install ping from app landing pages (optional auth). */
+  registerAppInstallation: (data: {
+    appId: string;
+    appName?: string;
+    appVersion?: string;
+    buildVersion?: string;
+    releaseChannel?: string;
+    installationId: string;
+    platform?: string;
+    operatingSystem?: string;
+  }) =>
+    request<{ ok: boolean; duplicate?: boolean; id?: number }>("/app-installations", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
   newsletter: {
     subscribe: (email: string) =>
       request<{ ok: boolean }>("/newsletter/subscribe", { method: "POST", body: JSON.stringify({ email }) }),
@@ -796,6 +812,78 @@ export const api = {
         method: "POST",
         body: JSON.stringify({ ids }),
       }),
+    appInstallations: (params: Record<string, string>) =>
+      request<{ installations: AppInstallationRecord[]; total: number; page: number; limit: number }>(
+        `/admin/app-installations?${new URLSearchParams(params)}`,
+      ),
+    appInstallationsMeta: () =>
+      request<{ appIds: string[]; apps: { id: string; name: string }[] }>("/admin/app-installations/meta"),
+    deleteAppInstallations: (ids: number[]) =>
+      request<{ ok: boolean; deleted: number }>("/admin/app-installations/bulk-delete", {
+        method: "POST",
+        body: JSON.stringify({ ids }),
+      }),
+    deleteAppInstallation: (id: number) =>
+      request<{ ok: boolean }>(`/admin/app-installations/${id}`, { method: "DELETE" }),
+    exportAppInstallations: async (params: Record<string, string> = {}) => {
+      const token = getToken();
+      const qs = new URLSearchParams(params).toString();
+      const res = await fetch(`${API_BASE}/admin/app-installations/export${qs ? `?${qs}` : ""}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) throw new ApiError("Export failed", res.status);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "app-installations.csv";
+      a.click();
+      URL.revokeObjectURL(url);
+    },
+    desktopReleases: (params: Record<string, string>) =>
+      request<{ releases: DesktopReleaseRecord[]; total: number; page: number; limit: number }>(
+        `/admin/desktop-releases?${new URLSearchParams(params)}`,
+      ),
+    desktopReleasesMeta: () =>
+      request<{ apps: { id: string; name: string }[]; channels: string[] }>(
+        "/admin/desktop-releases/meta",
+      ),
+    createDesktopRelease: (data: {
+      appId: string;
+      version: string;
+      channel: string;
+      githubReleaseUrl: string;
+      releaseNotes?: string;
+      minSupportedVersion?: string;
+      checksum?: string;
+      publishDate?: string;
+      publish?: boolean;
+    }) =>
+      request<{ release: DesktopReleaseRecord }>("/admin/desktop-releases", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    updateDesktopRelease: (
+      id: number,
+      data: {
+        githubReleaseUrl?: string;
+        releaseNotes?: string;
+        minSupportedVersion?: string;
+        checksum?: string | null;
+        publishDate?: string;
+        channel?: string;
+      },
+    ) =>
+      request<{ release: DesktopReleaseRecord }>(`/admin/desktop-releases/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(data),
+      }),
+    publishDesktopRelease: (id: number) =>
+      request<{ release: DesktopReleaseRecord }>(`/admin/desktop-releases/${id}/publish`, { method: "POST" }),
+    unpublishDesktopRelease: (id: number) =>
+      request<{ ok: boolean }>(`/admin/desktop-releases/${id}/unpublish`, { method: "POST" }),
+    deleteDesktopRelease: (id: number) =>
+      request<{ ok: boolean }>(`/admin/desktop-releases/${id}`, { method: "DELETE" }),
     activityLogs: (params: Record<string, string>) => request<{ logs: ActivityLogEntry[]; total: number; page: number; limit: number }>(`/admin/activity-logs?${new URLSearchParams(params)}`),
     activityLogsMeta: () => request<{ eventTypes: string[]; eventCategories: string[] }>("/admin/activity-logs/meta"),
     exportActivityLogs: async () => {
@@ -1097,6 +1185,44 @@ export type AdminLinkFileAccessLog = {
   country?: string | null;
   countryCode?: string | null;
   createdAt: string;
+};
+
+export type AppInstallationRecord = {
+  id: number;
+  appId: string;
+  appName: string | null;
+  appVersion: string | null;
+  buildVersion: string | null;
+  releaseChannel: string | null;
+  installationId: string;
+  userId: number | null;
+  username: string | null;
+  userRole: string | null;
+  isAnonymous: boolean;
+  ipAddress: string | null;
+  country: string | null;
+  countryCode: string | null;
+  operatingSystem: string | null;
+  platform: string | null;
+  status: string;
+  userAgent: string | null;
+  createdAt: string;
+};
+
+export type DesktopReleaseRecord = {
+  id: number;
+  appId: string;
+  appName?: string;
+  version: string;
+  channel: string;
+  releaseNotes: string | null;
+  minSupportedVersion: string | null;
+  githubReleaseUrl: string | null;
+  checksum: string | null;
+  published: boolean;
+  publishedAt: string | null;
+  createdAt: string;
+  createdBy: number | null;
 };
 
 export type ContactTicket = {

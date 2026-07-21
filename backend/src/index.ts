@@ -30,6 +30,8 @@ import gameDownloadRoutes from "./routes/gameDownloads.js";
 import contentRoutes from "./routes/content.js";
 import externalsRoutes from "./routes/externals.js";
 import webrtcRoutes from "./routes/webrtc.js";
+import appInstallationRoutes from "./routes/appInstallations.js";
+import desktopUpdateRoutes from "./routes/desktopUpdates.js";
 import { initRealtime } from "./services/realtime.js";
 import { buildIceServers, iceConfigSummary } from "./services/webrtcIce.js";
 import { verifyMailOnStartup, mailStatus, isEmailEnabled } from "./services/mail.js";
@@ -213,6 +215,8 @@ async function main() {
   app.use("/api/contact", contactRoutes);
   app.use("/api/newsletter", newsletterRoutes);
   app.use("/api/jobs", jobRoutes);
+  app.use("/api", appInstallationRoutes);
+  app.use("/api", desktopUpdateRoutes);
   app.use("/api/admin", adminRoutes);
   app.use("/api", dmRoutes);
   app.use("/api", gameDownloadRoutes);

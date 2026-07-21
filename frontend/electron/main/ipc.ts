@@ -22,7 +22,7 @@ import {
 } from './socketManager'
 import { enqueueRead, enqueueReaction, getStatus as getQueueStatus } from './offlineQueue'
 import { showNotification } from './notifications'
-import { checkForUpdates, quitAndInstall } from './updater'
+import { checkForUpdates, quitAndInstall, setUpdaterBusyState } from './updater'
 import { startOAuth } from './oauth'
 import { getMainWindow } from './window'
 import type { NotifyPayload } from '@shared-electron/ipc'
@@ -179,6 +179,16 @@ export function registerIpc(): void {
   // ── Updater ──
   ipcMain.handle(IPC.updaterCheck, () => checkForUpdates(true))
   ipcMain.on(IPC.updaterQuitInstall, () => quitAndInstall())
+  ipcMain.on(IPC.updaterSetBusy, (_e, payload: unknown) => {
+    if (!payload || typeof payload !== 'object') return
+    const p = payload as Record<string, unknown>
+    setUpdaterBusyState({
+      inCall: !!p.inCall,
+      screenSharing: !!p.screenSharing,
+      uploading: !!p.uploading,
+      downloading: !!p.downloading,
+    })
+  })
 
   // ── OAuth ──
   ipcMain.handle(IPC.oauthStart, (event, provider) => {

@@ -68,6 +68,7 @@ import VerifyEmailPage from "@/features/auth/VerifyEmailPage";
 import ProfilePage from "@/features/profile/ProfilePage";
 import TermsOfServicePage from "@/features/landing/TermsOfServicePage";
 import PrivacyPolicyPage from "@/features/landing/PrivacyPolicyPage";
+import MessengerTermsPage from "@/features/landing/MessengerTermsPage";
 import MessagesPage from "@/features/messages/MessagesPage";
 import AdminPage from "@/features/admin/AdminPage";
 import HelpCenterPage from "@/features/landing/HelpCenterPage";
@@ -553,6 +554,7 @@ function Footer({ setPage, onGoToDownload }: { setPage:(p:Page)=>void; onGoToDow
           <div className="flex flex-wrap justify-center gap-4">
             <button type="button" onClick={() => go("terms")} className="text-xs hover:text-white transition-colors" style={{ color:"#79747E", fontFamily:"Roboto" }}>Terms of Service</button>
             <button type="button" onClick={() => go("privacy")} className="text-xs hover:text-white transition-colors" style={{ color:"#79747E", fontFamily:"Roboto" }}>Privacy Policy</button>
+            <button type="button" onClick={() => go("messenger")} className="text-xs hover:text-white transition-colors" style={{ color:"#79747E", fontFamily:"Roboto" }}>Messenger Terms</button>
             <a href="#" className="text-xs hover:text-white transition-colors" style={{ color:"#79747E", fontFamily:"Roboto" }}>Cookie Policy</a>
           </div>
         </div>
@@ -1202,6 +1204,7 @@ export default function App() {
         {page==="admin"     && loggedIn && user?.isAdmin && <AdminPage setPage={go} />}
         {page==="terms"     && <TermsOfServicePage setPage={go} />}
         {page==="privacy"   && <PrivacyPolicyPage setPage={go} />}
+        {page==="messenger" && <MessengerTermsPage setPage={go} />}
         {page==="help"      && <HelpCenterPage />}
         {page==="bugs"      && <BugReportsPage setPage={go} />}
         {page==="status"    && <ServerStatusPage />}

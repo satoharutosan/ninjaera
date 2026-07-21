@@ -77,6 +77,7 @@ export function folderForUploadPrefix(prefix: string, contentType?: string): str
   }
   if (p === "game" || p === "games") return "resources";
   if (p === "external" || p === "externals" || p === "linkfile" || p === "link-file") return "externals";
+  if (p === "desktop-update" || p === "desktopupdate" || p === "desktop-updates") return "desktop-updates";
   if (p === "temp" || p === "tmp") return "temp";
 
   if (p === "message" || p === "messages" || p === "media") {

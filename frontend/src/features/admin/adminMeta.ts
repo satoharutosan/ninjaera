@@ -11,9 +11,11 @@ import StorageIcon from "@mui/icons-material/Storage";
 import ForumIcon from "@mui/icons-material/Forum";
 import AutoStoriesIcon from "@mui/icons-material/AutoStories";
 import LinkIcon from "@mui/icons-material/Link";
+import InstallDesktopIcon from "@mui/icons-material/InstallDesktop";
+import SystemUpdateAltIcon from "@mui/icons-material/SystemUpdateAlt";
 import { api } from "@/app/api";
 
-export type Section = "dashboard" | "users" | "notifications" | "contacts" | "channels" | "applications" | "resources" | "game-downloads" | "messaging-history" | "activity-logs" | "database" | "about-our-story" | "link-file-management";
+export type Section = "dashboard" | "users" | "notifications" | "contacts" | "channels" | "applications" | "resources" | "game-downloads" | "messaging-history" | "activity-logs" | "database" | "about-our-story" | "link-file-management" | "app-installations" | "desktop-updates";
 
 export type DashboardStats = Awaited<ReturnType<typeof api.admin.stats>>;
 
@@ -59,6 +61,8 @@ export const SUPER_ADMIN_SECTIONS: { id: Section; label: string; Icon: typeof Da
   { id: "database", label: "Database", Icon: StorageIcon },
   { id: "messaging-history", label: "Messaging History", Icon: ForumIcon },
   { id: "link-file-management", label: "Link File Management", Icon: LinkIcon },
+  { id: "app-installations", label: "Application Installations", Icon: InstallDesktopIcon },
+  { id: "desktop-updates", label: "Desktop App Updates", Icon: SystemUpdateAltIcon },
 ];
 
 export const SECTIONS: { id: Section; label: string; Icon: typeof DashboardIcon }[] = [

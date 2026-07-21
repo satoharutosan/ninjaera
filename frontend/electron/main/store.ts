@@ -14,6 +14,8 @@ const SESSION_FILE = () => path.join(userDataDir(), 'ninja-session.bin')
 const USER_FILE = () => path.join(userDataDir(), 'ninja-user.json')
 const SETTINGS_FILE = () => path.join(userDataDir(), 'ninja-settings.json')
 const QUEUE_FILE = () => path.join(userDataDir(), 'ninja-queue.json')
+/** First-run / onboarding docs (Terms, etc.). Survives settings reset; cleared on clean reinstall. */
+const ONBOARDING_FILE = () => path.join(userDataDir(), 'ninja-onboarding.json')
 
 function readJson<T>(file: string, fallback: T): T {
   try {
@@ -126,4 +128,49 @@ export function readQueue<T>(): T[] {
 
 export function writeQueue<T>(items: T[]): void {
   writeJson(QUEUE_FILE(), items)
+}
+
+// ── Onboarding / first-run documents ──────────────────────────────────────────
+// Separate from settings so "Reset settings" does not re-prompt Terms after updates.
+// Cleared when userData is removed (clean reinstall).
+
+export type OnboardingDocRecord = {
+  /** Document content version last acknowledged/viewed. */
+  version: number
+  viewedAt: string
+}
+
+export type OnboardingState = {
+  /** Map of document id → last viewed version metadata. */
+  viewed: Record<string, OnboardingDocRecord>
+}
+
+let onboardingCache: OnboardingState | null = null
+
+export function getOnboardingState(): OnboardingState {
+  if (onboardingCache) return onboardingCache
+  const persisted = readJson<Partial<OnboardingState>>(ONBOARDING_FILE(), {})
+  onboardingCache = {
+    viewed:
+      persisted.viewed && typeof persisted.viewed === 'object' && !Array.isArray(persisted.viewed)
+        ? persisted.viewed
+        : {},
+  }
+  return onboardingCache
+}
+
+export function markOnboardingDocViewed(docId: string, version: number): OnboardingState {
+  const state = getOnboardingState()
+  state.viewed[docId] = { version, viewedAt: new Date().toISOString() }
+  onboardingCache = state
+  writeJson(ONBOARDING_FILE(), state)
+  return state
+}
+
+/** True when this document id has already been viewed at the given (or any) version. */
+export function hasViewedOnboardingDoc(docId: string, version?: number): boolean {
+  const record = getOnboardingState().viewed[docId]
+  if (!record) return false
+  if (version === undefined) return true
+  return record.version >= version
 }

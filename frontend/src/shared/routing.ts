@@ -3,7 +3,7 @@ import type { Page } from "@/app/shared";
 const VALID_PAGES: Page[] = [
   "home", "about", "resources", "teamwork", "contact", "login", "signup", "oauth-callback",
   "verify-email", "forgot-password", "reset-password",
-  "messages", "profile", "alarms", "admin", "terms", "privacy",
+  "messages", "profile", "alarms", "admin", "terms", "privacy", "messenger",
   "help", "bugs", "status", "patches",
 ];
 

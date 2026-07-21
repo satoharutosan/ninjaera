@@ -29,6 +29,12 @@ export const ADMIN_LINK_FILE_MAX_BYTES = envBytes(
   500 * 1024 * 1024,
 );
 
+/** Admin desktop update packages (.nupkg) — default 2 GiB */
+export const ADMIN_DESKTOP_UPDATE_MAX_BYTES = envBytes(
+  "ADMIN_DESKTOP_UPDATE_MAX_BYTES",
+  2 * 1024 * 1024 * 1024,
+);
+
 export function formatBytesLimit(bytes: number): string {
   if (bytes >= 1024 * 1024 * 1024) {
     const gb = bytes / (1024 * 1024 * 1024);

@@ -57,6 +57,7 @@ export const IPC = {
   updaterCheck: 'ninja:updater:check',
   updaterQuitInstall: 'ninja:updater:quit-install',
   updaterEvent: 'ninja:updater:event', // main -> renderer
+  updaterSetBusy: 'ninja:updater:set-busy', // renderer -> main
 
   // OAuth
   oauthStart: 'ninja:oauth:start', // returns { code } | { error }

@@ -107,6 +107,12 @@ export interface NinjaBridgeApi {
   updater: {
     check: () => Promise<void>
     quitAndInstall: () => void
+    setBusy: (state: {
+      inCall?: boolean
+      screenSharing?: boolean
+      uploading?: boolean
+      downloading?: boolean
+    }) => void
     onEvent: (handler: (e: { type: string; [k: string]: unknown }) => void) => () => void
   }
   oauth: {

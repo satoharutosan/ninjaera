@@ -73,9 +73,11 @@ export function SettingsDialog({
       else if (e.type === "available") setUpdateStatus(`Update ${e.version} available — downloading…`);
       else if (e.type === "not-available") setUpdateStatus("You are on the latest version.");
       else if (e.type === "progress") setUpdateStatus(`Downloading update… ${e.percent}%`);
-      else if (e.type === "downloaded") setUpdateStatus(`Update ${e.version} ready. Restart to install.`);
+      else if (e.type === "downloaded") setUpdateStatus(`Update ${e.version} ready — installing automatically…`);
+      else if (e.type === "install-deferred") setUpdateStatus(`Update ${e.version} ready — will install when idle…`);
+      else if (e.type === "installing") setUpdateStatus(`Installing update ${e.version} and restarting…`);
       else if (e.type === "error") setUpdateStatus(`Update error: ${String(e.message)}`);
-      else if (e.type === "dev-skip") setUpdateStatus("Updates are only checked in packaged builds.");
+      else if (e.type === "dev-skip") setUpdateStatus(String(e.message || "Updates are only checked in packaged builds."));
     });
   }, [ninja]);
 
@@ -268,12 +270,7 @@ export function SettingsDialog({
                   }}>Check for updates</SmallBtn>
                 </Row>
                 {updateStatus && (
-                  <Hint>
-                    {updateStatus}
-                    {updateStatus.includes("Restart to install") && (
-                      <button className="ml-2 underline" style={{ color: C.primary }} onClick={() => ninja?.updater.quitAndInstall()}>Restart now</button>
-                    )}
-                  </Hint>
+                  <Hint>{updateStatus}</Hint>
                 )}
                 <Row label="Restart application">
                   <SmallBtn onClick={() => ninja?.app.relaunch()}>Relaunch</SmallBtn>

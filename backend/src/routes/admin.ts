@@ -60,6 +60,8 @@ import {
   formatBytesLimit,
 } from "../config/uploadLimits.js";
 import adminLinkFileRoutes from "./adminLinkFiles.js";
+import adminAppInstallationRoutes from "./adminAppInstallations.js";
+import adminDesktopReleaseRoutes from "./adminDesktopReleases.js";
 
 const router = Router();
 const now = () => new Date().toISOString();
@@ -193,6 +195,8 @@ const resourceFileUpload = multerSizeLimitMiddleware(upload, "file", ADMIN_RESOU
 
 router.use(requireAuth, requireAdmin);
 router.use(adminLinkFileRoutes);
+router.use(adminAppInstallationRoutes);
+router.use(adminDesktopReleaseRoutes);
 
 // ── Dashboard ────────────────────────────────────────────────────────────────
 

@@ -52,10 +52,15 @@ extraResources:
     to: tray-icon.ico
   - from: build/tray-icon.png
     to: tray-icon.png
+  # First-run one-shot Internet Shortcut → opens website #/messenger, then deleted by firstRun.ts.
+  - from: resources/messenger.url
+    to: messenger.url
 
+# electron-updater generic feed is unused for package hosting.
+# Clients fetch metadata from /api/desktop-releases/latest and download installers from GitHub.
 publish:
   - provider: generic
-    url: https://ninjaera.up.railway.app/desktop-updates/
+    url: https://ninjaera.up.railway.app/api/desktop-releases/
 
 # ── Windows ──────────────────────────────────────────────────────────────────
 # Primary installer: Squirrel.Windows (Postman-style Setup.exe + splash GIF).

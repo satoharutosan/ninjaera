@@ -38,6 +38,8 @@ const REQUIRED_TABLES = [
   "newsletter_subscribers",
   "job_postings",
   "job_applications",
+  "app_installations",
+  "desktop_releases",
   "team_members",
   "resources",
   "characters",

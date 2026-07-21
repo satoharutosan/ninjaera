@@ -7,13 +7,14 @@ import { initSocketManager, connectSocket, initConnectivityWatch } from './socke
 import { initNotifications } from './notifications'
 import { initDownloads } from './downloads'
 import { setStatusSink } from './offlineQueue'
-import { initUpdater, checkForUpdates } from './updater'
+import { initUpdater, checkForUpdates, startPeriodicUpdateChecks } from './updater'
 import { getToken, getSettings } from './store'
 import { IPC } from '@shared-electron/ipc'
 import { BRAND } from './brand'
 import { BACKEND_URL, IS_PRODUCTION_BACKEND } from './config'
 import { registerDisplayMediaHandler } from './screenCapture'
 import { handleSquirrelStartup } from './squirrelStartup'
+import { runFirstRunOnboarding } from './firstRun'
 
 // Squirrel.Windows install/update/uninstall — handle and exit before bootstrapping UI.
 if (handleSquirrelStartup()) {
@@ -39,7 +40,22 @@ if (handleSquirrelStartup()) {
   if (!gotLock) {
     app.quit()
   } else {
-    app.on('second-instance', () => showMainWindow())
+    /** False until first-run Terms (if any) finish and the main window is created. */
+    let startupReady = false
+
+    app.on('second-instance', () => {
+      if (!startupReady) {
+        // Focus the Terms / onboarding window instead of creating the main UI early.
+        const existing = BrowserWindow.getAllWindows()[0]
+        if (existing && !existing.isDestroyed()) {
+          if (existing.isMinimized()) existing.restore()
+          existing.show()
+          existing.focus()
+        }
+        return
+      }
+      showMainWindow()
+    })
 
     registerAppScheme()
 
@@ -55,6 +71,7 @@ if (handleSquirrelStartup()) {
       initNotifications(
         (payload) => {
           // Restore + focus, then deep-link based on routing metadata (never text).
+          if (!startupReady) return
           showMainWindow()
           if (payload.navTarget === 'dm-requests' || payload.kind === 'dm-request') {
             broadcastToRenderer(IPC.navIntent, {
@@ -71,6 +88,7 @@ if (handleSquirrelStartup()) {
         (requestId, action) => {
           // Native Accept/Reject button: restore and let the renderer run the
           // existing DM-request workflow (single source of business logic).
+          if (!startupReady) return
           showMainWindow()
           broadcastToRenderer(IPC.navIntent, { type: 'dm-request-action', requestId, action })
         },
@@ -79,20 +97,32 @@ if (handleSquirrelStartup()) {
 
       registerIpc()
       initDownloads()
-      createMainWindow()
-      createTray()
-      initUpdater()
 
-      // Restore session: reconnect realtime immediately if a token is persisted.
-      if (getToken()) connectSocket()
+      // First launch after install: open packaged messenger.url once (browser → #/messenger),
+      // delete it, then continue. Missing file is logged and does not block startup.
+      // Onboarding flag survives updates; clean reinstall (userData cleared) can re-show.
+      void runFirstRunOnboarding()
+        .catch((err) => {
+          console.error('[ninja:onboarding] First-run flow failed; continuing startup:', err)
+        })
+        .finally(() => {
+          createMainWindow()
+          createTray()
+          initUpdater()
+          startPeriodicUpdateChecks()
+          startupReady = true
 
-      // Background update check shortly after launch (packaged only).
-      setTimeout(() => void checkForUpdates(false), 8000)
+          // Restore session: reconnect realtime immediately if a token is persisted.
+          if (getToken()) connectSocket()
 
-      app.on('activate', () => {
-        if (BrowserWindow.getAllWindows().length === 0) createMainWindow()
-        else showMainWindow()
-      })
+          // Background update check shortly after launch (packaged + production only).
+          setTimeout(() => void checkForUpdates(false), 8000)
+
+          app.on('activate', () => {
+            if (BrowserWindow.getAllWindows().length === 0) createMainWindow()
+            else showMainWindow()
+          })
+        })
     })
 
     // Keep running in the tray when all windows are closed (background messaging).

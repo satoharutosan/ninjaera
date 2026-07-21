@@ -26,7 +26,7 @@ import {
 } from "@/features/messages/activeConversationStore";
 import { getCachedUser, setCachedUser, clearAuthStorage, getStoredToken } from "@/shared/authStorage";
 import { api, setToken, ApiError, type ApiUser, type ApiNotification, type ApiMessage } from "@/app/api";
-import { CallProvider } from "@/features/calling/CallProvider";
+import { CallProvider, useCallOptional } from "@/features/calling/CallProvider";
 import { CallOverlays } from "@/features/calling/CallOverlays";
 import MessagesPage from "@/features/messages/MessagesPage";
 import { BrandLogo } from "@/shared/BrandLogo";
@@ -38,6 +38,18 @@ import { LoginScreen } from "./shell/LoginScreen";
 import { SettingsDialog } from "./shell/SettingsDialog";
 
 const ninja = getNinja();
+
+/** Report call/transfer busy state so silent updates delay restart safely. */
+function UpdaterBusyReporter() {
+  const call = useCallOptional();
+  useEffect(() => {
+    if (!ninja?.updater?.setBusy) return;
+    const inCall = !!call && call.phase !== "idle" && call.phase !== "ignored";
+    const screenSharing = !!call?.screenSharing;
+    ninja.updater.setBusy({ inCall, screenSharing });
+  }, [call?.phase, call?.screenSharing]);
+  return null;
+}
 
 /** Human-readable preview for a notification body. */
 function previewText(m: ApiMessage): string {
@@ -591,6 +603,7 @@ export default function DesktopApp() {
   return (
     <ThemeCtx.Provider value={theme}>
       <CallProvider>
+        <UpdaterBusyReporter />
         <Toaster
           position="top-right"
           richColors

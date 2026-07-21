@@ -144,6 +144,12 @@ const api = {
   updater: {
     check: (): Promise<void> => ipcRenderer.invoke(IPC.updaterCheck),
     quitAndInstall: () => ipcRenderer.send(IPC.updaterQuitInstall),
+    setBusy: (state: {
+      inCall?: boolean
+      screenSharing?: boolean
+      uploading?: boolean
+      downloading?: boolean
+    }) => ipcRenderer.send(IPC.updaterSetBusy, state),
     onEvent: (handler: (e: { type: string; [k: string]: unknown }) => void) =>
       subscribe(IPC.updaterEvent, handler),
   },

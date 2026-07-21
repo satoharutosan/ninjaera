@@ -48,6 +48,8 @@ import { AdminDatabaseConsole } from "@/features/admin/AdminDatabaseConsole";
 import { AdminActivityLogs } from "@/features/admin/AdminActivityLogs";
 import { AdminOurStoryEditor } from "@/features/admin/AdminOurStoryEditor";
 import { AdminLinkFileManagement } from "@/features/admin/AdminLinkFileManagement";
+import { AdminAppInstallations } from "@/features/admin/AdminAppInstallations";
+import { AdminDesktopUpdates } from "@/features/admin/AdminDesktopUpdates";
 import { SECTIONS, CHART_COLORS, EMPTY_STATS, type Section, type DashboardStats } from "@/features/admin/adminMeta";
 import { UserAvatar, StatCard, DashSection, ChartCard, EmptyNote, LocationCell } from "@/features/admin/components/AdminChrome";
 import {
@@ -757,6 +759,22 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
             : (
               <div className="p-4 md:p-8">
                 <AdminAccessDenied message="Link File Management is available only to the Super Administrator." />
+              </div>
+            )
+        ) : section === "app-installations" ? (
+          isSuperAdminUser
+            ? <AdminAppInstallations onConfirm={setConfirm} />
+            : (
+              <div className="p-4 md:p-8">
+                <AdminAccessDenied message="Application Installations is available only to the Super Administrator." />
+              </div>
+            )
+        ) : section === "desktop-updates" ? (
+          isSuperAdminUser
+            ? <AdminDesktopUpdates onConfirm={setConfirm} />
+            : (
+              <div className="p-4 md:p-8">
+                <AdminAccessDenied message="Desktop App Updates is available only to the Super Administrator." />
               </div>
             )
         ) : section === "about-our-story" ? (

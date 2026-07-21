@@ -136,7 +136,10 @@ function VideoTile({
     };
   }, [stream, trackId, muted, videoTrack, rebindToken, ref]);
 
-  if (!stream || (!hasLiveVideo && muted)) {
+  // Show <video> whenever a remote track exists (even if still muted / not yet
+  // "live"). Requiring live+unmuted hid the element for Web↔Electron shares
+  // where the track stays muted until the first RTP frame.
+  if (!stream || !videoTrack || videoTrack.readyState === "ended") {
     return (
       <div className="w-full h-full flex items-center justify-center bg-black/40 text-white/70 text-sm" style={{ fontFamily: "Roboto" }}>
         {label}

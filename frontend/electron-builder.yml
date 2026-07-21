@@ -3,14 +3,15 @@
 # Do not add a package.json "build" block or a second electron-builder.* file.
 #
 # Code signing: intentionally unsigned until Soft Future provides a certificate.
-# forceCodeSigning is false so missing credentials never fail the build.
-# Electron-builder may log: "no signing info identified, signing is skipped"
-# (signHook=false, cscInfo=null). That is expected and is not a project error.
+# win.signtoolOptions.sign → scripts/windows-sign-skip.cjs skips Authenticode
+# without the "no signing info identified, signing is skipped" warn. rcedit
+# metadata/icon editing still runs (signAndEditExecutable: true + afterSign).
 #
 # FUTURE Windows signing (no restructure required):
-#   1. Set WIN_CSC_LINK / WIN_CSC_KEY_PASSWORD (or CSC_LINK / CSC_KEY_PASSWORD)
-#   2. Optionally set forceCodeSigning: true in CI
-#   3. Set win.verifyUpdateCodeSignature: true once updates are signed
+#   1. Remove win.signtoolOptions.sign (the skip hook)
+#   2. Set WIN_CSC_LINK / WIN_CSC_KEY_PASSWORD (or CSC_LINK / CSC_KEY_PASSWORD)
+#   3. Optionally set forceCodeSigning: true in CI
+#   4. Set win.verifyUpdateCodeSignature: true once updates are signed
 # =============================================================================
 
 appId: com.softfuture.ninjaera.messenger
@@ -58,12 +59,18 @@ publish:
 
 # ── Windows ──────────────────────────────────────────────────────────────────
 # Primary installer: Squirrel.Windows (Postman-style Setup.exe + splash GIF).
-# Requires: electron-builder-squirrel-windows (dev) + electron-squirrel-startup (runtime).
+# Requires: electron-builder-squirrel-windows (dev).
+# Squirrel install/update shortcut handling lives in electron/main/squirrelStartup.ts
+# (not electron-squirrel-startup — that dep triggers a false NSIS warning because
+# the portable target is implemented via NsisTarget).
 win:
   executableName: NinjaEraMessenger
   icon: build/icon.ico
   # Embed ProductName / CompanyName / FileDescription / versions / icon via rcedit.
   signAndEditExecutable: true
+  # Explicit unsigned builds: skip Authenticode until Soft Future provides a cert.
+  signtoolOptions:
+    sign: ./scripts/windows-sign-skip.cjs
   # Unsigned builds: do not require publisher signature checks on updates yet.
   verifyUpdateCodeSignature: false
   legalTrademarks: Soft Future
@@ -88,7 +95,8 @@ squirrelWindows:
   # Prefer appId over npm package name for Squirrel identity.
   useAppIdAsId: true
 
-# NSIS kept as optional alternate (not in win.target). Restore by adding target: nsis.
+# NSIS kept as optional alternate (not in win.target). Restore by adding target: nsis
+# or: npm run desktop:dist:win:nsis
 nsis:
   oneClick: false
   perMachine: false

@@ -1,14 +1,13 @@
 /**
  * Runs electron-builder for production packaging.
  *
- * CSC_IDENTITY_AUTO_DISCOVERY=false is the supported way to skip automatic
- * certificate discovery (especially macOS keychain). Windows builds without
- * WIN_CSC_LINK / CSC_LINK remain unsigned; electron-builder may log
- * "no signing info identified, signing is skipped" — that is expected.
+ * CSC_IDENTITY_AUTO_DISCOVERY=false skips automatic certificate discovery
+ * (especially macOS keychain). Windows unsigned builds use
+ * win.signtoolOptions.sign → scripts/windows-sign-skip.cjs (see electron-builder.yml).
  *
  * FUTURE Soft Future code signing:
- *   set WIN_CSC_LINK + WIN_CSC_KEY_PASSWORD (or CSC_*), then rebuild.
- *   Optionally remove CSC_IDENTITY_AUTO_DISCOVERY=false once credentials exist.
+ *   remove the windows-sign-skip hook, set WIN_CSC_LINK + WIN_CSC_KEY_PASSWORD
+ *   (or CSC_*), then rebuild. Optionally drop CSC_IDENTITY_AUTO_DISCOVERY=false.
  */
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";

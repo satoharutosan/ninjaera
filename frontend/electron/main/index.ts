@@ -1,5 +1,4 @@
 import { app, BrowserWindow } from 'electron'
-import { createRequire } from 'module'
 import { registerAppScheme, handleAppProtocol } from './protocol'
 import { createMainWindow, showMainWindow, broadcastToRenderer, appState } from './window'
 import { createTray } from './tray'
@@ -14,19 +13,10 @@ import { IPC } from '@shared-electron/ipc'
 import { BRAND } from './brand'
 import { BACKEND_URL, IS_PRODUCTION_BACKEND } from './config'
 import { registerDisplayMediaHandler } from './screenCapture'
+import { handleSquirrelStartup } from './squirrelStartup'
 
-// Squirrel.Windows install/update/uninstall events — handle and exit before bootstrapping UI.
-const require = createRequire(import.meta.url)
-let squirrelEvent = false
-if (process.platform === 'win32') {
-  try {
-    squirrelEvent = !!require('electron-squirrel-startup')
-  } catch {
-    /* package missing in unusual environments */
-  }
-}
-
-if (squirrelEvent) {
+// Squirrel.Windows install/update/uninstall — handle and exit before bootstrapping UI.
+if (handleSquirrelStartup()) {
   app.quit()
 } else {
   // Windows taskbar / toast attribution — must run before ready.

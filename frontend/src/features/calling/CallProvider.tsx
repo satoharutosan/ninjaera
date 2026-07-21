@@ -383,6 +383,11 @@ export function CallProvider({ children }: { children: ReactNode }) {
     for (const sig of buffered) {
       try { await peer.handleSignal(sig); } catch { /* */ }
     }
+    // Callee: offer may still be in flight. Wait so screen share / remote video
+    // bind against real m-lines instead of a permanently "not ready" peer.
+    if (!peer.isMediaReady()) {
+      await peer.waitUntilMediaReady(10_000);
+    }
   }, [refreshDevices, refreshLocalPreview, refreshRemotePreview]);
 
   const beginMediaRef = useRef(beginMedia);
@@ -579,10 +584,15 @@ export function CallProvider({ children }: { children: ReactNode }) {
       toast.error("Call is not connected yet");
       return;
     }
+    // Callee mediaReady is only set after the caller's offer — wait briefly
+    // instead of permanently blocking with the "fully connected" toast.
     if (!peer.isMediaReady()) {
-      peer.dumpMediaTopology("share-blocked-not-ready");
-      toast.message("Wait until the call is fully connected before sharing your screen.");
-      return;
+      peer.dumpMediaTopology("share-waiting-media-ready");
+      const ready = await peer.waitUntilMediaReady(8_000);
+      if (!ready) {
+        toast.message("Wait until the call is fully connected before sharing your screen.");
+        return;
+      }
     }
     try {
       await peer.startScreenShare();

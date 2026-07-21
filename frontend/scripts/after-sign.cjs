@@ -3,7 +3,7 @@
  *
  * electron-builder's Windows rcedit pass sets OriginalFilename to "" by design.
  * This hook runs after that pass (signApp still completes for resource editing
- * even when code signing is skipped). It does not alter signing behavior.
+ * even when Authenticode signing is skipped via windows-sign-skip.cjs).
  */
 "use strict";
 

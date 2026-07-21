@@ -113,6 +113,7 @@ export class CallPeer {
   private sendingScreen = false;
   private outboundBaseTrack: MediaStreamTrack | null = null;
   private statsTimer: ReturnType<typeof setInterval> | null = null;
+  private mediaReadyWaiters: Array<() => void> = [];
 
   constructor(
     private handlers: PeerHandlers,
@@ -241,6 +242,38 @@ export class CallPeer {
     return !!this.resolveVideoTransceiver()?.sender;
   }
 
+  private markMediaReady() {
+    if (this.mediaReady) return;
+    this.mediaReady = true;
+    const waiters = this.mediaReadyWaiters.splice(0);
+    for (const w of waiters) w();
+  }
+
+  /**
+   * Callee media is only ready after the caller's offer arrives. UI may become
+   * "active" slightly earlier — wait here before allowing screen share.
+   */
+  async waitUntilMediaReady(timeoutMs = 10_000): Promise<boolean> {
+    if (this.isMediaReady()) return true;
+    if (this.polite) {
+      try {
+        const videoT = this.resolveVideoTransceiver();
+        if (videoT) await this.ensureLocalAttached();
+      } catch { /* offer may not exist yet */ }
+      if (this.isMediaReady()) return true;
+    }
+    return new Promise((resolve) => {
+      const finish = (ok: boolean) => {
+        window.clearTimeout(timer);
+        this.mediaReadyWaiters = this.mediaReadyWaiters.filter((w) => w !== onReady);
+        resolve(ok);
+      };
+      const onReady = () => finish(true);
+      const timer = window.setTimeout(() => finish(this.isMediaReady()), timeoutMs);
+      this.mediaReadyWaiters.push(onReady);
+    });
+  }
+
   private resolveVideoTransceiver(): RTCRtpTransceiver | null {
     const list = this.pc.getTransceivers();
     return (
@@ -281,7 +314,7 @@ export class CallPeer {
       this.videoTransceiver = tr;
       const audio = this.resolveAudioTransceiver();
       if (audio) this.audioTransceiver = audio;
-      this.mediaReady = true;
+      this.markMediaReady();
       return tr.sender;
     }
 
@@ -369,9 +402,14 @@ export class CallPeer {
     }
   }
 
-  /** Offerer or polite peer may force an offer when replaceTrack alone does not send frames. */
+  /** Offerer-only: force a new offer when replaceTrack alone does not send frames.
+   * Polite (callee) peers must NOT create offers — that breaks single-offerer
+   * negotiation and was a known screen-share regression across Web↔Electron. */
   private async renegotiateForScreen(reason: string) {
-    if (this.closed) return;
+    if (this.closed || this.polite) {
+      webrtcLog("renegotiate skipped", { reason, polite: this.polite });
+      return;
+    }
     if (this.makingOffer || this.pc.signalingState !== "stable") {
       webrtcLog("renegotiate deferred", { reason, signalingState: this.pc.signalingState });
       return;
@@ -391,12 +429,22 @@ export class CallPeer {
   }
 
   private syncReceivers() {
-    if (!this.mediaReady) return;
     try {
-      const a = this.audioTransceiver.receiver.track;
-      const v = this.videoTransceiver.receiver.track;
-      if (a && a.readyState !== "ended") this.remoteAudio = a;
-      if (v && v.readyState !== "ended") this.remoteVideo = v;
+      if (this.mediaReady && this.audioTransceiver && this.videoTransceiver) {
+        const a = this.audioTransceiver.receiver.track;
+        const v = this.videoTransceiver.receiver.track;
+        if (a && a.readyState !== "ended") this.remoteAudio = a;
+        if (v && v.readyState !== "ended") this.remoteVideo = v;
+        return;
+      }
+      // Fallback when mediaReady is late (callee before attach) or transceiver
+      // refs are stale — still bind remote tracks from the PC.
+      for (const r of this.pc.getReceivers()) {
+        const t = r.track;
+        if (!t || t.readyState === "ended") continue;
+        if (t.kind === "audio") this.remoteAudio = t;
+        if (t.kind === "video") this.remoteVideo = t;
+      }
     } catch { /* */ }
   }
 
@@ -526,7 +574,7 @@ export class CallPeer {
       // their tracks so the auto-fired offer is sendrecv with real media.
       this.audioTransceiver = this.pc.addTransceiver(audio ?? "audio", { direction: "sendrecv" });
       this.videoTransceiver = this.pc.addTransceiver(outbound, { direction: "sendrecv" });
-      this.mediaReady = true;
+      this.markMediaReady();
       webrtcLog("Caller media ready (transceivers created)", {
         videoTrackId: outbound.id.slice(0, 12),
         hasAudio: !!audio,
@@ -578,7 +626,7 @@ export class CallPeer {
     }
     try { videoT.direction = "sendrecv"; } catch { /* */ }
 
-    this.mediaReady = true;
+    this.markMediaReady();
     webrtcLog("Callee attached local tracks to offer transceivers", {
       video: this.getVideoDirection(),
     });
@@ -774,25 +822,15 @@ export class CallPeer {
     let track = display.getVideoTracks()[0];
     if (!track) throw new Error("No screen track");
 
-    // Electron: some builds only encode reliably after cloning the capturer track.
-    if (electron) {
-      try {
-        const cloned = track.clone();
-        track.stop();
-        track = cloned;
-        display = new MediaStream([cloned]);
-        trackLog("Electron screen track cloned for sender");
-      } catch (e) {
-        trackLog("clone skipped", e);
-      }
-    }
-
+    // Keep the original capturer track. Cloning then stopping the source track
+    // can freeze outbound frames on Electron while local preview still works.
     trackLog("Local screen track created", {
       kind: track.kind,
       id: track.id,
       readyState: track.readyState,
       enabled: track.enabled,
       muted: track.muted,
+      electron,
       settings: typeof track.getSettings === "function" ? track.getSettings() : null,
     });
 

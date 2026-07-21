@@ -163,12 +163,15 @@ export class CallPeer {
   // prevents the element from ever painting incoming RTP frames).
   private remoteVideoStream: MediaStream | null = null;
   private remoteAudioStream: MediaStream | null = null;
+  private localCameraStream: MediaStream | null = null;
 
   private placeholder: { track: MediaStreamTrack; dispose: () => void } | null = null;
   private sendingScreen = false;
   private outboundBaseTrack: MediaStreamTrack | null = null;
   private statsTimer: ReturnType<typeof setInterval> | null = null;
   private mediaReadyWaiters: Array<() => void> = [];
+  /** True when outbound video is a real camera (not the voice-call placeholder). */
+  private cameraIntended = false;
 
   constructor(
     private handlers: PeerHandlers,
@@ -661,23 +664,56 @@ export class CallPeer {
     }
   }
 
+  /** Wait for a local capture track to produce frames before negotiation. */
+  private async waitLocalTrackReady(track: MediaStreamTrack, label: string, timeoutMs = 2500) {
+    track.enabled = true;
+    try {
+      if (track.kind === "video") track.contentHint = track.contentHint || "motion";
+    } catch { /* optional */ }
+    if (track.muted) {
+      await new Promise<void>((resolve) => {
+        const done = () => {
+          track.removeEventListener("unmute", done);
+          resolve();
+        };
+        track.addEventListener("unmute", done);
+        window.setTimeout(done, timeoutMs);
+      });
+    }
+    trackLog(`${label} ready`, {
+      id: track.id.slice(0, 12),
+      readyState: track.readyState,
+      enabled: track.enabled,
+      muted: track.muted,
+      label: track.label,
+      settings: typeof track.getSettings === "function" ? track.getSettings() : null,
+    });
+  }
+
   async setLocalStream(stream: MediaStream, withVideo: boolean) {
     this.localStream = stream;
+    this.localCameraStream = null;
     const audio = stream.getAudioTracks()[0] || null;
     const video = stream.getVideoTracks()[0] || null;
     this.cameraTrack = video;
+    this.cameraIntended = !!withVideo && !!video;
 
     let outbound: MediaStreamTrack;
     if (video) {
+      await this.waitLocalTrackReady(video, "camera");
+      // Voice calls that still open a cam keep it disabled on the wire until toggled.
       video.enabled = !!withVideo;
       outbound = video;
     } else {
       if (!this.placeholder) this.placeholder = createPlaceholderVideoTrack();
       outbound = this.placeholder.track;
+      this.cameraIntended = false;
     }
     this.outboundBaseTrack = outbound;
     this.pendingAudioTrack = audio;
     this.pendingVideoTrack = outbound;
+
+    if (audio) await this.waitLocalTrackReady(audio, "microphone");
 
     if (!this.polite) {
       // Caller = sole offerer. Create the transceivers (audio, then video) WITH
@@ -689,17 +725,97 @@ export class CallPeer {
         videoTrackId: outbound.id.slice(0, 12),
         hasAudio: !!audio,
         withVideo,
+        cameraIntended: this.cameraIntended,
         video: this.getVideoDirection(),
       });
       this.dumpMediaTopology("caller-ready");
+      if (this.cameraIntended) {
+        void this.verifyCameraSending("post-caller-attach");
+      }
     } else {
       // Callee attaches these onto the offer's transceivers in ensureLocalAttached.
       webrtcLog("Callee local tracks captured (await offer)", {
         videoTrackId: outbound.id.slice(0, 12),
         hasAudio: !!audio,
         withVideo,
+        cameraIntended: this.cameraIntended,
       });
     }
+  }
+
+  /** After connect: confirm camera RTP is flowing; retune + keyframe if stalled. */
+  private async verifyCameraSending(label: string) {
+    if (this.closed || !this.cameraIntended || this.sendingScreen || !this.cameraTrack) return;
+    if (this.cameraTrack.readyState !== "live" || !this.cameraTrack.enabled) return;
+    try {
+      const sender = this.findVideoSender();
+      if (sender.track !== this.cameraTrack) return;
+      await this.tuneVideoSender(sender, "camera");
+      const baseline = await this.readOutboundVideoFrames();
+      const frames = await this.verifySenderFrames(label, this.cameraTrack.id);
+      if (frames <= baseline) {
+        webrtcLog("Camera RTP stalled — keyframe + retune", { label, baseline, frames });
+        await this.tuneVideoSender(sender, "camera");
+        await this.verifySenderFrames(`${label}-retry`, this.cameraTrack.id);
+      }
+    } catch (e) {
+      webrtcLog("verifyCameraSending failed", e);
+    }
+  }
+
+  /** Attach a live camera track (video call start or mid-call cam on). */
+  async attachCameraTrack(track: MediaStreamTrack, opts?: { enable?: boolean }) {
+    if (this.closed) {
+      try { track.stop(); } catch { /* */ }
+      throw new Error("Call is not connected");
+    }
+    const enable = opts?.enable !== false;
+    await this.waitLocalTrackReady(track, "camera-attach");
+    track.enabled = enable;
+
+    const old = this.cameraTrack;
+    this.cameraTrack = track;
+    this.outboundBaseTrack = track;
+    this.pendingVideoTrack = track;
+    this.cameraIntended = enable;
+    this.localCameraStream = null;
+
+    if (this.localStream) {
+      if (old && old !== track && old !== this.screenTrack) {
+        try { this.localStream.removeTrack(old); } catch { /* */ }
+        if (old !== this.placeholder?.track) {
+          try { old.stop(); } catch { /* */ }
+        }
+      }
+      if (!this.localStream.getVideoTracks().includes(track)) {
+        this.localStream.addTrack(track);
+      }
+    }
+
+    if (this.mediaReady && !this.sendingScreen) {
+      try {
+        const sender = this.findVideoSender();
+        await sender.replaceTrack(track);
+        try { this.videoTransceiver.direction = "sendrecv"; } catch { /* */ }
+        await this.tuneVideoSender(sender, "camera");
+        if (enable) await this.verifyCameraSending("post-attach-camera");
+      } catch (e) {
+        webrtcLog("attachCameraTrack replaceTrack failed", e);
+        throw new Error("Video negotiation failed — could not attach camera track.");
+      }
+    }
+
+    // Dispose placeholder once a real camera owns the sender.
+    if (this.placeholder && this.placeholder.track !== track) {
+      this.placeholder.dispose();
+      this.placeholder = null;
+    }
+
+    trackLog("Camera attached", {
+      id: track.id.slice(0, 12),
+      enabled: track.enabled,
+      mediaReady: this.mediaReady,
+    });
   }
 
   /**
@@ -739,8 +855,12 @@ export class CallPeer {
     this.markMediaReady();
     webrtcLog("Callee attached local tracks to offer transceivers", {
       video: this.getVideoDirection(),
+      cameraIntended: this.cameraIntended,
     });
     this.dumpMediaTopology("callee-attached");
+    if (this.cameraIntended) {
+      void this.verifyCameraSending("post-callee-attach");
+    }
   }
 
   async handleSignal(signal: IceSignal) {
@@ -842,15 +962,31 @@ export class CallPeer {
   }
 
   setCamEnabled(on: boolean) {
+    this.cameraIntended = on && !!this.cameraTrack;
     if (this.cameraTrack) this.cameraTrack.enabled = on;
     if (!this.sendingScreen) {
-      this.localStream?.getVideoTracks().forEach(t => { t.enabled = on; });
+      this.localStream?.getVideoTracks().forEach(t => {
+        if (t === this.cameraTrack) t.enabled = on;
+      });
       if (!this.mediaReady) return;
       try {
         const t = this.findVideoSender().track;
         if (t && t === this.cameraTrack) t.enabled = on;
       } catch { /* */ }
     }
+    if (on && this.cameraTrack && this.mediaReady && !this.sendingScreen) {
+      void this.verifyCameraSending("cam-enabled");
+    }
+  }
+
+  /** Public hook after ICE connects — ensure camera RTP is actually flowing. */
+  async ensureCameraSending() {
+    await this.verifyCameraSending("ensure-after-connect");
+  }
+
+  /** Whether a live camera track is attached (may be disabled). */
+  hasCameraTrack(): boolean {
+    return !!this.cameraTrack && this.cameraTrack.readyState === "live";
   }
 
   async replaceAudioInput(deviceId: string) {
@@ -882,20 +1018,11 @@ export class CallPeer {
       video: { deviceId: { exact: deviceId } },
     });
     const newTrack = next.getVideoTracks()[0];
-    const old = this.cameraTrack || this.localStream.getVideoTracks()[0];
-    if (newTrack) {
-      this.cameraTrack = newTrack;
-      this.outboundBaseTrack = newTrack;
-      this.pendingVideoTrack = newTrack;
-      if (!this.sendingScreen && this.mediaReady) {
-        try { await this.findVideoSender().replaceTrack(newTrack); } catch { /* */ }
-      }
+    if (!newTrack) {
+      next.getTracks().forEach(t => t.stop());
+      throw new Error("Camera could not be opened.");
     }
-    if (old && old !== this.screenTrack && old !== this.placeholder?.track) {
-      this.localStream.removeTrack(old);
-      old.stop();
-    }
-    if (newTrack) this.localStream.addTrack(newTrack);
+    await this.attachCameraTrack(newTrack, { enable: this.cameraIntended || newTrack.enabled });
     next.getAudioTracks().forEach(t => t.stop());
   }
 
@@ -1141,11 +1268,19 @@ export class CallPeer {
   }
 
   getLocalCameraStream(): MediaStream | null {
-    if (!this.cameraTrack || this.cameraTrack.readyState !== "live") {
-      const v = this.localStream?.getVideoTracks().find(t => t.readyState === "live");
-      return v ? new MediaStream([v]) : null;
+    const track = (this.cameraTrack && this.cameraTrack.readyState === "live")
+      ? this.cameraTrack
+      : (this.localStream?.getVideoTracks().find(t => t.readyState === "live") ?? null);
+    if (!track || track === this.placeholder?.track) {
+      this.localCameraStream = null;
+      return null;
     }
-    return new MediaStream([this.cameraTrack]);
+    const current = this.localCameraStream;
+    if (current && current.getVideoTracks()[0] === track) {
+      return current;
+    }
+    this.localCameraStream = new MediaStream([track]);
+    return this.localCameraStream;
   }
 
   getLocalScreenStream(): MediaStream | null {
@@ -1244,6 +1379,10 @@ export class CallPeer {
       this.localStream?.getTracks().forEach(t => t.stop());
       this.localStream = null;
       this.cameraTrack = null;
+      this.localCameraStream = null;
+      this.remoteVideoStream = null;
+      this.remoteAudioStream = null;
+      this.cameraIntended = false;
       this.pc.close();
     } catch { /* */ }
   }

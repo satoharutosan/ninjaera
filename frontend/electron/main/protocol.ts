@@ -37,7 +37,7 @@ const CSP = [
   "style-src 'self' 'unsafe-inline' app: https://fonts.googleapis.com",
   "font-src 'self' app: https://fonts.gstatic.com data:",
   "img-src 'self' app: data: blob: https:",
-  "media-src 'self' app: data: blob: https:",
+  "media-src 'self' app: data: blob: mediastream: https:",
   "connect-src 'self' app: https: wss:",
   "frame-src 'none'",
 ].join('; ')

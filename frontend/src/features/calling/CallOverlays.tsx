@@ -121,6 +121,7 @@ function VideoTile({
           localPreview: !!muted,
           trackId: trackId.slice(0, 12),
           mutedTrack: videoTrack.muted,
+          enabled: videoTrack.enabled,
           readyState: videoTrack.readyState,
           rebindToken,
           force,
@@ -130,9 +131,14 @@ function VideoTile({
 
     const play = () => { void el.play().catch(() => {}); };
     play();
-    videoTrack.addEventListener("unmute", play);
+    const onUnmute = () => {
+      play();
+      // Ensure paint after first camera/screen frame arrives.
+      if (el.srcObject !== stream) el.srcObject = stream;
+    };
+    videoTrack.addEventListener("unmute", onUnmute);
     return () => {
-      videoTrack.removeEventListener("unmute", play);
+      videoTrack.removeEventListener("unmute", onUnmute);
     };
   }, [stream, trackId, muted, videoTrack, rebindToken, ref]);
 
@@ -626,7 +632,7 @@ export function CallOverlays() {
                     : call.peerScreenSharing
                       ? `${peerName} is starting screen share…`
                       : call.callType === "video"
-                        ? "Waiting for video…"
+                        ? (call.remoteStream ? peerName : "Waiting for video…")
                         : "Voice connected"
               }
             />

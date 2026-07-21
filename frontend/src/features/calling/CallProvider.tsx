@@ -21,7 +21,7 @@ import {
   onRealtimeEvent,
   onRealtimeReconnect,
 } from "@/app/realtime";
-import { validateAndGetMedia } from "./devices";
+import { validateAndGetMedia, acquireCameraTrack } from "./devices";
 import { CallPeer } from "./webrtc";
 import { logPipelineSnapshot } from "./callDiagnostics";
 import { resolveIceServers } from "./iceConfig";
@@ -71,7 +71,7 @@ type CallContextValue = {
   ignoreIncoming: () => void;
   hangup: () => void;
   toggleMic: () => void;
-  toggleCam: () => void;
+  toggleCam: () => void | Promise<void>;
   switchMic: (deviceId: string) => Promise<void>;
   switchCam: (deviceId: string) => Promise<void>;
   setAudioOutput: (deviceId: string) => Promise<void>;
@@ -322,6 +322,18 @@ export function CallProvider({ children }: { children: ReactNode }) {
               iceRestartTimerRef.current = null;
             }
             iceRestartAttemptedRef.current = false;
+            refreshRemotePreview();
+            refreshLocalPreview();
+            logPipelineSnapshot(peer, `pc-${state}`);
+            // Camera RTP can stall until ICE completes — retune once connected.
+            if (callTypeRef.current === "video" || peer.hasCameraTrack()) {
+              window.setTimeout(() => {
+                if (peerRef.current !== peer) return;
+                void peer.ensureCameraSending();
+                peer.dumpMediaTopology(`connected-${state}`);
+                logPipelineSnapshot(peer, `camera-connected-${state}`);
+              }, 600);
+            }
             return;
           }
 
@@ -385,6 +397,9 @@ export function CallProvider({ children }: { children: ReactNode }) {
       return;
     }
     refreshLocalPreview();
+    // Announce initial cam/mic so peer UI matches reality (video calls start cam on).
+    syncMediaState(id, { micOn: true, camOn: type === "video", screenSharing: false });
+    logPipelineSnapshot(peer, type === "video" ? "video-call-media-ready" : "voice-call-media-ready");
     const buffered = pendingSignalsRef.current.splice(0);
     for (const sig of buffered) {
       try {
@@ -566,15 +581,37 @@ export function CallProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
-  const toggleCam = useCallback(() => {
-    setCamOn(on => {
-      const next = !on;
-      peerRef.current?.setCamEnabled(next);
-      syncMediaState(callIdRef.current, { camOn: next });
-      refreshLocalPreview();
-      return next;
-    });
-  }, [refreshLocalPreview]);
+  const toggleCam = useCallback(async () => {
+    const peer = peerRef.current;
+    const turningOn = !camOn;
+
+    if (turningOn && peer && !peer.hasCameraTrack()) {
+      const acquired = await acquireCameraTrack(selectedCamId || undefined);
+      if (!acquired.ok) {
+        toast.error(acquired.error);
+        return;
+      }
+      try {
+        await peer.attachCameraTrack(acquired.track, { enable: true });
+        const id = acquired.track.getSettings?.().deviceId;
+        if (id) setSelectedCamId(id);
+        setCamOn(true);
+        syncMediaState(callIdRef.current, { camOn: true });
+        refreshLocalPreview();
+        logPipelineSnapshot(peer, "camera-enabled-mid-call");
+      } catch (e) {
+        try { acquired.track.stop(); } catch { /* */ }
+        toast.error(e instanceof Error ? e.message : "Could not enable camera");
+      }
+      return;
+    }
+
+    const next = turningOn;
+    peer?.setCamEnabled(next);
+    setCamOn(next);
+    syncMediaState(callIdRef.current, { camOn: next });
+    refreshLocalPreview();
+  }, [camOn, selectedCamId, refreshLocalPreview]);
 
   const switchMic = useCallback(async (deviceId: string) => {
     await peerRef.current?.replaceAudioInput(deviceId);
@@ -582,9 +619,13 @@ export function CallProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const switchCam = useCallback(async (deviceId: string) => {
-    await peerRef.current?.replaceVideoInput(deviceId);
-    setSelectedCamId(deviceId);
-    refreshLocalPreview();
+    try {
+      await peerRef.current?.replaceVideoInput(deviceId);
+      setSelectedCamId(deviceId);
+      refreshLocalPreview();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not switch camera");
+    }
   }, [refreshLocalPreview]);
 
   const setAudioOutput = useCallback(async (deviceId: string) => {

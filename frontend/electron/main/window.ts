@@ -75,14 +75,29 @@ export function createMainWindow(): BrowserWindow {
     }
   })
 
-  mainWindow.webContents.session.setPermissionRequestHandler((_wc, permission, callback) => {
-    const allowed = new Set([
-      "media",
-      "display-capture",
-      "notifications",
-      "clipboard-sanitized-write",
-    ])
-    callback(allowed.has(permission))
+  const ses = mainWindow.webContents.session
+  const mediaPermissions = new Set([
+    "media",
+    "display-capture",
+    "notifications",
+    "clipboard-sanitized-write",
+  ])
+
+  // Async permission prompts (getUserMedia / getDisplayMedia / notifications).
+  ses.setPermissionRequestHandler((_wc, permission, callback) => {
+    callback(mediaPermissions.has(permission))
+  })
+
+  // Synchronous Chromium permission checks — required for reliable camera/mic
+  // getUserMedia on Electron. Without this, PermissionRequestHandler alone can
+  // leave checks denied and camera capture fails while display-capture still works.
+  ses.setPermissionCheckHandler((_wc, permission, _requestingOrigin, details) => {
+    if (permission === "media") {
+      const mediaType = (details as { mediaType?: string })?.mediaType
+      // Allow mic, camera, and combined media checks.
+      return !mediaType || mediaType === "audio" || mediaType === "video" || mediaType === "microphone" || mediaType === "camera"
+    }
+    return mediaPermissions.has(permission)
   })
 
   // Open external links (target=_blank / window.open) in the system browser.

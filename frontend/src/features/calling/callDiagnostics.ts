@@ -1,6 +1,6 @@
 /**
- * Dev-only WebRTC pipeline snapshots for Browser ↔ Electron screen-share debugging.
- * Compare working (Browser↔Browser) vs broken sessions in the console.
+ * Dev-only WebRTC pipeline snapshots for Browser ↔ Electron call debugging.
+ * Compare working vs broken sessions in the console ([CALL_PIPELINE]).
  */
 import type { CallPeer } from "./webrtc";
 

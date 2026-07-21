@@ -442,6 +442,28 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
     }
   }, [focusInput, sel.id, onFocusHandled]);
 
+  /** Reply icon → activate quote + focus composer (DM + channel, web + desktop). */
+  const startReply = useCallback((m: ChatMsg) => {
+    setReplyingTo(m);
+    const focusComposer = () => {
+      // Do not steal focus from overlays / other inputs.
+      if (settingsOpen || newDmOpen || confirm || lightbox || detailsOpen || emojiOpen || voiceBusy) return;
+      const el = inputRef.current;
+      if (!el || el.disabled) return;
+      el.focus({ preventScroll: true });
+      const len = el.value.length;
+      try {
+        el.setSelectionRange(len, len);
+      } catch {
+        /* some browsers reject selection on empty/unfocused */
+      }
+    };
+    // Wait for reply bar commit so layout is stable before focusing.
+    requestAnimationFrame(() => {
+      setTimeout(focusComposer, 0);
+    });
+  }, [settingsOpen, newDmOpen, confirm, lightbox, detailsOpen, emojiOpen, voiceBusy]);
+
   useEffect(() => {
     // Empty list usually means "still loading" — do not wipe the active selection.
     if (!contacts.length) return;
@@ -1690,7 +1712,13 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
         </div>
       )}
       {/* Image lightbox */}
-      {lightbox && <ImageLightbox src={lightbox} onClose={() => setLightbox(null)} />}
+      {lightbox && (
+        <ImageLightbox
+          src={lightbox}
+          onClose={() => setLightbox(null)}
+          desktopMode={desktopMode}
+        />
+      )}
       {/* Right-click context menu */}
       {ctxMenu && (
         <div className="fixed z-50 rounded-2xl border shadow-xl overflow-hidden" style={{ top:ctxMenu.y, left:ctxMenu.x, background:C.surface, borderColor:C.outlineVar, minWidth:"13rem" }} onClick={e => e.stopPropagation()}>
@@ -2301,7 +2329,7 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
                     }}
                     onScrollTo={scrollTo}
                     onLightbox={setLightbox}
-                    onReply={setReplyingTo}
+                    onReply={startReply}
                     onReact={addReaction}
                     reactionOpen={openReactionId === m.id}
                     onReactionOpenChange={(open) => setOpenReactionId(open ? m.id : null)}

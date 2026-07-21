@@ -30,6 +30,16 @@ function resolveWindowIcon(): Electron.NativeImage | undefined {
   return undefined
 }
 
+function applyWindowIcon(win: BrowserWindow): void {
+  const icon = resolveWindowIcon()
+  if (!icon) return
+  try {
+    win.setIcon(icon)
+  } catch {
+    /* unsupported on some platforms */
+  }
+}
+
 export function createMainWindow(): BrowserWindow {
   if (mainWindow && !mainWindow.isDestroyed()) return mainWindow
 
@@ -59,6 +69,9 @@ export function createMainWindow(): BrowserWindow {
     },
   })
 
+  // Reinforce icon after construction (helps Windows taskbar / Alt+Tab branding).
+  applyWindowIcon(mainWindow)
+
   const devUrl = process.env.ELECTRON_RENDERER_URL
   if (devUrl) {
     void mainWindow.loadURL(devUrl)
@@ -67,6 +80,7 @@ export function createMainWindow(): BrowserWindow {
   }
 
   mainWindow.once('ready-to-show', () => {
+    applyWindowIcon(mainWindow!)
     if (startMinimized) {
       if (getSettings().general.minimizeToTray) mainWindow?.hide()
       else mainWindow?.minimize()

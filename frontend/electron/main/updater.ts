@@ -200,6 +200,7 @@ async function downloadFromGithub(
 function runInstallerAndQuit(installerPath: string) {
   log('info', 'launching GitHub installer', { installerPath })
   // Squirrel Setup.exe — silent update of the existing per-user install.
+  // Publish NinjaEraMessenger-Squirrel-Setup-*.exe for auto-updates (not the NSIS Setup).
   const child = spawn(installerPath, ['--silent'], {
     detached: true,
     stdio: 'ignore',

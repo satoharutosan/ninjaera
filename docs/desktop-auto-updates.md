@@ -18,12 +18,14 @@ Current channel: `stable`
 
 ## How to publish a new release
 
-1. Build the Windows installer as usual (`npm run desktop:dist:win` in `frontend/`).
-2. Create a GitHub Release (e.g. tag `v1.4.2`) and upload the Setup artifact, for example:
-   - `NinjaEraMessenger-Setup-1.4.2.exe`
+1. Build Windows installers (`npm run desktop:dist:win` in `frontend/`):
+   - **`NinjaEraMessenger-Setup-<version>.exe`** — NSIS interactive installer (user downloads / first install; cancel locked once copy starts)
+   - **`NinjaEraMessenger-Squirrel-Setup-<version>.exe`** — Squirrel silent installer (**use this URL for auto-updates**)
+2. Create a GitHub Release (e.g. tag `v1.4.2`) and upload the **Squirrel** Setup artifact for updates:
+   - `NinjaEraMessenger-Squirrel-Setup-1.4.2.exe`
 3. Copy the **asset download URL**, shaped like:
    ```
-   https://github.com/<org>/<repo>/releases/download/v1.4.2/NinjaEraMessenger-Setup-1.4.2.exe
+   https://github.com/<org>/<repo>/releases/download/v1.4.2/NinjaEraMessenger-Squirrel-Setup-1.4.2.exe
    ```
 4. Sign in as **Super Admin** → Admin → **Desktop App Updates**.
 5. Fill in:

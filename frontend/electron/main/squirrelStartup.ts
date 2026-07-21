@@ -25,7 +25,11 @@ export function handleSquirrelStartup(): boolean {
   const target = path.basename(process.execPath)
 
   if (cmd === '--squirrel-install' || cmd === '--squirrel-updated') {
-    runUpdate([`--createShortcut=${target}`], () => app.quit())
+    // Shortcuts inherit the EXE's embedded icon + AppUserModelId (useAppIdAsId).
+    runUpdate(
+      [`--createShortcut=${target}`, '--shortcut-locations=Desktop,StartMenu'],
+      () => app.quit(),
+    )
     return true
   }
   if (cmd === '--squirrel-uninstall') {

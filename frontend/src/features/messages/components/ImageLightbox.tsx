@@ -4,9 +4,20 @@ import ZoomInIcon from "@mui/icons-material/ZoomIn";
 import ZoomOutIcon from "@mui/icons-material/ZoomOut";
 import RestartAltIcon from "@mui/icons-material/RestartAlt";
 import RotateRightIcon from "@mui/icons-material/RotateRight";
+import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
 import { LIGHTBOX_MIN, LIGHTBOX_MAX } from "../constants";
+import { getNinja } from "@/shared/electronBridge";
 
-export function ImageLightbox({ src, onClose }: { src: string; onClose: () => void }) {
+export function ImageLightbox({
+  src,
+  onClose,
+  desktopMode = false,
+}: {
+  src: string;
+  onClose: () => void;
+  /** Electron shell: top-right shows only minimize (dropdown) + close. */
+  desktopMode?: boolean;
+}) {
   const [scale, setScale] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [rotation, setRotation] = useState(0);
@@ -28,9 +39,16 @@ export function ImageLightbox({ src, onClose }: { src: string; onClose: () => vo
     setRotation(r => (r + 90) % 360);
   }, []);
 
+  /** Desktop: dropdown collapses the window (same path as title-bar minimize / tray). */
+  const minimizePreviewWindow = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    getNinja()?.window?.minimize();
+  }, []);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
+      if (desktopMode) return;
       if (e.key === "0" || e.key === "Home") resetView();
       if (e.key === "+" || e.key === "=") setScale(s => clampScale(s + 0.25));
       if (e.key === "-" || e.key === "_") setScale(s => clampScale(s - 0.25));
@@ -38,7 +56,7 @@ export function ImageLightbox({ src, onClose }: { src: string; onClose: () => vo
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [onClose, resetView, rotateCw]);
+  }, [onClose, resetView, rotateCw, desktopMode]);
 
   useEffect(() => {
     resetView();
@@ -122,25 +140,52 @@ export function ImageLightbox({ src, onClose }: { src: string; onClose: () => vo
       aria-label="Image preview"
     >
       <div className="absolute top-4 right-4 z-20 flex items-center gap-1">
-        <button type="button" onClick={e => { e.stopPropagation(); setScale(s => clampScale(s - 0.25)); }} className="w-10 h-10 flex items-center justify-center rounded-full text-white hover:bg-white/10" aria-label="Zoom out" title="Zoom out">
-          <ZoomOutIcon style={{ fontSize: 22 }} />
-        </button>
-        <button type="button" onClick={e => { e.stopPropagation(); setScale(s => clampScale(s + 0.25)); }} className="w-10 h-10 flex items-center justify-center rounded-full text-white hover:bg-white/10" aria-label="Zoom in" title="Zoom in">
-          <ZoomInIcon style={{ fontSize: 22 }} />
-        </button>
-        <button type="button" onClick={e => { e.stopPropagation(); rotateCw(); }} className="w-10 h-10 flex items-center justify-center rounded-full text-white hover:bg-white/10" aria-label="Rotate 90 degrees" title="Rotate (R)">
-          <RotateRightIcon style={{ fontSize: 22 }} />
-        </button>
-        <button type="button" onClick={e => { e.stopPropagation(); resetView(); }} className="w-10 h-10 flex items-center justify-center rounded-full text-white hover:bg-white/10" aria-label="Reset view" title="Reset view">
-          <RestartAltIcon style={{ fontSize: 22 }} />
-        </button>
-        <button type="button" onClick={e => { e.stopPropagation(); onClose(); }} className="w-10 h-10 flex items-center justify-center rounded-full text-white hover:bg-white/10" aria-label="Close preview">
-          <CloseIcon style={{ fontSize: 24 }} />
-        </button>
+        {desktopMode ? (
+          <>
+            <button
+              type="button"
+              onClick={minimizePreviewWindow}
+              className="w-10 h-10 flex items-center justify-center rounded-full text-white hover:bg-white/10"
+              aria-label="Minimize window"
+              title="Minimize"
+            >
+              <KeyboardArrowDownIcon style={{ fontSize: 26 }} />
+            </button>
+            <button
+              type="button"
+              onClick={e => { e.stopPropagation(); onClose(); }}
+              className="w-10 h-10 flex items-center justify-center rounded-full text-white hover:bg-white/10"
+              aria-label="Close preview"
+              title="Close"
+            >
+              <CloseIcon style={{ fontSize: 24 }} />
+            </button>
+          </>
+        ) : (
+          <>
+            <button type="button" onClick={e => { e.stopPropagation(); setScale(s => clampScale(s - 0.25)); }} className="w-10 h-10 flex items-center justify-center rounded-full text-white hover:bg-white/10" aria-label="Zoom out" title="Zoom out">
+              <ZoomOutIcon style={{ fontSize: 22 }} />
+            </button>
+            <button type="button" onClick={e => { e.stopPropagation(); setScale(s => clampScale(s + 0.25)); }} className="w-10 h-10 flex items-center justify-center rounded-full text-white hover:bg-white/10" aria-label="Zoom in" title="Zoom in">
+              <ZoomInIcon style={{ fontSize: 22 }} />
+            </button>
+            <button type="button" onClick={e => { e.stopPropagation(); rotateCw(); }} className="w-10 h-10 flex items-center justify-center rounded-full text-white hover:bg-white/10" aria-label="Rotate 90 degrees" title="Rotate (R)">
+              <RotateRightIcon style={{ fontSize: 22 }} />
+            </button>
+            <button type="button" onClick={e => { e.stopPropagation(); resetView(); }} className="w-10 h-10 flex items-center justify-center rounded-full text-white hover:bg-white/10" aria-label="Reset view" title="Reset view">
+              <RestartAltIcon style={{ fontSize: 22 }} />
+            </button>
+            <button type="button" onClick={e => { e.stopPropagation(); onClose(); }} className="w-10 h-10 flex items-center justify-center rounded-full text-white hover:bg-white/10" aria-label="Close preview">
+              <CloseIcon style={{ fontSize: 24 }} />
+            </button>
+          </>
+        )}
       </div>
-      <span className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 text-white/80 text-xs font-mono px-3 py-1 rounded-full bg-black/40" aria-live="polite">
-        {Math.round(scale * 100)}% · {rotation}°
-      </span>
+      {!desktopMode && (
+        <span className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 text-white/80 text-xs font-mono px-3 py-1 rounded-full bg-black/40" aria-live="polite">
+          {Math.round(scale * 100)}% · {rotation}°
+        </span>
+      )}
       <div
         ref={viewportRef}
         className="w-full h-full flex items-center justify-center overflow-hidden"

@@ -64,8 +64,9 @@ publish:
     url: https://ninjaera.up.railway.app/api/desktop-releases/
 
 # ── Windows ──────────────────────────────────────────────────────────────────
-# Primary installer: Squirrel.Windows (Postman-style Setup.exe + splash GIF).
-# Requires: electron-builder-squirrel-windows (dev).
+# User-facing installer: NSIS (wizard + cancel-lock once file copy starts).
+# Squirrel kept for silent auto-updates (--silent Setup.exe from GitHub Releases).
+# Requires: electron-builder-squirrel-windows (dev) for the squirrel target.
 # Squirrel install/update shortcut handling lives in electron/main/squirrelStartup.ts
 # (not electron-squirrel-startup — that dep triggers a false NSIS warning because
 # the portable target is implemented via NsisTarget).
@@ -81,6 +82,11 @@ win:
   verifyUpdateCodeSignature: false
   legalTrademarks: Soft Future
   target:
+    # Primary interactive installer — cancel disabled after install begins.
+    - target: nsis
+      arch:
+        - x64
+    # Auto-update package (silent). Publish this asset for desktop-releases.
     - target: squirrel
       arch:
         - x64
@@ -93,16 +99,17 @@ win:
 # Squirrel.Windows — per-user install under %LocalAppData%, Setup.exe + RELEASES/nupkg updates.
 squirrelWindows:
   # HTTPS icon for Programs & Features (local file paths are not accepted by Squirrel).
-  iconUrl: https://ninjaera.up.railway.app/favicon.png
+  # Prefer a square PNG that matches the branded app mark (not the Electron default).
+  iconUrl: https://ninjaera.up.railway.app/logo.png
   # Splash shown while Setup.exe installs (regenerate: npm run desktop:squirrel-spinner).
   # Also auto-picked if present at build/install-spinner.gif
   loadingGif: build/install-spinner.gif
-  artifactName: NinjaEraMessenger-Setup-${version}.${ext}
+  artifactName: NinjaEraMessenger-Squirrel-Setup-${version}.${ext}
   # Prefer appId over npm package name for Squirrel identity.
   useAppIdAsId: true
 
-# NSIS kept as optional alternate (not in win.target). Restore by adding target: nsis
-# or: npm run desktop:dist:win:nsis
+# NSIS — interactive installer with branded pages + install cancel protection
+# (see build/installer/installer.nsh). Also: npm run desktop:dist:win:nsis
 nsis:
   oneClick: false
   perMachine: false
@@ -120,7 +127,8 @@ nsis:
   installerHeader: build/installer/header.bmp
   include: build/installer/installer.nsh
   runAfterFinish: true
-  artifactName: NinjaEraMessenger-NSIS-Setup-${version}.${ext}
+  # Primary user-facing Setup.exe name (cancel-locked once install starts).
+  artifactName: NinjaEraMessenger-Setup-${version}.${ext}
 
 portable:
   artifactName: NinjaEraMessenger-${version}-portable.${ext}

@@ -4,6 +4,11 @@ export type QuietHours = { enabled: boolean; start: string; end: string }
 
 export type PerChannelNotify = Record<string, 'all' | 'mentions' | 'muted'>
 
+/** Controlled font-size presets — avoids free-scale zoom layout breakage. */
+export type FontSizePreset = 'small' | 'medium' | 'large'
+
+export const DEFAULT_ACCENT_COLOR = '#EF6C00'
+
 export type DesktopSettings = {
   general: {
     launchAtStartup: boolean
@@ -13,7 +18,7 @@ export type DesktopSettings = {
     language: string
     theme: 'system' | 'light' | 'dark'
     accentColor: string
-    fontScale: number
+    fontSize: FontSizePreset
     compactMode: boolean
   }
   notifications: {
@@ -52,17 +57,48 @@ export type DesktopSettings = {
   }
 }
 
+/**
+ * Map legacy free-scale `fontScale` (or an explicit `fontSize`) to a preset.
+ * Existing installs keep their closest visual size; missing values → medium.
+ */
+export function resolveFontSize(general: {
+  fontSize?: unknown
+  fontScale?: unknown
+}): FontSizePreset {
+  if (general.fontSize === 'small' || general.fontSize === 'medium' || general.fontSize === 'large') {
+    return general.fontSize
+  }
+  const scale =
+    typeof general.fontScale === 'number' && Number.isFinite(general.fontScale)
+      ? general.fontScale
+      : 1
+  if (scale <= 0.9) return 'small'
+  if (scale >= 1.15) return 'large'
+  return 'medium'
+}
+
+/** Strip legacy fields and normalize presets after merge. */
+export function normalizeDesktopSettings(settings: DesktopSettings): DesktopSettings {
+  const g = { ...settings.general } as DesktopSettings['general'] & { fontScale?: number }
+  const fontSize = resolveFontSize(g)
+  delete g.fontScale
+  return {
+    ...settings,
+    general: { ...g, fontSize },
+  }
+}
+
 export function defaultSettings(downloadsFolder: string): DesktopSettings {
   return {
     general: {
-      launchAtStartup: false,
+      launchAtStartup: true,
       minimizeToTray: true,
       closeToTray: true,
-      startMinimized: false,
+      startMinimized: true,
       language: 'en',
       theme: 'system',
-      accentColor: '#6750A4',
-      fontScale: 1,
+      accentColor: DEFAULT_ACCENT_COLOR,
+      fontSize: 'medium',
       compactMode: false,
     },
     notifications: {
@@ -107,7 +143,12 @@ export function mergeSettings(
   base: DesktopSettings,
   patch: Partial<DesktopSettings> | Record<string, unknown> | null | undefined,
 ): DesktopSettings {
-  if (!patch || typeof patch !== 'object') return base
+  const isTopLevel = !!(base as DesktopSettings)?.general && typeof (base as any).general === 'object'
+
+  if (!patch || typeof patch !== 'object') {
+    return isTopLevel ? normalizeDesktopSettings(base) : (base as DesktopSettings)
+  }
+
   const out: any = Array.isArray(base) ? [...(base as any)] : { ...base }
   for (const [key, value] of Object.entries(patch)) {
     const current = (base as any)[key]
@@ -124,5 +165,6 @@ export function mergeSettings(
       out[key] = value
     }
   }
-  return out
+
+  return isTopLevel ? normalizeDesktopSettings(out as DesktopSettings) : out
 }

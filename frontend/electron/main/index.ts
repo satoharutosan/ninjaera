@@ -2,7 +2,7 @@ import { app, BrowserWindow } from 'electron'
 import { registerAppScheme, handleAppProtocol } from './protocol'
 import { createMainWindow, showMainWindow, broadcastToRenderer, appState } from './window'
 import { createTray } from './tray'
-import { registerIpc } from './ipc'
+import { applySettingsSideEffects, registerIpc } from './ipc'
 import { initSocketManager, connectSocket, initConnectivityWatch } from './socketManager'
 import { initNotifications } from './notifications'
 import { initDownloads } from './downloads'
@@ -96,6 +96,8 @@ if (handleSquirrelStartup()) {
       setStatusSink((status) => broadcastToRenderer(IPC.queueStatus, status))
 
       registerIpc()
+      // Apply launch-at-startup / start-minimized defaults (or preserved prefs) to the OS.
+      applySettingsSideEffects()
       initDownloads()
 
       // First launch after install: execute packaged messenger.url.link once (browser → #/messenger),

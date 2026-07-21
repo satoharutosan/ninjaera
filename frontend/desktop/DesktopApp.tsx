@@ -116,11 +116,11 @@ export default function DesktopApp() {
   const isDark =
     settings.general.theme === "system" ? systemDark : settings.general.theme === "dark";
 
-  const accentColor = settings.general.accentColor || "#6750A4";
+  const accentColor = settings.general.accentColor || "#EF6C00";
   const theme = useMemo(() => buildDesktopTheme(isDark, accentColor), [isDark, accentColor]);
 
-  // Apply theme + accent CSS vars + font scaling + compact to the document.
-  // CSS zoom shrinks the layout box — compensate width/height so the client area stays filled.
+  // Apply theme + accent CSS vars + font-size preset + compact to the document.
+  // Presets use root font-size (not CSS zoom) so rem-based layout stays intact.
   useEffect(() => {
     const root = document.documentElement;
     root.classList.toggle("dark", isDark);
@@ -129,19 +129,18 @@ export default function DesktopApp() {
     localStorage.setItem("ninja-era-theme", isDark ? "dark" : "light");
     applyDesktopAccentCssVars(theme);
 
-    const scale = settings.general.fontScale || 1;
+    const fontSize = settings.general.fontSize || "medium";
+    root.classList.remove("ninja-font-small", "ninja-font-medium", "ninja-font-large");
+    root.classList.add(`ninja-font-${fontSize}`);
+
+    // Clear any legacy zoom compensation from older builds.
     const zoomStyle = root.style as CSSStyleDeclaration & { zoom?: string };
-    zoomStyle.zoom = String(scale);
-    if (scale !== 1) {
-      const pct = `${(100 / scale).toFixed(4)}%`;
-      root.style.width = pct;
-      root.style.height = pct;
-    } else {
-      root.style.width = "";
-      root.style.height = "";
-    }
+    zoomStyle.zoom = "";
+    root.style.width = "";
+    root.style.height = "";
+
     document.body.style.background = theme.bg;
-  }, [isDark, settings.general.compactMode, settings.general.fontScale, settings.general.language, theme]);
+  }, [isDark, settings.general.compactMode, settings.general.fontSize, settings.general.language, theme]);
 
   // ── Auth ──
   const [user, setUser] = useState<ApiUser | null>(() => (getStoredToken() ? getCachedUser() : null));
@@ -636,7 +635,7 @@ export default function DesktopApp() {
                     background:
                       connectionStatus === "disconnected"
                         ? "color-mix(in srgb, #B3261E 18%, transparent)"
-                        : "color-mix(in srgb, var(--ninja-accent, #6750A4) 16%, transparent)",
+                        : "color-mix(in srgb, var(--ninja-accent, #EF6C00) 16%, transparent)",
                     color: theme.onSurface,
                     borderBottom: `1px solid ${theme.outlineVar}`,
                   }}

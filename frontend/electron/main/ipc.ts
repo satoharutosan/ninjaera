@@ -32,7 +32,8 @@ const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFin
 const isObj = (v: unknown): v is Record<string, unknown> =>
   !!v && typeof v === 'object' && !Array.isArray(v)
 
-function applySettingsSideEffects(): void {
+/** Sync OS login-item + DevTools with persisted settings (call on startup and on change). */
+export function applySettingsSideEffects(): void {
   const s = getSettings()
   try {
     app.setLoginItemSettings({

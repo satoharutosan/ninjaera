@@ -18,7 +18,14 @@ const CATEGORIES = [
 ] as const;
 type Category = (typeof CATEGORIES)[number];
 
-const ACCENTS = ["#6750A4", "#2E7D32", "#0277BD", "#C62828", "#EF6C00", "#00838F", "#AD1457"];
+/** Five accent swatches; fifth (RGB 239,108,0) is the default. */
+const ACCENTS = ["#6750A4", "#2E7D32", "#0277BD", "#C62828", "#EF6C00"];
+
+const FONT_SIZE_OPTIONS: Array<[DesktopSettings["general"]["fontSize"], string]> = [
+  ["small", "Small"],
+  ["medium", "Medium"],
+  ["large", "Large"],
+];
 
 function fmtBytes(bytes: number): string {
   if (!bytes) return "0 B";
@@ -145,9 +152,12 @@ export function SettingsDialog({
                     ))}
                   </div>
                 </Row>
-                <Row label={`Font scaling (${Math.round(settings.general.fontScale * 100)}%)`}>
-                  <input type="range" min={0.8} max={1.4} step={0.05} value={settings.general.fontScale} onChange={(e) => onPatch({ general: { fontScale: Number(e.target.value) } })} />
-                </Row>
+                <SelectRow
+                  label="Font Size"
+                  value={settings.general.fontSize || "medium"}
+                  onChange={(v) => onPatch({ general: { fontSize: v as DesktopSettings["general"]["fontSize"] } })}
+                  options={FONT_SIZE_OPTIONS}
+                />
                 <Toggle label="Compact mode" value={settings.general.compactMode} onChange={(v) => onPatch({ general: { compactMode: v } })} />
               </Section>
             )}

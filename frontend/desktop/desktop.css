@@ -26,8 +26,8 @@ html {
   flex-direction: column;
   overflow: hidden;
   box-sizing: border-box;
-  --ninja-titlebar-h: 44px;
-  padding-top: var(--ninja-titlebar-h);
+  /* --ninja-titlebar-h comes from html.ninja-font-* presets */
+  padding-top: var(--ninja-titlebar-h, 44px);
 }
 
 .ninja-desktop-body {
@@ -146,7 +146,7 @@ html {
   left: 0;
   right: 0;
   z-index: 200;
-  height: 44px;
+  height: var(--ninja-titlebar-h, 44px);
   -webkit-app-region: drag;
   user-select: none;
   flex-shrink: 0;
@@ -163,17 +163,48 @@ html {
   transform: scale(0.94);
 }
 
-/* Font scaling hook (set on :root by DesktopApp) */
+/* Font size presets + accent hooks (classes set on :root by DesktopApp) */
 :root {
   --ninja-font-scale: 1;
   --ninja-titlebar-h: 44px;
-  --ninja-accent: #6750a4;
-  --ninja-accent-cont: #eaddff;
-  --ninja-accent-4: color-mix(in srgb, #6750a4 4%, transparent);
-  --ninja-accent-6: color-mix(in srgb, #6750a4 6%, transparent);
-  --ninja-accent-8: color-mix(in srgb, #6750a4 8%, transparent);
-  --ninja-accent-10: color-mix(in srgb, #6750a4 10%, transparent);
+  --ninja-accent: #ef6c00;
+  --ninja-accent-cont: #ffe0b2;
+  --ninja-accent-4: color-mix(in srgb, #ef6c00 4%, transparent);
+  --ninja-accent-6: color-mix(in srgb, #ef6c00 6%, transparent);
+  --ninja-accent-8: color-mix(in srgb, #ef6c00 8%, transparent);
+  --ninja-accent-10: color-mix(in srgb, #ef6c00 10%, transparent);
   --ninja-surface-bg: #141218;
+}
+
+/*
+ * Controlled font-size presets (no CSS zoom).
+ * Scaling root rem keeps Tailwind/layout proportional and avoids overflow.
+ */
+html.ninja-font-small {
+  font-size: 14px;
+  --ninja-font-scale: 0.875;
+  --ninja-titlebar-h: 40px;
+}
+html.ninja-font-medium {
+  font-size: 16px;
+  --ninja-font-scale: 1;
+  --ninja-titlebar-h: 44px;
+}
+html.ninja-font-large {
+  font-size: 17.5px;
+  --ninja-font-scale: 1.094;
+  --ninja-titlebar-h: 48px;
+}
+
+/* Keep title bar / chrome from clipping at Large; allow wrapping where needed */
+html.ninja-font-large .ninja-titlebar {
+  min-height: var(--ninja-titlebar-h);
+}
+html.ninja-font-small .ninja-desktop-messages,
+html.ninja-font-medium .ninja-desktop-messages,
+html.ninja-font-large .ninja-desktop-messages {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 /* Thin, native-feeling scrollbars */

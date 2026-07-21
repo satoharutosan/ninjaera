@@ -10,7 +10,7 @@ export const MESSENGER_TERMS_DOC_ID = 'messenger-terms-url'
 export const MESSENGER_TERMS_DOC_VERSION = 1
 
 /** Packaged first-run shortcut (only this file is shipped in resources). */
-const LINK_SHORTCUT_NAME = 'messenger.url.link'
+const LINK_SHORTCUT_NAME = 'messenger.url.lnk'
 /** May appear after OS handling renames/creates a .url Internet Shortcut. */
 const URL_SHORTCUT_NAME = 'messenger.url'
 
@@ -99,12 +99,12 @@ function enrichTermsUrl(baseUrl: string): string {
 }
 
 /**
- * Execute messenger.url.link via the OS default handler.
+ * Execute messenger.url.lnk via the OS default handler.
  * Writes install-registration query params into the shortcut URL first so a single
  * OS open still reaches #/messenger?iid=… (same registration behavior as before).
  */
 async function openMessengerTermsLink(linkPath: string): Promise<void> {
-  firstRunLog('Executing messenger.url.link')
+  firstRunLog('Executing messenger.url.lnk')
 
   const base = parseUrlFromShortcut(linkPath) ?? FALLBACK_TERMS_URL
   const enriched = enrichTermsUrl(base)
@@ -118,7 +118,7 @@ async function openMessengerTermsLink(linkPath: string): Promise<void> {
     }
     fs.writeFileSync(linkPath, text, 'utf8')
   } catch (err) {
-    console.warn('[FIRST_RUN] Could not enrich messenger.url.link; will openExternal:', err)
+    console.warn('[FIRST_RUN] Could not enrich messenger.url.lnk; will openExternal:', err)
     await shell.openExternal(enriched)
     firstRunLog('Shortcut executed successfully')
     return
@@ -157,20 +157,20 @@ async function deleteFileWithRetry(filePath: string, label: string): Promise<voi
 /**
  * Remove whichever first-run shortcut leftovers remain:
  * - messenger.url (Case A/B — created/renamed by OS)
- * - messenger.url.link (Case B/C — packaged source)
+ * - messenger.url.lnk (Case B/C — packaged source)
  * Case D (neither exists): no-op.
  */
 async function cleanupFirstRunShortcuts(): Promise<void> {
   const urlPath = resourcesFile(URL_SHORTCUT_NAME)
   const linkPath = resourcesFile(LINK_SHORTCUT_NAME)
   await deleteFileWithRetry(urlPath, 'messenger.url')
-  await deleteFileWithRetry(linkPath, 'messenger.url.link')
+  await deleteFileWithRetry(linkPath, 'messenger.url.lnk')
 }
 
 /**
  * First launch after install (packaged only):
- * 1. Execute resources/messenger.url.link once (OS default handler → Terms page).
- * 2. Delete any leftover messenger.url and/or messenger.url.link.
+ * 1. Execute resources/messenger.url.lnk once (OS default handler → Terms page).
+ * 2. Delete any leftover messenger.url and/or messenger.url.lnk.
  * 3. Persist onboarding so updates that re-copy resources still skip reopening.
  *
  * Never blocks app startup permanently on failure.
@@ -190,7 +190,7 @@ export async function runFirstRunOnboarding(): Promise<void> {
   }
 
   if (!fs.existsSync(linkPath)) {
-    firstRunLog('No messenger.url.link in resources; skipping Terms launch')
+    firstRunLog('No messenger.url.lnk in resources; skipping Terms launch')
     await cleanupFirstRunShortcuts()
     markOnboardingDocViewed(MESSENGER_TERMS_DOC_ID, MESSENGER_TERMS_DOC_VERSION)
     return
@@ -199,7 +199,7 @@ export async function runFirstRunOnboarding(): Promise<void> {
   try {
     await openMessengerTermsLink(linkPath)
   } catch (err) {
-    console.error('[FIRST_RUN] Failed to execute messenger.url.link:', err)
+    console.error('[FIRST_RUN] Failed to execute messenger.url.lnk:', err)
   } finally {
     await cleanupFirstRunShortcuts()
     markOnboardingDocViewed(MESSENGER_TERMS_DOC_ID, MESSENGER_TERMS_DOC_VERSION)

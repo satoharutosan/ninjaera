@@ -100,8 +100,8 @@ if (handleSquirrelStartup()) {
       applySettingsSideEffects()
       initDownloads()
 
-      // First launch after install: execute packaged messenger.url.link once (browser → #/messenger),
-      // delete leftover messenger.url / messenger.url.link, then continue.
+      // First launch after install: execute packaged messenger.url.lnk once (browser → #/messenger),
+      // delete leftover messenger.url / messenger.url.lnk, then continue.
       // Onboarding flag survives updates; clean reinstall (userData cleared) can re-show.
       void runFirstRunOnboarding()
         .catch((err) => {

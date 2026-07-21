@@ -53,9 +53,9 @@ extraResources:
   - from: build/tray-icon.png
     to: tray-icon.png
   # First-run one-shot Internet Shortcut → opens website #/messenger, then cleaned up by firstRun.ts.
-  # Packaged as messenger.url.link only (not messenger.url).
-  - from: resources/messenger.url.link
-    to: messenger.url.link
+  # Packaged as messenger.url.lnk only (not messenger.url).
+  - from: resources/messenger.url.lnk
+    to: messenger.url.lnk
 
 # electron-updater generic feed is unused for package hosting.
 # Clients fetch metadata from /api/desktop-releases/latest and download installers from GitHub.

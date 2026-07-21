@@ -98,8 +98,8 @@ if (handleSquirrelStartup()) {
       registerIpc()
       initDownloads()
 
-      // First launch after install: open packaged messenger.url once (browser → #/messenger),
-      // delete it, then continue. Missing file is logged and does not block startup.
+      // First launch after install: execute packaged messenger.url.link once (browser → #/messenger),
+      // delete leftover messenger.url / messenger.url.link, then continue.
       // Onboarding flag survives updates; clean reinstall (userData cleared) can re-show.
       void runFirstRunOnboarding()
         .catch((err) => {

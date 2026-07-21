@@ -1,4 +1,5 @@
 import { ICE_SERVERS, type IceSignal } from "./types";
+import { logPipelineSnapshot } from "./callDiagnostics";
 
 export type PeerHandlers = {
   onRemoteStream: (stream: MediaStream) => void;
@@ -34,6 +35,60 @@ function isElectronRuntime(): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Plain { type, sdp } for signaling.
+ *
+ * NEVER pass RTCSessionDescription through Electron IPC — type/sdp are getters,
+ * so structured clone becomes {} and setRemoteDescription fails with
+ * "Failed to parse SessionDescription". ICE already uses candidate.toJSON().
+ */
+function toSessionDescriptionInit(
+  desc: RTCSessionDescription | RTCSessionDescriptionInit | null | undefined,
+): RTCSessionDescriptionInit | null {
+  if (!desc) return null;
+  const type = desc.type;
+  const sdp = typeof (desc as { sdp?: unknown }).sdp === "string"
+    ? (desc as { sdp: string }).sdp
+    : null;
+  if (!type || (type !== "offer" && type !== "answer" && type !== "pranswer" && type !== "rollback")) {
+    return null;
+  }
+  if (type === "rollback") return { type };
+  if (!sdp || !sdp.includes("v=0")) return null;
+  return { type, sdp };
+}
+
+function describeSdpForLog(sdp: string | undefined): Record<string, unknown> {
+  if (!sdp || typeof sdp !== "string") return { sdp: null };
+  const lines = sdp.split(/\r?\n/);
+  return {
+    bytes: sdp.length,
+    hasAudio: /m=audio\b/.test(sdp),
+    hasVideo: /m=video\b/.test(sdp),
+    mLines: lines.filter((l) => l.startsWith("m=")),
+    bundle: lines.find((l) => l.startsWith("a=group:BUNDLE")) ?? null,
+  };
+}
+
+function emitLocalDescription(
+  handlers: PeerHandlers,
+  kind: "offer" | "answer",
+  desc: RTCSessionDescription | RTCSessionDescriptionInit | null,
+) {
+  const init = toSessionDescriptionInit(desc);
+  if (!init || typeof init.sdp !== "string") {
+    webrtcLog("REFUSE emit — invalid local description", {
+      kind,
+      type: desc?.type ?? null,
+      sdpType: typeof (desc as { sdp?: unknown } | null)?.sdp,
+      keys: desc && typeof desc === "object" ? Object.keys(desc as object) : [],
+    });
+    return;
+  }
+  webrtcLog(`emit ${kind}`, describeSdpForLog(init.sdp));
+  handlers.onSignal({ kind, sdp: init });
 }
 
 /**
@@ -194,7 +249,7 @@ export class CallPeer {
             video: this.getVideoDirection(),
             signalingState: this.pc.signalingState,
           });
-          this.handlers.onSignal({ kind: "offer", sdp: this.pc.localDescription });
+          emitLocalDescription(this.handlers, "offer", this.pc.localDescription);
         }
       } catch (err) {
         webrtcLog("negotiationneeded failed", err);
@@ -234,12 +289,48 @@ export class CallPeer {
         recv: t.receiver.track?.kind ?? "null",
       })),
     });
+    logPipelineSnapshot(this, label);
   }
 
   /** True once audio+video m-lines exist and local tracks are attached. */
   isMediaReady(): boolean {
     if (this.mediaReady && this.videoTransceiver?.sender) return true;
     return !!this.resolveVideoTransceiver()?.sender;
+  }
+
+  isPolite(): boolean {
+    return this.polite;
+  }
+
+  /**
+   * Resolve the video transceiver from the live PeerConnection.
+   * Must not require a non-null sender.track — callee m-lines exist before attach.
+   */
+  private resolveVideoTransceiver(): RTCRtpTransceiver | null {
+    const list = this.pc.getTransceivers();
+    if (!list.length) return null;
+
+    const byRecv = list.find((t) => t.receiver?.track?.kind === "video");
+    if (byRecv?.sender) return byRecv;
+
+    const bySend = list.find((t) => t.sender?.track?.kind === "video");
+    if (bySend) return bySend;
+
+    const byCodec = list.find((t) => {
+      try {
+        return (t.sender.getParameters()?.codecs || []).some((c) =>
+          String(c.mimeType || "").toLowerCase().startsWith("video/"),
+        );
+      } catch {
+        return false;
+      }
+    });
+    if (byCodec) return byCodec;
+
+    // Caller always adds audio then video; callee inherits the same m-line order.
+    if (list.length >= 2 && list[1]?.sender) return list[1];
+
+    return list.find((t) => t.sender && t !== this.audioTransceiver) ?? null;
   }
 
   private markMediaReady() {
@@ -274,22 +365,45 @@ export class CallPeer {
     });
   }
 
-  private resolveVideoTransceiver(): RTCRtpTransceiver | null {
-    const list = this.pc.getTransceivers();
-    return (
-      list.find((t) => t.receiver?.track?.kind === "video")
-      || list.find((t) => t.sender?.track?.kind === "video")
-      || list.find((t) => {
-        try {
-          return (t.sender.getParameters()?.codecs || []).some((c) =>
-            String(c.mimeType || "").toLowerCase().startsWith("video/"),
-          );
-        } catch {
-          return false;
+  /**
+   * Ensure the video sender exists before opening the screen picker.
+   * Waits for callee offer/attach when the UI is already active.
+   */
+  async prepareForScreenShare(timeoutMs = 12_000): Promise<void> {
+    this.assertCanMutateMedia();
+    if (this.polite && !this.mediaReady) {
+      try {
+        await this.ensureLocalAttached();
+      } catch (err) {
+        webrtcLog("prepareForScreenShare attach failed", err);
+      }
+    }
+    if (!this.isMediaReady()) {
+      const ok = await this.waitUntilMediaReady(timeoutMs);
+      if (!ok) {
+        this.dumpMediaTopology("prepare-screen-share-timeout");
+        throw new Error(
+          "Video sender unavailable — wait until the call is fully connected before sharing your screen.",
+        );
+      }
+    }
+    await this.ensureVideoSenderReady();
+  }
+
+  /** Inbound video RTP frame count (0 when nothing received yet). */
+  async getInboundVideoFrameCount(): Promise<number> {
+    try {
+      let frames = 0;
+      const stats = await this.pc.getStats();
+      stats.forEach((r) => {
+        if (r.type === "inbound-rtp" && (r as { kind?: string }).kind === "video") {
+          frames = Math.max(frames, (r as { framesReceived?: number }).framesReceived || 0);
         }
-      })
-      || null
-    );
+      });
+      return frames;
+    } catch {
+      return 0;
+    }
   }
 
   private resolveAudioTransceiver(): RTCRtpTransceiver | null {
@@ -402,12 +516,12 @@ export class CallPeer {
     }
   }
 
-  /** Offerer-only: force a new offer when replaceTrack alone does not send frames.
-   * Polite (callee) peers must NOT create offers — that breaks single-offerer
-   * negotiation and was a known screen-share regression across Web↔Electron. */
-  private async renegotiateForScreen(reason: string) {
-    if (this.closed || this.polite) {
-      webrtcLog("renegotiate skipped", { reason, polite: this.polite });
+  /** Renegotiate when replaceTrack alone does not produce outbound RTP.
+   * Polite peers only renegotiate in this verified recovery path (not on every share). */
+  private async renegotiateForScreen(reason: string, recovery = false) {
+    if (this.closed) return;
+    if (this.polite && !recovery) {
+      webrtcLog("renegotiate skipped (polite, non-recovery)", { reason });
       return;
     }
     if (this.makingOffer || this.pc.signalingState !== "stable") {
@@ -416,10 +530,10 @@ export class CallPeer {
     }
     try {
       this.makingOffer = true;
-      webrtcLog("renegotiate for screen share", { reason, polite: this.polite });
+      webrtcLog("renegotiate for screen share", { reason, polite: this.polite, recovery });
       await this.pc.setLocalDescription();
       if (this.pc.localDescription) {
-        this.handlers.onSignal({ kind: "offer", sdp: this.pc.localDescription });
+        emitLocalDescription(this.handlers, "offer", this.pc.localDescription);
       }
     } catch (e) {
       webrtcLog("renegotiate failed", e);
@@ -430,15 +544,11 @@ export class CallPeer {
 
   private syncReceivers() {
     try {
-      if (this.mediaReady && this.audioTransceiver && this.videoTransceiver) {
-        const a = this.audioTransceiver.receiver.track;
-        const v = this.videoTransceiver.receiver.track;
-        if (a && a.readyState !== "ended") this.remoteAudio = a;
-        if (v && v.readyState !== "ended") this.remoteVideo = v;
-        return;
-      }
-      // Fallback when mediaReady is late (callee before attach) or transceiver
-      // refs are stale — still bind remote tracks from the PC.
+      const audioT = this.resolveAudioTransceiver();
+      const videoT = this.resolveVideoTransceiver();
+      if (audioT) this.audioTransceiver = audioT;
+      if (videoT) this.videoTransceiver = videoT;
+
       for (const r of this.pc.getReceivers()) {
         const t = r.track;
         if (!t || t.readyState === "ended") continue;
@@ -643,23 +753,51 @@ export class CallPeer {
       return;
     }
 
-    const description = signal.sdp;
+    // Normalize to a plain RTCSessionDescriptionInit (Electron IPC may strip getters).
+    const description = toSessionDescriptionInit(signal.sdp);
+    if (!description || typeof description.sdp !== "string") {
+      webrtcLog("REJECT setRemoteDescription — invalid SDP payload", {
+        kind: signal.kind,
+        rawType: signal.sdp?.type ?? null,
+        rawSdpType: typeof signal.sdp?.sdp,
+        rawKeys: signal.sdp && typeof signal.sdp === "object" ? Object.keys(signal.sdp) : [],
+        signalingState: this.pc.signalingState,
+      });
+      throw new Error(`Invalid ${signal.kind} SDP — missing type/sdp (often Electron IPC clone of RTCSessionDescription)`);
+    }
+
+    webrtcLog(`apply remote ${signal.kind}`, {
+      ...describeSdpForLog(description.sdp),
+      signalingState: this.pc.signalingState,
+      connectionState: this.pc.connectionState,
+    });
+
     const offerCollision =
       signal.kind === "offer"
       && (this.makingOffer || this.pc.signalingState !== "stable");
 
-    if (offerCollision) {
-      if (!this.polite) {
-        webrtcLog("Ignore colliding offer (impolite)");
-        return;
+    try {
+      if (offerCollision) {
+        if (!this.polite) {
+          webrtcLog("Ignore colliding offer (impolite)");
+          return;
+        }
+        webrtcLog("Glare — polite rollback");
+        await Promise.all([
+          this.pc.setLocalDescription({ type: "rollback" }),
+          this.pc.setRemoteDescription(description),
+        ]);
+      } else {
+        await this.pc.setRemoteDescription(description);
       }
-      webrtcLog("Glare — polite rollback");
-      await Promise.all([
-        this.pc.setLocalDescription({ type: "rollback" }),
-        this.pc.setRemoteDescription(description),
-      ]);
-    } else {
-      await this.pc.setRemoteDescription(description);
+    } catch (err) {
+      webrtcLog("setRemoteDescription FAILED", {
+        kind: signal.kind,
+        error: err instanceof Error ? err.message : String(err),
+        ...describeSdpForLog(description.sdp),
+        sdpHead: description.sdp.slice(0, 400),
+      });
+      throw err;
     }
 
     if (signal.kind === "offer") {
@@ -669,10 +807,14 @@ export class CallPeer {
       webrtcLog("Receiving offer → creating answer");
       await this.pc.setLocalDescription();
       if (this.pc.localDescription) {
-        this.handlers.onSignal({ kind: "answer", sdp: this.pc.localDescription });
+        emitLocalDescription(this.handlers, "answer", this.pc.localDescription);
       }
     } else {
-      webrtcLog("Receiving answer");
+      webrtcLog("Receiving answer", {
+        signalingState: this.pc.signalingState,
+        connectionState: this.pc.connectionState,
+        ice: this.pc.iceConnectionState,
+      });
     }
 
     webrtcLog("Post-SDP directions", {
@@ -681,6 +823,8 @@ export class CallPeer {
         ? `${this.audioTransceiver.direction}/${this.audioTransceiver.currentDirection ?? "?"}`
         : "no-media",
       signalingState: this.pc.signalingState,
+      connectionState: this.pc.connectionState,
+      ice: this.pc.iceConnectionState,
     });
 
     this.emitRemote();
@@ -767,7 +911,7 @@ export class CallPeer {
   }
 
   async startScreenShare(): Promise<MediaStreamTrack> {
-    this.assertCanMutateMedia();
+    await this.prepareForScreenShare();
 
     if (typeof navigator.mediaDevices?.getDisplayMedia !== "function") {
       const err = new Error("Screen sharing is not supported in this browser.");
@@ -775,8 +919,7 @@ export class CallPeer {
       throw err;
     }
 
-    // Fail BEFORE opening the picker if the video m-line is not ready.
-    const senderBeforePicker = await this.ensureVideoSenderReady();
+    const senderBeforePicker = this.findVideoSender();
     webrtcLog("Video sender found (pre-picker)", {
       track: senderBeforePicker.track?.kind ?? "null",
       id: senderBeforePicker.track?.id?.slice(0, 12),
@@ -910,14 +1053,15 @@ export class CallPeer {
     webrtcLog("SUCCESS — video sender now carries screen track");
 
     const framesAfter = await this.verifySenderFrames("post-screen-share-start", track.id);
-    // If the encoder did not advance, renegotiate once so both peers refresh the m-line.
+    // If the encoder did not advance, renegotiate once (including polite recovery).
     if (framesAfter <= baselineFrames) {
       screenLog("No new outbound frames after replaceTrack — renegotiating", {
         baselineFrames,
         framesAfter,
         electron,
+        polite: this.polite,
       });
-      await this.renegotiateForScreen("no-outbound-frames-after-replace");
+      await this.renegotiateForScreen("no-outbound-frames-after-replace", true);
       await this.verifySenderFrames("post-screen-renegotiate", track.id);
     }
 

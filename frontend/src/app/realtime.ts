@@ -286,7 +286,46 @@ export function emitCallHangup(callId: string) {
 }
 
 export function emitCallSignal(callId: string, signal: unknown) {
-  return emitReliable("call:signal", { callId, signal });
+  // Always send plain JSON-safe objects. RTCSessionDescription / RTCIceCandidate
+  // lose getter-backed fields when cloned across Electron IPC → empty SDP →
+  // setRemoteDescription parse errors (Browser↔Electron only).
+  return emitReliable("call:signal", { callId, signal: sanitizeCallSignal(signal) });
+}
+
+function sanitizeCallSignal(signal: unknown): unknown {
+  if (!signal || typeof signal !== "object") return signal;
+  const s = signal as {
+    kind?: string;
+    sdp?: { type?: RTCSdpType; sdp?: string } | null;
+    candidate?: RTCIceCandidateInit | { toJSON?: () => RTCIceCandidateInit };
+  };
+
+  if (s.kind === "ice") {
+    const c = s.candidate;
+    if (c && typeof (c as { toJSON?: () => RTCIceCandidateInit }).toJSON === "function") {
+      return { kind: "ice", candidate: (c as { toJSON: () => RTCIceCandidateInit }).toJSON() };
+    }
+    return { kind: "ice", candidate: c ?? null };
+  }
+
+  if (s.kind === "offer" || s.kind === "answer") {
+    const type = s.sdp?.type;
+    const sdp = typeof s.sdp?.sdp === "string" ? s.sdp.sdp : null;
+    if (!type || !sdp || !sdp.includes("v=0")) {
+      if (import.meta.env.DEV) {
+        console.error("[CALL_SIGNAL] refuse emit — SDP not serializable", {
+          kind: s.kind,
+          type,
+          sdpType: typeof s.sdp?.sdp,
+          keys: s.sdp && typeof s.sdp === "object" ? Object.keys(s.sdp) : [],
+        });
+      }
+      return signal;
+    }
+    return { kind: s.kind, sdp: { type, sdp } };
+  }
+
+  return signal;
 }
 
 export function emitCallMediaState(payload: {

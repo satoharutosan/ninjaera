@@ -603,8 +603,12 @@ export function CallOverlays() {
             label={[
               peerName,
               !call.peerMicOn ? "Muted" : "",
-              !call.peerCamOn && !call.peerScreenSharing ? "Cam off" : "",
-              call.peerScreenSharing ? "is sharing their screen" : "",
+              !call.peerCamOn && !call.peerScreenReceiving && !call.peerScreenSharing ? "Cam off" : "",
+              call.peerScreenReceiving
+                ? "is sharing their screen"
+                : call.peerScreenSharing
+                  ? "is starting screen share"
+                  : "",
             ].filter(Boolean).join(" · ")}
           >
             {/* Remote video is always muted; audio plays via RemoteAudioSink. */}
@@ -617,11 +621,13 @@ export function CallOverlays() {
               label={
                 call.phase === "connecting"
                   ? "Connecting…"
-                  : call.peerScreenSharing
+                  : call.peerScreenReceiving
                     ? `${peerName} is sharing their screen`
-                    : call.callType === "video"
-                      ? "Waiting for video…"
-                      : "Voice connected"
+                    : call.peerScreenSharing
+                      ? `${peerName} is starting screen share…`
+                      : call.callType === "video"
+                        ? "Waiting for video…"
+                        : "Voice connected"
               }
             />
             <ScreenReceiveWatch

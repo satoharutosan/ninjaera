@@ -25,6 +25,39 @@ export default defineConfig({
     react(),
     tailwindcss(),
   ],
+  // Keep web dep cache separate from electron-vite (both default to node_modules/.vite
+  // and invalidate each other → 504 Outdated Optimize Dep in the browser).
+  cacheDir: path.resolve(__dirname, 'node_modules/.vite-web'),
+  optimizeDeps: {
+    include: [
+      '@mui/material',
+      '@mui/material/Badge',
+      '@emotion/react',
+      '@emotion/styled',
+      '@mui/icons-material/Home',
+      '@mui/icons-material/Info',
+      '@mui/icons-material/MenuBook',
+      '@mui/icons-material/Groups',
+      '@mui/icons-material/ContactSupport',
+      '@mui/icons-material/Login',
+      '@mui/icons-material/PersonAdd',
+      '@mui/icons-material/Menu',
+      '@mui/icons-material/Close',
+      '@mui/icons-material/DarkMode',
+      '@mui/icons-material/LightMode',
+      '@mui/icons-material/Notifications',
+      '@mui/icons-material/Send',
+      '@mui/icons-material/ChevronRight',
+      '@mui/icons-material/Facebook',
+      '@mui/icons-material/X',
+      '@mui/icons-material/YouTube',
+      '@mui/icons-material/WhatsApp',
+      '@mui/icons-material/AdminPanelSettings',
+      '@mui/icons-material/Logout',
+      '@mui/icons-material/Person',
+      '@mui/icons-material/ChatBubble',
+    ],
+  },
   resolve: {
     alias: {
       // Alias @ to the src directory

@@ -45,6 +45,8 @@ export default defineConfig({
   },
   renderer: {
     root: path.resolve(__dirname, 'desktop'),
+    // Separate from web Vite cache (node_modules/.vite-web) to avoid 504 Outdated Optimize Dep.
+    cacheDir: path.resolve(__dirname, 'node_modules/.vite-electron'),
     plugins: [figmaAssetResolver(), react(), tailwindcss()],
     resolve: {
       alias: {

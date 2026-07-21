@@ -23,6 +23,7 @@ import {
 } from "@/app/realtime";
 import { validateAndGetMedia } from "./devices";
 import { CallPeer } from "./webrtc";
+import { logPipelineSnapshot } from "./callDiagnostics";
 import { resolveIceServers } from "./iceConfig";
 import { CALL_OFFLINE_MESSAGE } from "./permissions";
 import { getNinja } from "@/shared/electronBridge";
@@ -38,7 +39,10 @@ type CallContextValue = {
   micOn: boolean;
   camOn: boolean;
   screenSharing: boolean;
+  /** Peer announced screen share via signaling (may precede RTP). */
   peerScreenSharing: boolean;
+  /** True once inbound screen RTP or a live remote video track is confirmed. */
+  peerScreenReceiving: boolean;
   peerMicOn: boolean;
   peerCamOn: boolean;
   localView: VideoViewMode;
@@ -114,6 +118,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
   const [camOn, setCamOn] = useState(false);
   const [screenSharing, setScreenSharing] = useState(false);
   const [peerScreenSharing, setPeerScreenSharing] = useState(false);
+  const [peerScreenReceiving, setPeerScreenReceiving] = useState(false);
   const [peerMicOn, setPeerMicOn] = useState(true);
   const [peerCamOn, setPeerCamOn] = useState(true);
   const [localView, setLocalView] = useState<VideoViewMode>("auto");
@@ -240,6 +245,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
     setConnectionState("new");
     setScreenSharing(false);
     setPeerScreenSharing(false);
+    setPeerScreenReceiving(false);
     peerAnnouncedScreenRef.current = false;
     setRemoteBindEpoch(0);
     setPeerMicOn(true);
@@ -381,7 +387,14 @@ export function CallProvider({ children }: { children: ReactNode }) {
     refreshLocalPreview();
     const buffered = pendingSignalsRef.current.splice(0);
     for (const sig of buffered) {
-      try { await peer.handleSignal(sig); } catch { /* */ }
+      try {
+        await peer.handleSignal(sig);
+      } catch (err) {
+        if (import.meta.env.DEV) console.error("[WebRTC] buffered signal error", err);
+        if (sig.kind !== "ice" && err instanceof Error && /negotiation failed|missing media/i.test(err.message)) {
+          throw err;
+        }
+      }
     }
     // Callee: offer may still be in flight. Wait so screen share / remote video
     // bind against real m-lines instead of a permanently "not ready" peer.
@@ -584,18 +597,10 @@ export function CallProvider({ children }: { children: ReactNode }) {
       toast.error("Call is not connected yet");
       return;
     }
-    // Callee mediaReady is only set after the caller's offer — wait briefly
-    // instead of permanently blocking with the "fully connected" toast.
-    if (!peer.isMediaReady()) {
-      peer.dumpMediaTopology("share-waiting-media-ready");
-      const ready = await peer.waitUntilMediaReady(8_000);
-      if (!ready) {
-        toast.message("Wait until the call is fully connected before sharing your screen.");
-        return;
-      }
-    }
+    logPipelineSnapshot(peer, "shareScreen:before");
     try {
       await peer.startScreenShare();
+      logPipelineSnapshot(peer, "shareScreen:after");
       setScreenSharing(true);
       setLocalView("screen");
       localViewRef.current = "screen";
@@ -626,8 +631,8 @@ export function CallProvider({ children }: { children: ReactNode }) {
         toast.message("Screen sharing permission was denied.");
       } else if (name === "NotSupportedError" || /not supported/i.test(msg)) {
         toast.error("Screen sharing is not supported in this browser.");
-      } else if (/Video sender unavailable/i.test(msg)) {
-        toast.error("Video sender unavailable — wait until the call is connected, then try again.");
+      } else if (/Video sender unavailable|fully connected/i.test(msg)) {
+        toast.message("Wait until the call is fully connected before sharing your screen.");
       } else if (/establish|connection/i.test(msg)) {
         toast.error("Unable to establish screen sharing connection.");
       } else {
@@ -806,7 +811,10 @@ export function CallProvider({ children }: { children: ReactNode }) {
           await peer.handleSignal(signal);
           refreshRemotePreview();
         } catch (e) {
-          if (import.meta.env.DEV) console.warn("[WebRTC] signal error", e);
+          if (import.meta.env.DEV) console.error("[WebRTC] signal error", e);
+          if (signal.kind !== "ice" && e instanceof Error && /negotiation failed|missing media/i.test(e.message)) {
+            toast.error("Call media setup failed");
+          }
         }
       }),
       onRealtimeEvent<{
@@ -821,6 +829,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
         if (typeof data.screenSharing === "boolean") {
           peerAnnouncedScreenRef.current = data.screenSharing;
           setPeerScreenSharing(data.screenSharing);
+          if (!data.screenSharing) setPeerScreenReceiving(false);
           setRemoteBindEpoch(e => e + 1);
           if (import.meta.env.DEV) {
             console.log("[SCREEN_SHARE] peer status", data.screenSharing, {
@@ -887,9 +896,35 @@ export function CallProvider({ children }: { children: ReactNode }) {
     cleanupPeer();
   }, [cleanupPeer]);
 
+  // Confirm peer screen RTP before treating share as visually active (Step 9).
+  useEffect(() => {
+    if (!peerScreenSharing || (phase !== "active" && phase !== "connecting")) {
+      setPeerScreenReceiving(false);
+      return;
+    }
+    let cancelled = false;
+    const poll = async () => {
+      const peer = peerRef.current;
+      if (!peer || cancelled) return;
+      refreshRemotePreview();
+      const frames = await peer.getInboundVideoFrameCount();
+      const vt = peer.pc.getReceivers().find((r) => r.track?.kind === "video")?.track;
+      const receiving =
+        frames > 0
+        || (!!vt && vt.readyState === "live" && !vt.muted && (vt.getSettings?.().width ?? 0) > 32);
+      setPeerScreenReceiving(receiving);
+    };
+    void poll();
+    const id = window.setInterval(() => { void poll(); }, 500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [peerScreenSharing, phase, refreshRemotePreview]);
+
   const value = useMemo<CallContextValue>(() => ({
     phase, invite, callId, callType, elapsedSec, ringingSec, micOn, camOn,
-    screenSharing, peerScreenSharing, peerMicOn, peerCamOn, localView, remoteView,
+    screenSharing, peerScreenSharing, peerScreenReceiving, peerMicOn, peerCamOn, localView, remoteView,
     connectionState, localStream, remoteStream, remoteAudioStream, remoteBindEpoch,
     audioInputs, videoInputs, audioOutputs, selectedOutputId, selectedMicId, selectedCamId,
     startCall: (opts) => { void startCall(opts); },
@@ -901,7 +936,7 @@ export function CallProvider({ children }: { children: ReactNode }) {
     setRemoteView: setRemoteViewMode,
   }), [
     phase, invite, callId, callType, elapsedSec, ringingSec, micOn, camOn,
-    screenSharing, peerScreenSharing, peerMicOn, peerCamOn, localView, remoteView,
+    screenSharing, peerScreenSharing, peerScreenReceiving, peerMicOn, peerCamOn, localView, remoteView,
     connectionState, localStream, remoteStream, remoteAudioStream, remoteBindEpoch,
     audioInputs, videoInputs, audioOutputs, selectedOutputId, selectedMicId, selectedCamId,
     startCall, acceptIncoming, declineIncoming, ignoreIncoming, hangup,

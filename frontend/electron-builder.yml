@@ -24,6 +24,7 @@ forceCodeSigning: false
 # electron-builder clears OriginalFilename during rcedit; restore after that pass.
 # (signApp still finishes resource editing when code signing is skipped, so afterSign runs.)
 afterSign: ./scripts/after-sign.cjs
+afterAllArtifactBuild: ./scripts/after-all-artifact-build.cjs
 
 extraMetadata:
   name: ninja-era-messenger

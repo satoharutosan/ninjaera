@@ -50,7 +50,9 @@ async function readVideoRtp(
   let packets = 0;
   const rtpType = direction === "outbound" ? "outbound-rtp" : "inbound-rtp";
   stats.forEach((r) => {
-    if (r.type !== rtpType || (r as { kind?: string }).kind !== "video") return;
+    const kind = (r as { kind?: string }).kind
+      ?? (r as { mediaType?: string }).mediaType;
+    if (r.type !== rtpType || kind !== "video") return;
     const row = r as {
       framesSent?: number;
       framesReceived?: number;

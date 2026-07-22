@@ -55,7 +55,15 @@ for ($i = 0; $i -lt $frames.Count; $i++) {
 }
 foreach ($data in $frames) { $bw.Write($data) }
 $bw.Flush()
-[System.IO.File]::WriteAllBytes($OutIco, $ms.ToArray())
+$bytes = $ms.ToArray()
 $bw.Dispose()
 $ms.Dispose()
+
+# Atomic replace — avoids "user-mapped section" / locked icon.ico failures on Windows.
+$tmp = "$OutIco.new"
+[System.IO.File]::WriteAllBytes($tmp, $bytes)
+if (Test-Path $OutIco) {
+  [System.IO.File]::Delete($OutIco)
+}
+[System.IO.File]::Move($tmp, $OutIco)
 Write-Output "Wrote $OutIco ($((Get-Item $OutIco).Length) bytes) from $SrcPng"

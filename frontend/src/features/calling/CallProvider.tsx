@@ -664,9 +664,15 @@ export function CallProvider({ children }: { children: ReactNode }) {
           msg,
           connectionState: peer.pc.connectionState,
           signalingState: peer.pc.signalingState,
+          iceConnectionState: peer.pc.iceConnectionState,
+          iceGatheringState: peer.pc.iceGatheringState,
           mediaReady: peer.isMediaReady(),
+          videoDirection: peer.getVideoDirection(),
+          remoteTrackId: peer.getRemoteVideoTrackId(),
+          screenSharing: peer.isScreenSharing(),
         });
         peer.dumpMediaTopology("share-failed");
+        logPipelineSnapshot(peer, "share-failed");
       }
       if (name === "NotAllowedError" || name === "AbortError") {
         toast.message("Screen sharing permission was denied.");

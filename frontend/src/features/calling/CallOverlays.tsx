@@ -257,7 +257,9 @@ function ScreenReceiveWatch({
         const stats = await getStats?.();
         let frames = 0;
         stats?.forEach((r) => {
-          if (r.type === "inbound-rtp" && (r as { kind?: string }).kind === "video") {
+          const kind = (r as { kind?: string }).kind
+            ?? (r as { mediaType?: string }).mediaType;
+          if (r.type === "inbound-rtp" && kind === "video") {
             frames = Math.max(frames, (r as { framesReceived?: number }).framesReceived || 0);
           }
         });

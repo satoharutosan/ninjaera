@@ -113,8 +113,15 @@ export function createMainWindow(): BrowserWindow {
   ses.setPermissionCheckHandler((_wc, permission, _requestingOrigin, details) => {
     if (permission === "media") {
       const mediaType = (details as { mediaType?: string })?.mediaType
-      // Allow mic, camera, and combined media checks.
-      return !mediaType || mediaType === "audio" || mediaType === "video" || mediaType === "microphone" || mediaType === "camera"
+      // Electron docs: mediaType may be video | audio | unknown (and some builds omit it).
+      return (
+        !mediaType
+        || mediaType === "unknown"
+        || mediaType === "audio"
+        || mediaType === "video"
+        || mediaType === "microphone"
+        || mediaType === "camera"
+      )
     }
     return mediaPermissions.has(permission)
   })

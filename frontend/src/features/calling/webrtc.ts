@@ -72,6 +72,22 @@ function describeSdpForLog(sdp: string | undefined): Record<string, unknown> {
   };
 }
 
+/** Chromium/Electron may report `kind` or legacy `mediaType` on RTP stats. */
+function isVideoRtpStat(r: RTCStats): boolean {
+  const kind = (r as { kind?: string }).kind
+    ?? (r as { mediaType?: string }).mediaType;
+  return kind === "video";
+}
+
+type OutboundVideoRtpSnapshot = {
+  found: boolean;
+  framesSent: number;
+  bytesSent: number;
+  packetsSent: number;
+  frameWidth: number;
+  frameHeight: number;
+};
+
 function emitLocalDescription(
   handlers: PeerHandlers,
   kind: "offer" | "answer",
@@ -399,7 +415,7 @@ export class CallPeer {
       let frames = 0;
       const stats = await this.pc.getStats();
       stats.forEach((r) => {
-        if (r.type === "inbound-rtp" && (r as { kind?: string }).kind === "video") {
+        if (r.type === "inbound-rtp" && isVideoRtpStat(r)) {
           frames = Math.max(frames, (r as { framesReceived?: number }).framesReceived || 0);
         }
       });
@@ -418,13 +434,28 @@ export class CallPeer {
     );
   }
 
+  /** True when a sender still looks like the negotiated video m-line. */
+  private isVideoSender(sender: RTCRtpSender | null | undefined): boolean {
+    if (!sender) return false;
+    if (sender.track?.kind === "video") return true;
+    try {
+      return (sender.getParameters()?.codecs || []).some((c) =>
+        String(c.mimeType || "").toLowerCase().startsWith("video/"),
+      );
+    } catch {
+      return false;
+    }
+  }
+
   /**
    * Resolve the live video RTCRtpSender from the peer connection — never assume
    * getSenders()[0], and recover if the cached transceiver pointer went stale.
    */
   private findVideoSender(): RTCRtpSender {
     const cached = this.mediaReady ? this.videoTransceiver?.sender : null;
-    if (cached) return cached;
+    if (cached && this.isVideoSender(cached) && this.videoTransceiver?.sender === cached) {
+      return cached;
+    }
 
     const tr = this.resolveVideoTransceiver();
     if (tr?.sender) {
@@ -439,15 +470,7 @@ export class CallPeer {
     if (withVideoTrack) return withVideoTrack;
 
     // Negotiated video sender with track temporarily null (between replaceTrack).
-    const byCodec = this.pc.getSenders().find((s) => {
-      try {
-        return (s.getParameters()?.codecs || []).some((c) =>
-          String(c.mimeType || "").toLowerCase().startsWith("video/"),
-        );
-      } catch {
-        return false;
-      }
-    });
+    const byCodec = this.pc.getSenders().find((s) => this.isVideoSender(s));
     if (byCodec) return byCodec;
 
     this.dumpMediaTopology("video-sender-missing");
@@ -519,12 +542,16 @@ export class CallPeer {
     }
   }
 
-  /** Renegotiate when replaceTrack alone does not produce outbound RTP.
-   * Polite peers only renegotiate in this verified recovery path (not on every share). */
+  /** Renegotiate only as a last-resort recovery when replaceTrack produces no RTP.
+   * Keep the single-offerer rule: polite (callee) must never create offers. */
   private async renegotiateForScreen(reason: string, recovery = false) {
     if (this.closed) return;
-    if (this.polite && !recovery) {
-      webrtcLog("renegotiate skipped (polite, non-recovery)", { reason });
+    if (this.polite) {
+      webrtcLog("renegotiate skipped (polite / single-offerer)", { reason, recovery });
+      return;
+    }
+    if (!recovery) {
+      webrtcLog("renegotiate skipped (non-recovery)", { reason });
       return;
     }
     if (this.makingOffer || this.pc.signalingState !== "stable") {
@@ -543,6 +570,145 @@ export class CallPeer {
     } finally {
       this.makingOffer = false;
     }
+  }
+
+  private async readOutboundVideoRtp(): Promise<OutboundVideoRtpSnapshot> {
+    const empty: OutboundVideoRtpSnapshot = {
+      found: false,
+      framesSent: 0,
+      bytesSent: 0,
+      packetsSent: 0,
+      frameWidth: 0,
+      frameHeight: 0,
+    };
+    try {
+      const stats = await this.pc.getStats();
+      let best = empty;
+      stats.forEach((r) => {
+        if (r.type !== "outbound-rtp" || !isVideoRtpStat(r)) return;
+        const o = r as {
+          framesSent?: number;
+          bytesSent?: number;
+          packetsSent?: number;
+          frameWidth?: number;
+          frameHeight?: number;
+        };
+        const framesSent = o.framesSent || 0;
+        if (!best.found || framesSent >= best.framesSent) {
+          best = {
+            found: true,
+            framesSent,
+            bytesSent: o.bytesSent || 0,
+            packetsSent: o.packetsSent || 0,
+            frameWidth: o.frameWidth || 0,
+            frameHeight: o.frameHeight || 0,
+          };
+        }
+      });
+      return best;
+    } catch {
+      return empty;
+    }
+  }
+
+  private async readOutboundVideoFrames(): Promise<number> {
+    return (await this.readOutboundVideoRtp()).framesSent;
+  }
+
+  /**
+   * Wait for outbound video frames to advance after replaceTrack.
+   * Returns whether advancement was confirmed. Missing stats ≠ stalled.
+   */
+  private async waitForOutboundFrameAdvance(
+    label: string,
+    expectTrackId: string,
+    baselineFrames: number,
+    timeoutMs = 2500,
+  ): Promise<{ advanced: boolean; snapshot: OutboundVideoRtpSnapshot; sawStats: boolean }> {
+    const started = performance.now();
+    let last: OutboundVideoRtpSnapshot = {
+      found: false,
+      framesSent: baselineFrames,
+      bytesSent: 0,
+      packetsSent: 0,
+      frameWidth: 0,
+      frameHeight: 0,
+    };
+    let sawStats = false;
+
+    while (performance.now() - started < timeoutMs) {
+      if (this.closed) break;
+      last = await this.readOutboundVideoRtp();
+      if (last.found) sawStats = true;
+      webrtcLog(`[frames sending] ${label}`, {
+        trackId: expectTrackId.slice(0, 12),
+        framesSent: last.framesSent,
+        bytesSent: last.bytesSent,
+        packetsSent: last.packetsSent,
+        size: `${last.frameWidth}x${last.frameHeight}`,
+        baselineFrames,
+        found: last.found,
+      });
+      if (last.found && last.framesSent > baselineFrames) {
+        return { advanced: true, snapshot: last, sawStats };
+      }
+      await new Promise((r) => window.setTimeout(r, 400));
+    }
+
+    return {
+      advanced: last.found && last.framesSent > baselineFrames,
+      snapshot: last,
+      sawStats,
+    };
+  }
+
+  /** Verifies RTP is actually flowing on the video sender after replaceTrack. */
+  private async verifySenderFrames(
+    label: string,
+    expectTrackId: string,
+    baselineFrames?: number,
+  ): Promise<number> {
+    if (this.closed) return 0;
+    const baseline = baselineFrames ?? await this.readOutboundVideoFrames();
+    const result = await this.waitForOutboundFrameAdvance(label, expectTrackId, baseline, 1200);
+    return result.snapshot.framesSent;
+  }
+
+  private async logVideoStats(label: string) {
+    if (!isDev || this.closed) return;
+    try {
+      const stats = await this.pc.getStats();
+      stats.forEach((r) => {
+        if (r.type === "outbound-rtp" && isVideoRtpStat(r)) {
+          const o = r as unknown as {
+            framesSent?: number;
+            bytesSent?: number;
+            frameWidth?: number;
+            frameHeight?: number;
+          };
+          webrtcLog(`Stats outbound (${label})`, {
+            framesSent: o.framesSent,
+            bytesSent: o.bytesSent,
+            size: `${o.frameWidth || 0}x${o.frameHeight || 0}`,
+          });
+        }
+        if (r.type === "inbound-rtp" && isVideoRtpStat(r)) {
+          const o = r as unknown as {
+            framesReceived?: number;
+            bytesReceived?: number;
+            frameWidth?: number;
+            frameHeight?: number;
+            framesDecoded?: number;
+          };
+          webrtcLog(`Stats inbound (${label})`, {
+            framesReceived: o.framesReceived,
+            framesDecoded: o.framesDecoded,
+            bytesReceived: o.bytesReceived,
+            size: `${o.frameWidth || 0}x${o.frameHeight || 0}`,
+          });
+        }
+      });
+    } catch { /* */ }
   }
 
   private syncReceivers() {
@@ -582,68 +748,6 @@ export class CallPeer {
     if (this.pc.connectionState === "closed" || this.pc.connectionState === "failed") {
       throw new Error("Call connection is not available");
     }
-  }
-
-  /** Verifies RTP is actually flowing on the video sender after replaceTrack. */
-  private async verifySenderFrames(label: string, expectTrackId: string): Promise<number> {
-    if (this.closed) return 0;
-    try {
-      await new Promise((r) => window.setTimeout(r, 800));
-      let frames = 0;
-      const stats = await this.pc.getStats();
-      stats.forEach((r) => {
-        if (r.type === "outbound-rtp" && (r as { kind?: string }).kind === "video") {
-          const o = r as unknown as { framesSent?: number; bytesSent?: number; frameWidth?: number; frameHeight?: number };
-          frames = Math.max(frames, o.framesSent || 0);
-          webrtcLog(`[frames sending] ${label}`, {
-            trackId: expectTrackId.slice(0, 12),
-            framesSent: o.framesSent,
-            bytesSent: o.bytesSent,
-            size: `${o.frameWidth || 0}x${o.frameHeight || 0}`,
-          });
-        }
-      });
-      return frames;
-    } catch {
-      return 0;
-    }
-  }
-
-  private async logVideoStats(label: string) {
-    if (!isDev || this.closed) return;
-    try {
-      const stats = await this.pc.getStats();
-      stats.forEach((r) => {
-        if (r.type === "outbound-rtp" && (r as { kind?: string }).kind === "video") {
-          const o = r as unknown as {
-            framesSent?: number;
-            bytesSent?: number;
-            frameWidth?: number;
-            frameHeight?: number;
-          };
-          webrtcLog(`Stats outbound (${label})`, {
-            framesSent: o.framesSent,
-            bytesSent: o.bytesSent,
-            size: `${o.frameWidth || 0}x${o.frameHeight || 0}`,
-          });
-        }
-        if (r.type === "inbound-rtp" && (r as { kind?: string }).kind === "video") {
-          const o = r as unknown as {
-            framesReceived?: number;
-            bytesReceived?: number;
-            frameWidth?: number;
-            frameHeight?: number;
-            framesDecoded?: number;
-          };
-          webrtcLog(`Stats inbound (${label})`, {
-            framesReceived: o.framesReceived,
-            framesDecoded: o.framesDecoded,
-            bytesReceived: o.bytesReceived,
-            size: `${o.frameWidth || 0}x${o.frameHeight || 0}`,
-          });
-        }
-      });
-    } catch { /* */ }
   }
 
   private startStatsWatch() {
@@ -751,12 +855,17 @@ export class CallPeer {
       const sender = this.findVideoSender();
       if (sender.track !== this.cameraTrack) return;
       await this.tuneVideoSender(sender, "camera");
+      // Screen share may have started while we were tuning — never retune as camera then.
+      if (this.sendingScreen || sender.track !== this.cameraTrack) return;
       const baseline = await this.readOutboundVideoFrames();
-      const frames = await this.verifySenderFrames(label, this.cameraTrack.id);
+      if (this.sendingScreen || sender.track !== this.cameraTrack) return;
+      const frames = await this.verifySenderFrames(label, this.cameraTrack.id, baseline);
+      if (this.sendingScreen || sender.track !== this.cameraTrack) return;
       if (frames <= baseline) {
         webrtcLog("Camera RTP stalled — keyframe + retune", { label, baseline, frames });
         await this.tuneVideoSender(sender, "camera");
-        await this.verifySenderFrames(`${label}-retry`, this.cameraTrack.id);
+        if (this.sendingScreen || sender.track !== this.cameraTrack) return;
+        await this.verifySenderFrames(`${label}-retry`, this.cameraTrack.id, frames);
       }
     } catch (e) {
       webrtcLog("verifyCameraSending failed", e);
@@ -1179,28 +1288,19 @@ export class CallPeer {
     await this.tuneVideoSender(sender, "screen");
     webrtcLog("SUCCESS — video sender now carries screen track");
 
-    const framesAfter = await this.verifySenderFrames("post-screen-share-start", track.id);
-    // If the encoder did not advance, renegotiate once (including polite recovery).
-    if (framesAfter <= baselineFrames) {
-      screenLog("No new outbound frames after replaceTrack — renegotiating", {
-        baselineFrames,
-        framesAfter,
-        electron,
-        polite: this.polite,
-      });
-      await this.renegotiateForScreen("no-outbound-frames-after-replace", true);
-      await this.verifySenderFrames("post-screen-renegotiate", track.id);
-    }
-
     track.onended = () => {
       screenLog("Track ended (browser UI stop)");
       void this.stopScreenShare();
     };
 
+    // Verify outbound RTP in the background. Do not block media-state / UI on
+    // stats polling — replaceTrack already attached the screen track.
+    void this.confirmScreenOutbound(track, sender, baselineFrames, electron);
+
     this.startStatsWatch();
     window.setTimeout(() => void this.logVideoStats("post-share"), 800);
 
-    screenLog("Active — sender verified", {
+    screenLog("Active — sender attached", {
       senderTrack: afterId?.slice(0, 12),
       currentDirection: this.videoTransceiver.currentDirection,
       connectionState: this.pc.connectionState,
@@ -1209,18 +1309,73 @@ export class CallPeer {
     return track;
   }
 
-  private async readOutboundVideoFrames(): Promise<number> {
-    try {
-      let frames = 0;
-      const stats = await this.pc.getStats();
-      stats.forEach((r) => {
-        if (r.type === "outbound-rtp" && (r as { kind?: string }).kind === "video") {
-          frames = Math.max(frames, (r as { framesSent?: number }).framesSent || 0);
-        }
+  /**
+   * Background confirmation that screen frames are leaving the sender.
+   * Retunes / keyframes first; caller-only renegotiate only on confirmed stall.
+   */
+  private async confirmScreenOutbound(
+    track: MediaStreamTrack,
+    sender: RTCRtpSender,
+    baselineFrames: number,
+    electron: boolean,
+  ) {
+    if (this.closed || !this.sendingScreen || this.screenTrack !== track) return;
+
+    let advance = await this.waitForOutboundFrameAdvance(
+      "post-screen-share-start",
+      track.id,
+      baselineFrames,
+      2500,
+    );
+    if (!advance.advanced && this.sendingScreen && this.screenTrack === track && sender.track === track) {
+      screenLog("Outbound frames not advancing — retune + keyframe", {
+        baselineFrames,
+        frames: advance.snapshot.framesSent,
+        sawStats: advance.sawStats,
+        electron,
+        polite: this.polite,
       });
-      return frames;
-    } catch {
-      return 0;
+      await this.tuneVideoSender(sender, "screen");
+      if (this.closed || !this.sendingScreen || this.screenTrack !== track) return;
+      advance = await this.waitForOutboundFrameAdvance(
+        "post-screen-share-retune",
+        track.id,
+        baselineFrames,
+        2000,
+      );
+    }
+    if (
+      !advance.advanced
+      && advance.sawStats
+      && this.sendingScreen
+      && this.screenTrack === track
+      && sender.track === track
+      && !this.polite
+    ) {
+      screenLog("Confirmed stall after replaceTrack — caller recovery renegotiate", {
+        baselineFrames,
+        frames: advance.snapshot.framesSent,
+        electron,
+      });
+      await this.renegotiateForScreen("no-outbound-frames-after-replace", true);
+      if (this.closed || !this.sendingScreen || this.screenTrack !== track) return;
+      await this.waitForOutboundFrameAdvance(
+        "post-screen-renegotiate",
+        track.id,
+        baselineFrames,
+        2000,
+      );
+    } else if (!advance.advanced && !advance.sawStats) {
+      screenLog("Outbound RTP stats unavailable — keeping replaceTrack without renegotiate", {
+        baselineFrames,
+        connectionState: this.pc.connectionState,
+        signalingState: this.pc.signalingState,
+      });
+    } else if (advance.advanced) {
+      screenLog("Outbound screen frames confirmed", {
+        framesSent: advance.snapshot.framesSent,
+        size: `${advance.snapshot.frameWidth}x${advance.snapshot.frameHeight}`,
+      });
     }
   }
 

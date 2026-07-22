@@ -1,12 +1,13 @@
 import { Router } from "express";
 import { optionalAuth } from "../middleware/auth.js";
 import { registerAppInstallation } from "../services/appInstallations.js";
+import { emitToAdmins } from "../services/realtime.js";
 
 const router = Router();
 
 /**
  * Public (optional auth) — silent install/access registration from app landings.
- * Upserts by (appId, IP) when IP is known; otherwise (appId, installationId).
+ * Upserts by installationId (one install → one row).
  */
 router.post("/app-installations", optionalAuth, async (req, res) => {
   try {
@@ -21,7 +22,8 @@ router.post("/app-installations", optionalAuth, async (req, res) => {
       platform: body.platform,
       operatingSystem: body.operatingSystem,
     });
-    res.json(result);
+    emitToAdmins("installation:upserted", result.installation);
+    res.json({ ok: result.ok, duplicate: result.duplicate, id: result.id });
   } catch (err) {
     const status = (err as { status?: number }).status || 500;
     const message = err instanceof Error ? err.message : "Registration failed";

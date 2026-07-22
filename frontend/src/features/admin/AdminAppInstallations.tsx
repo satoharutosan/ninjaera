@@ -183,6 +183,68 @@ export function AdminAppInstallations({
     });
   }, [load, statusFilter]);
 
+  // HTTP register / reconnect upsert — merge into the table without a manual refresh.
+  useEffect(() => {
+    return onRealtimeEvent<AppInstallationRecord>("installation:upserted", (data) => {
+      if (!data?.installationId || data.id == null) return;
+
+      const matchesApp = !appFilter || appFilter === "all" || data.appId === appFilter;
+      const q = debouncedSearch.trim().toLowerCase();
+      const matchesSearch = !q || [
+        data.appId,
+        data.appName,
+        data.appVersion,
+        data.username,
+        data.userRole,
+        data.ipAddress,
+        data.country,
+        data.countryCode,
+        data.platform,
+        data.operatingSystem,
+        data.installationId,
+      ].some((v) => String(v || "").toLowerCase().includes(q));
+
+      if (!matchesApp || !matchesSearch) {
+        // Filtered out of the current view — drop a stale copy if present.
+        setRows((prev) => prev.filter((r) => r.installationId !== data.installationId && r.id !== data.id));
+        return;
+      }
+
+      if (statusFilter === "online" || statusFilter === "offline") {
+        void load();
+        return;
+      }
+
+      setRows((prev) => {
+        const existingIdx = prev.findIndex(
+          (r) => r.installationId === data.installationId || r.id === data.id,
+        );
+        let next: AppInstallationRecord[];
+        if (existingIdx >= 0) {
+          next = [...prev];
+          next[existingIdx] = { ...next[existingIdx], ...data };
+        } else if (page === 1) {
+          next = [data, ...prev];
+          setTotal((t) => t + 1);
+        } else {
+          // New row belongs on page 1; keep this page consistent via reload.
+          void load();
+          return prev;
+        }
+
+        if (sort.sortBy === "updated_at") {
+          next.sort((a, b) => {
+            const av = String(a.updatedAt || a.createdAt || "");
+            const bv = String(b.updatedAt || b.createdAt || "");
+            const cmp = av.localeCompare(bv);
+            return sort.sortDir === "asc" ? cmp : -cmp;
+          });
+        }
+        return next;
+      });
+    });
+  }, [appFilter, debouncedSearch, statusFilter, page, sort, load]);
+
   const pageCount = Math.max(1, Math.ceil(total / limit));
   const allSelected = rows.length > 0 && rows.every((r) => selected.has(r.id));
 
@@ -264,7 +326,7 @@ export function AdminAppInstallations({
             Application Installations
           </h2>
           <p className="text-sm mt-1" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
-            Latest access per application and IP (Messenger and future apps). Reopens update the same record.
+            One record per installation. Reopens and reconnects update the same row; newest activity first.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">

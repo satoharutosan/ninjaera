@@ -76,8 +76,8 @@ export type RegisterAppInstallOptions = {
 
 /**
  * Register / refresh a desktop app installation for this browser/device.
- * Safe to call on every #/messenger (or future app landing) visit —
- * the backend upserts by (app_id, IP) so duplicates are not created.
+ * Safe to call on every landing visit — the backend upserts by installationId
+ * so the same install never creates duplicate rows.
  */
 export async function registerAppInstallationSilent(opts: RegisterAppInstallOptions): Promise<void> {
   const appId = opts.appId.trim().toLowerCase();

@@ -253,7 +253,7 @@ export default function DesktopApp() {
     };
   }, []);
 
-  // Record / refresh desktop install for Super Admin (upsert by app + IP).
+  // Record / refresh desktop install for Super Admin (upsert by installationId).
   // Re-run after login so the row binds to the authenticated user (Monitor needs a live endpoint;
   // DB userId also stays accurate for the admin table).
   useEffect(() => {

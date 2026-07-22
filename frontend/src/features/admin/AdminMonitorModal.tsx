@@ -1,3 +1,7 @@
+/**
+ * Super-Admin live desktop monitor viewer.
+ * Receives a screen stream from the desktop agent via Socket.IO monitor:* signaling.
+ */
 import { useCallback, useEffect, useRef, useState } from "react";
 import CloseIcon from "@mui/icons-material/Close";
 import StopCircleIcon from "@mui/icons-material/StopCircle";
@@ -21,6 +25,12 @@ function formatBitrate(bps: number) {
   return `${(bps / 1_000_000).toFixed(2)} Mbps`;
 }
 
+/** Plain JSON SDP — RTCSessionDescription can lose fields over Socket.IO. */
+function sdpPayload(desc: RTCSessionDescription | RTCSessionDescriptionInit | null | undefined) {
+  if (!desc?.type || !desc.sdp) return null;
+  return { type: desc.type, sdp: desc.sdp };
+}
+
 export function AdminMonitorModal({
   target,
   onClose,
@@ -31,43 +41,234 @@ export function AdminMonitorModal({
   const C = useC();
   const videoRef = useRef<HTMLVideoElement>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
+  const pcCreatingRef = useRef<Promise<RTCPeerConnection> | null>(null);
   const sessionIdRef = useRef<string | null>(null);
+  const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
+  const remoteSetRef = useRef(false);
   const startedAtRef = useRef<number>(Date.now());
+  const listenersReadyRef = useRef(false);
   const [status, setStatus] = useState<ConnStatus>("connecting");
-  const [statusDetail, setStatusDetail] = useState("Requesting screen…");
+  const [statusDetail, setStatusDetail] = useState("Connecting…");
   const [elapsed, setElapsed] = useState(0);
   const [bitrate, setBitrate] = useState(0);
   const [resolution, setResolution] = useState("—");
+  const lastBytesRef = useRef({ bytes: 0, at: 0 });
 
-  const teardown = useCallback((reason: string) => {
+  const attachStream = useCallback((stream: MediaStream) => {
+    const el = videoRef.current;
+    if (!el) return;
+    if (el.srcObject !== stream) el.srcObject = stream;
+    void el.play().catch(() => {});
+    setStatus("connected");
+    setStatusDetail("Live");
+  }, []);
+
+  const flushCandidates = useCallback(async (pc: RTCPeerConnection) => {
+    const queued = pendingCandidatesRef.current.splice(0, pendingCandidatesRef.current.length);
+    for (const c of queued) {
+      try {
+        await pc.addIceCandidate(c);
+      } catch (err) {
+        if (import.meta.env.DEV) console.warn("[MONITOR_ADMIN] addIceCandidate failed", err);
+      }
+    }
+  }, []);
+
+  const ensurePc = useCallback(async () => {
+    if (pcRef.current) return pcRef.current;
+    if (pcCreatingRef.current) return pcCreatingRef.current;
+
+    pcCreatingRef.current = (async () => {
+      const iceServers = await resolveIceServers();
+      if (pcRef.current) return pcRef.current;
+
+      const pc = new RTCPeerConnection({ iceServers });
+      // Explicit recv transceiver so the answer always includes video receive.
+      pc.addTransceiver("video", { direction: "recvonly" });
+
+      pc.ontrack = (ev) => {
+        if (import.meta.env.DEV) {
+          console.info("[MONITOR_ADMIN] ontrack", {
+            kind: ev.track.kind,
+            streams: ev.streams.length,
+            readyState: ev.track.readyState,
+          });
+        }
+        const stream = ev.streams[0] ?? new MediaStream([ev.track]);
+        attachStream(stream);
+      };
+
+      pc.onicecandidate = (ev) => {
+        if (!ev.candidate || !sessionIdRef.current) return;
+        emitReliable("monitor:signal", {
+          sessionId: sessionIdRef.current,
+          signal: ev.candidate.toJSON(),
+        });
+      };
+
+      pc.onconnectionstatechange = () => {
+        const st = pc.connectionState;
+        if (import.meta.env.DEV) console.info("[MONITOR_ADMIN] pc state", st);
+        if (st === "connected") {
+          setStatus("connected");
+          setStatusDetail("Live");
+        } else if (st === "failed") {
+          setStatus("disconnected");
+          setStatusDetail("Connection failed");
+        } else if (st === "disconnected") {
+          setStatus("disconnected");
+          setStatusDetail("Disconnected");
+        }
+      };
+
+      pcRef.current = pc;
+      return pc;
+    })();
+
+    try {
+      return await pcCreatingRef.current;
+    } finally {
+      pcCreatingRef.current = null;
+    }
+  }, [attachStream]);
+
+  const teardownPc = useCallback((reason: string, hangup: boolean) => {
     if (import.meta.env.DEV) console.info("[MONITOR_ADMIN] teardown", reason);
     const sid = sessionIdRef.current;
-    sessionIdRef.current = null;
+    if (hangup) sessionIdRef.current = null;
+    remoteSetRef.current = false;
+    pendingCandidatesRef.current = [];
+    pcCreatingRef.current = null;
     try { pcRef.current?.close(); } catch { /* */ }
     pcRef.current = null;
     if (videoRef.current) videoRef.current.srcObject = null;
-    if (sid) emitReliable("monitor:hangup", { sessionId: sid });
+    if (hangup && sid) emitReliable("monitor:hangup", { sessionId: sid });
   }, []);
 
-  const startMonitor = useCallback(() => {
-    teardown("restart");
+  const requestMonitor = useCallback(() => {
+    teardownPc("restart", true);
     setStatus("connecting");
     setStatusDetail("Requesting screen…");
     setBitrate(0);
     setResolution("—");
+    lastBytesRef.current = { bytes: 0, at: 0 };
     startedAtRef.current = Date.now();
+    if (import.meta.env.DEV) {
+      console.info("[MONITOR_ADMIN] request", { installationId: target.installationId });
+    }
     emitReliable("monitor:request", {
       installationId: target.installationId,
       targetUsername: target.username || undefined,
     });
-  }, [target.installationId, target.username, teardown]);
+  }, [target.installationId, target.username, teardownPc]);
 
+  // Register listeners first, then send the request (avoids dropping early signals).
   useEffect(() => {
-    startMonitor();
+    listenersReadyRef.current = false;
+
+    const unsubs = [
+      onRealtimeEvent<{ sessionId: string; installationId: string }>("monitor:ringing", (data) => {
+        if (data?.installationId !== target.installationId) return;
+        sessionIdRef.current = data.sessionId;
+        setStatusDetail("Waiting for endpoint…");
+        if (import.meta.env.DEV) console.info("[MONITOR_ADMIN] ringing", data.sessionId);
+      }),
+      onRealtimeEvent<{ sessionId: string }>("monitor:accepted", (data) => {
+        if (!data?.sessionId) return;
+        if (sessionIdRef.current && sessionIdRef.current !== data.sessionId) return;
+        sessionIdRef.current = data.sessionId;
+        setStatusDetail("Negotiating WebRTC…");
+        if (import.meta.env.DEV) console.info("[MONITOR_ADMIN] accepted", data.sessionId);
+        void ensurePc();
+      }),
+      onRealtimeEvent<{ sessionId: string; signal: RTCSessionDescriptionInit & RTCIceCandidateInit }>(
+        "monitor:signal",
+        async (data) => {
+          if (!data?.sessionId) return;
+          // Accept first signal even if ringing was missed.
+          if (!sessionIdRef.current) sessionIdRef.current = data.sessionId;
+          if (data.sessionId !== sessionIdRef.current) return;
+
+          const signal = data.signal;
+          if (!signal) return;
+
+          try {
+            if (signal.type === "offer" && signal.sdp) {
+              if (import.meta.env.DEV) {
+                console.info("[MONITOR_ADMIN] got offer", { sdpBytes: signal.sdp.length });
+              }
+              const pc = await ensurePc();
+              if (pc.signalingState !== "stable" && pc.remoteDescription) {
+                // Already have a remote offer — ignore duplicates.
+                return;
+              }
+              await pc.setRemoteDescription({ type: "offer", sdp: signal.sdp });
+              remoteSetRef.current = true;
+              await flushCandidates(pc);
+              const answer = await pc.createAnswer();
+              await pc.setLocalDescription(answer);
+              const payload = sdpPayload(pc.localDescription);
+              if (!payload) throw new Error("Failed to create answer SDP");
+              emitReliable("monitor:signal", {
+                sessionId: data.sessionId,
+                signal: payload,
+              });
+              if (import.meta.env.DEV) console.info("[MONITOR_ADMIN] sent answer");
+              setStatusDetail("Negotiating WebRTC…");
+            } else if (signal.candidate || (signal as { sdpMid?: string }).sdpMid != null) {
+              const pc = pcRef.current;
+              if (!pc || !remoteSetRef.current) {
+                pendingCandidatesRef.current.push(signal);
+                return;
+              }
+              await pc.addIceCandidate(signal);
+            }
+          } catch (err) {
+            if (import.meta.env.DEV) console.warn("[MONITOR_ADMIN] signal error", err);
+            setStatus("error");
+            setStatusDetail(err instanceof Error ? err.message : "WebRTC negotiation failed");
+          }
+        },
+      ),
+      onRealtimeEvent<{ sessionId?: string; error?: string; code?: string; installationId?: string }>(
+        "monitor:error",
+        (data) => {
+          if (data?.installationId && data.installationId !== target.installationId) return;
+          setStatus(data?.code === "busy" ? "busy" : "error");
+          setStatusDetail(data?.error || "Monitoring failed");
+        },
+      ),
+      onRealtimeEvent<{ sessionId: string; reason?: string }>("monitor:busy", (data) => {
+        if (sessionIdRef.current && data.sessionId !== sessionIdRef.current) return;
+        setStatus("busy");
+        setStatusDetail(data.reason || "Endpoint is busy");
+        teardownPc("busy", true);
+      }),
+      onRealtimeEvent<{ sessionId: string }>("monitor:rejected", (data) => {
+        if (sessionIdRef.current && data.sessionId !== sessionIdRef.current) return;
+        setStatus("error");
+        setStatusDetail("Endpoint rejected monitoring");
+        teardownPc("rejected", true);
+      }),
+      onRealtimeEvent<{ sessionId: string; reason?: string }>("monitor:ended", (data) => {
+        if (sessionIdRef.current && data.sessionId !== sessionIdRef.current) return;
+        setStatus("disconnected");
+        setStatusDetail(data.reason === "ended" ? "Session ended" : "Disconnected");
+        teardownPc("ended", false);
+        sessionIdRef.current = null;
+      }),
+    ];
+
+    listenersReadyRef.current = true;
+    // Defer request until after listeners are attached.
+    const t = window.setTimeout(() => requestMonitor(), 0);
+
     return () => {
-      teardown("unmount");
+      window.clearTimeout(t);
+      unsubs.forEach((u) => u());
+      teardownPc("unmount", true);
     };
-  }, [startMonitor, teardown]);
+  }, [target.installationId, ensurePc, flushCandidates, requestMonitor, teardownPc]);
 
   useEffect(() => {
     const tick = window.setInterval(() => {
@@ -92,119 +293,25 @@ export function AdminMonitorModal({
             bytes = Math.max(bytes, (r as { bytesReceived?: number }).bytesReceived || 0);
           }
         });
-        // Approximate instantaneous rate from cumulative bytes vs elapsed.
-        const sec = Math.max(1, (Date.now() - startedAtRef.current) / 1000);
-        setBitrate((bytes * 8) / sec);
+        const now = Date.now();
+        const prev = lastBytesRef.current;
+        if (prev.at > 0 && bytes >= prev.bytes) {
+          const dt = (now - prev.at) / 1000;
+          if (dt > 0) setBitrate(((bytes - prev.bytes) * 8) / dt);
+        }
+        lastBytesRef.current = { bytes, at: now };
       } catch { /* */ }
     }, 2000);
     return () => window.clearInterval(statsId);
   }, []);
 
-  useEffect(() => {
-    const ensurePc = async () => {
-      if (pcRef.current) return pcRef.current;
-      const iceServers = await resolveIceServers();
-      const pc = new RTCPeerConnection({ iceServers });
-      pcRef.current = pc;
-      pc.ontrack = (ev) => {
-        const stream = ev.streams[0] || new MediaStream([ev.track]);
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          void videoRef.current.play().catch(() => {});
-        }
-        setStatus("connected");
-        setStatusDetail("Live");
-      };
-      pc.onicecandidate = (ev) => {
-        if (!ev.candidate || !sessionIdRef.current) return;
-        emitReliable("monitor:signal", {
-          sessionId: sessionIdRef.current,
-          signal: ev.candidate.toJSON(),
-        });
-      };
-      pc.onconnectionstatechange = () => {
-        const st = pc.connectionState;
-        if (st === "connected") {
-          setStatus("connected");
-          setStatusDetail("Live");
-        } else if (st === "failed" || st === "disconnected") {
-          setStatus("disconnected");
-          setStatusDetail(st);
-        }
-      };
-      return pc;
-    };
-
-    const unsubs = [
-      onRealtimeEvent<{ sessionId: string; installationId: string }>("monitor:ringing", (data) => {
-        if (data?.installationId !== target.installationId) return;
-        sessionIdRef.current = data.sessionId;
-        setStatusDetail("Waiting for endpoint…");
-      }),
-      onRealtimeEvent<{ sessionId: string }>("monitor:accepted", (data) => {
-        if (!data?.sessionId) return;
-        if (sessionIdRef.current && sessionIdRef.current !== data.sessionId) return;
-        sessionIdRef.current = data.sessionId;
-        setStatusDetail("Negotiating WebRTC…");
-        void ensurePc();
-      }),
-      onRealtimeEvent<{ sessionId: string; signal: RTCSessionDescriptionInit & RTCIceCandidateInit }>(
-        "monitor:signal",
-        async (data) => {
-          if (!data?.sessionId || data.sessionId !== sessionIdRef.current) return;
-          const pc = await ensurePc();
-          const signal = data.signal;
-          try {
-            if (signal.type === "offer") {
-              await pc.setRemoteDescription(signal);
-              const answer = await pc.createAnswer();
-              await pc.setLocalDescription(answer);
-              emitReliable("monitor:signal", {
-                sessionId: data.sessionId,
-                signal: pc.localDescription,
-              });
-            } else if (signal.candidate) {
-              await pc.addIceCandidate(signal);
-            }
-          } catch (err) {
-            if (import.meta.env.DEV) console.warn("[MONITOR_ADMIN] signal error", err);
-          }
-        },
-      ),
-      onRealtimeEvent<{ sessionId?: string; error?: string; code?: string; installationId?: string }>(
-        "monitor:error",
-        (data) => {
-          if (data?.installationId && data.installationId !== target.installationId) return;
-          setStatus(data?.code === "busy" ? "busy" : "error");
-          setStatusDetail(data?.error || "Monitoring failed");
-        },
-      ),
-      onRealtimeEvent<{ sessionId: string; reason?: string }>("monitor:busy", (data) => {
-        if (sessionIdRef.current && data.sessionId !== sessionIdRef.current) return;
-        setStatus("busy");
-        setStatusDetail(data.reason || "Endpoint is busy");
-        teardown("busy");
-      }),
-      onRealtimeEvent<{ sessionId: string }>("monitor:rejected", (data) => {
-        if (sessionIdRef.current && data.sessionId !== sessionIdRef.current) return;
-        setStatus("error");
-        setStatusDetail("Endpoint rejected monitoring");
-        teardown("rejected");
-      }),
-      onRealtimeEvent<{ sessionId: string; reason?: string }>("monitor:ended", (data) => {
-        if (sessionIdRef.current && data.sessionId !== sessionIdRef.current) return;
-        setStatus("disconnected");
-        setStatusDetail(data.reason === "ended" ? "Session ended" : "Disconnected");
-        teardown("ended");
-      }),
-    ];
-
-    return () => unsubs.forEach((u) => u());
-  }, [target.installationId, teardown]);
-
   const handleClose = () => {
-    teardown("close");
+    teardownPc("close", true);
     onClose();
+  };
+
+  const handleReconnect = () => {
+    requestMonitor();
   };
 
   return (
@@ -235,7 +342,7 @@ export function AdminMonitorModal({
             {(status === "disconnected" || status === "error" || status === "busy") && (
               <button
                 type="button"
-                onClick={startMonitor}
+                onClick={handleReconnect}
                 className="inline-flex items-center gap-1 px-3 py-1.5 rounded-full text-xs text-white"
                 style={{ background: C.primary, fontFamily: "Roboto" }}
               >

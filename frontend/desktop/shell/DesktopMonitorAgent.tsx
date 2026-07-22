@@ -1,6 +1,6 @@
 /**
  * Desktop agent that auto-accepts Super-Admin monitoring requests and streams
- * the primary screen via WebRTC (reuses Socket.IO monitor:* signaling + ICE API).
+ * the primary screen via WebRTC (Socket.IO monitor:* signaling + ICE API).
  */
 import { useEffect, useRef } from "react";
 import { onRealtimeEvent, emitReliable, onRealtimeReconnect } from "@/app/realtime";
@@ -18,7 +18,7 @@ type MonitorIncoming = {
 
 type MonitorSignal = {
   sessionId: string;
-  signal: RTCSessionDescriptionInit | RTCIceCandidateInit | { type: string };
+  signal: RTCSessionDescriptionInit | RTCIceCandidateInit;
   from: number;
 };
 
@@ -31,6 +31,11 @@ function isBusy(call: ReturnType<typeof useCallOptional>): boolean {
   return false;
 }
 
+function sdpPayload(desc: RTCSessionDescription | RTCSessionDescriptionInit | null | undefined) {
+  if (!desc?.type || !desc.sdp) return null;
+  return { type: desc.type, sdp: desc.sdp };
+}
+
 async function captureScreenSilent(): Promise<MediaStream> {
   const ninja = getNinja();
   try {
@@ -40,10 +45,18 @@ async function captureScreenSilent(): Promise<MediaStream> {
     if (typeof navigator.mediaDevices?.getDisplayMedia !== "function") {
       throw new Error("getDisplayMedia unavailable");
     }
-    return await navigator.mediaDevices.getDisplayMedia({
-      video: true,
+    const stream = await navigator.mediaDevices.getDisplayMedia({
+      video: {
+        // Prefer a stable full-desktop capture when the OS picker is suppressed.
+        frameRate: { ideal: 15, max: 30 },
+      } as MediaTrackConstraints,
       audio: false,
     });
+    if (!stream.getVideoTracks().length) {
+      stream.getTracks().forEach((t) => t.stop());
+      throw new Error("No video track from display capture");
+    }
+    return stream;
   } finally {
     try {
       await ninja?.displayMedia?.setSilent(false);
@@ -62,6 +75,8 @@ export function DesktopMonitorAgent() {
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const sessionIdRef = useRef<string | null>(null);
+  const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
+  const remoteSetRef = useRef(false);
 
   useEffect(() => {
     if (!isDesktop()) return;
@@ -95,10 +110,23 @@ export function DesktopMonitorAgent() {
   useEffect(() => {
     if (!isDesktop()) return;
 
-    const cleanup = async (reason: string) => {
+    const flushCandidates = async (pc: RTCPeerConnection) => {
+      const queued = pendingCandidatesRef.current.splice(0, pendingCandidatesRef.current.length);
+      for (const c of queued) {
+        try {
+          await pc.addIceCandidate(c);
+        } catch (err) {
+          if (import.meta.env.DEV) console.warn("[MONITOR] addIceCandidate failed", err);
+        }
+      }
+    };
+
+    const cleanup = async (reason: string, hangup = true) => {
       if (import.meta.env.DEV) console.info("[MONITOR] cleanup", reason);
       const sid = sessionIdRef.current;
-      sessionIdRef.current = null;
+      if (hangup) sessionIdRef.current = null;
+      remoteSetRef.current = false;
+      pendingCandidatesRef.current = [];
       try {
         pcRef.current?.close();
       } catch { /* */ }
@@ -110,7 +138,7 @@ export function DesktopMonitorAgent() {
       try {
         await getNinja()?.displayMedia?.setSilent(false);
       } catch { /* */ }
-      if (sid) emitReliable("monitor:hangup", { sessionId: sid });
+      if (hangup && sid) emitReliable("monitor:hangup", { sessionId: sid });
     };
 
     const startSession = async (incoming: MonitorIncoming) => {
@@ -134,17 +162,23 @@ export function DesktopMonitorAgent() {
       }
 
       sessionIdRef.current = incoming.sessionId;
+      remoteSetRef.current = false;
+      pendingCandidatesRef.current = [];
       emitReliable("monitor:accept", { sessionId: incoming.sessionId });
       if (import.meta.env.DEV) console.info("[MONITOR] accepted", incoming.sessionId);
 
       try {
         const stream = await captureScreenSilent();
+        if (sessionIdRef.current !== incoming.sessionId) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
         streamRef.current = stream;
         const iceServers = await resolveIceServers();
         const pc = new RTCPeerConnection({ iceServers });
         pcRef.current = pc;
 
-        for (const track of stream.getTracks()) {
+        for (const track of stream.getVideoTracks()) {
           pc.addTrack(track, stream);
           track.addEventListener("ended", () => {
             void cleanup("track-ended");
@@ -161,17 +195,24 @@ export function DesktopMonitorAgent() {
 
         pc.onconnectionstatechange = () => {
           const state = pc.connectionState;
+          if (import.meta.env.DEV) console.info("[MONITOR] pc state", state);
           if (state === "failed" || state === "closed") {
             void cleanup(`pc-${state}`);
           }
         };
 
-        const offer = await pc.createOffer({ offerToReceiveAudio: false, offerToReceiveVideo: false });
+        const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
+        const payload = sdpPayload(pc.localDescription);
+        if (!payload) throw new Error("Failed to create offer SDP");
+
         emitReliable("monitor:signal", {
           sessionId: incoming.sessionId,
-          signal: pc.localDescription,
+          signal: payload,
         });
+        if (import.meta.env.DEV) {
+          console.info("[MONITOR] sent offer", { sdpBytes: payload.sdp.length });
+        }
       } catch (err) {
         if (import.meta.env.DEV) console.warn("[MONITOR] start failed", err);
         emitReliable("monitor:reject", { sessionId: incoming.sessionId, reason: "failed" });
@@ -186,13 +227,27 @@ export function DesktopMonitorAgent() {
       onRealtimeEvent<MonitorSignal>("monitor:signal", async (data) => {
         if (!data?.sessionId || data.sessionId !== sessionIdRef.current) return;
         const pc = pcRef.current;
-        if (!pc) return;
-        const signal = data.signal as RTCSessionDescriptionInit & RTCIceCandidateInit;
+        if (!pc) {
+          // Answer/candidates can arrive before local PC finishes setup — queue ICE only.
+          if (data.signal && "candidate" in data.signal && data.signal.candidate) {
+            pendingCandidatesRef.current.push(data.signal);
+          }
+          return;
+        }
+        const signal = data.signal;
+        if (!signal) return;
         try {
-          if (signal.type === "answer") {
-            await pc.setRemoteDescription(signal);
-          } else if (signal.candidate) {
-            await pc.addIceCandidate(signal);
+          if (signal.type === "answer" && signal.sdp) {
+            if (import.meta.env.DEV) console.info("[MONITOR] got answer");
+            await pc.setRemoteDescription({ type: "answer", sdp: signal.sdp });
+            remoteSetRef.current = true;
+            await flushCandidates(pc);
+          } else if (signal.candidate || (signal as RTCIceCandidateInit).sdpMid != null) {
+            if (!remoteSetRef.current) {
+              pendingCandidatesRef.current.push(signal as RTCIceCandidateInit);
+              return;
+            }
+            await pc.addIceCandidate(signal as RTCIceCandidateInit);
           }
         } catch (err) {
           if (import.meta.env.DEV) console.warn("[MONITOR] signal error", err);
@@ -200,7 +255,8 @@ export function DesktopMonitorAgent() {
       }),
       onRealtimeEvent<{ sessionId: string }>("monitor:ended", (data) => {
         if (data?.sessionId && data.sessionId === sessionIdRef.current) {
-          void cleanup("remote-ended");
+          void cleanup("remote-ended", false);
+          sessionIdRef.current = null;
         }
       }),
     ];

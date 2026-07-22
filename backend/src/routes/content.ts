@@ -7,6 +7,7 @@ import { isAdmin, isTeamMember } from "../middleware/admin.js";
 import { logActivitySync } from "../services/activityLog.js";
 import { getStorage } from "../storage/index.js";
 import { validateExternalDownloadUrl } from "../services/externalDownloadUrl.js";
+import { resolveResourceDownloadFilename } from "../services/downloadFilename.js";
 
 const router = Router();
 
@@ -112,12 +113,14 @@ router.get("/resources", optionalAuth, async (req, res) => {
 router.get("/resources/:id/download", optionalAuth, async (req, res) => {
   const id = Number(req.params.id);
   const resource = await qGet<{
+    id: number;
     content_url: string | null;
     external_url: string | null;
     title: string;
     category: string;
     version: string | null;
     visibility?: string | null;
+    original_filename?: string | null;
   }>("SELECT * FROM resources WHERE id = ? AND enabled = 1", id);
 
   const hasExternal = !!(resource?.external_url && String(resource.external_url).trim());
@@ -213,8 +216,14 @@ router.get("/resources/:id/download", optionalAuth, async (req, res) => {
       result: "success",
     });
 
+    const downloadName = resolveResourceDownloadFilename({
+      id,
+      title: resource.title,
+      original_filename: resource.original_filename,
+      content_url: resource.content_url,
+    });
     res.setHeader("X-Content-Type-Options", "nosniff");
-    res.download(filePath, path.basename(filePath));
+    res.download(filePath, downloadName);
     return;
   }
 
@@ -225,9 +234,18 @@ router.get("/resources/:id/download", optionalAuth, async (req, res) => {
     return;
   }
 
+  const downloadName = resolveResourceDownloadFilename({
+    id,
+    title: resource.title,
+    original_filename: resource.original_filename,
+    content_url: resource.content_url,
+  });
+
   let downloadUrl: string;
   try {
-    downloadUrl = await storage.getSignedDownloadUrl(resource.content_url!, 120);
+    downloadUrl = await storage.getSignedDownloadUrl(resource.content_url!, 120, {
+      downloadFilename: downloadName,
+    });
   } catch {
     res.status(404).json({ error: "File not found" });
     return;
@@ -244,7 +262,9 @@ router.get("/resources/:id/download", optionalAuth, async (req, res) => {
     result: "success",
   });
 
-  res.redirect(downloadUrl);
+  // Return signed URL + display name so the client can set the download filename
+  // even when CDN CORS does not expose Content-Disposition.
+  res.json({ downloadUrl, filename: downloadName });
 });
 
 router.get("/characters", async (_req, res) => {

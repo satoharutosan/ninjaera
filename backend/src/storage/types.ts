@@ -45,7 +45,11 @@ export interface StorageProvider {
   /** Resolve a stored URL/key to a publicly fetchable URL. */
   getPublicUrl(urlOrKey: string): Promise<string>;
   /** Optional short-lived signed URL for private downloads. */
-  getSignedDownloadUrl?(urlOrKey: string, expiresInSeconds?: number): Promise<string>;
+  getSignedDownloadUrl?(
+    urlOrKey: string,
+    expiresInSeconds?: number,
+    opts?: { downloadFilename?: string },
+  ): Promise<string>;
   /** Whether this URL/key is managed by this storage layer. */
   isManagedUrl(url: string): boolean;
 }

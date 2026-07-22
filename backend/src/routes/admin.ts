@@ -1557,9 +1557,30 @@ router.get("/resources", async (_req, res) => {
       fileSize: r.file_size,
       version: r.version,
       sortOrder: r.sort_order,
+      originalFilename: r.original_filename || null,
       visibility: String(r.visibility || "PUBLIC").toUpperCase() === "PRIVATE" ? "PRIVATE" : "PUBLIC",
     })),
   });
+});
+
+router.put("/resources/reorder", async (req, res) => {
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids.map((n: unknown) => Number(n)).filter((n: number) => Number.isFinite(n) && n > 0) : [];
+  if (!ids.length) {
+    res.status(400).json({ error: "ids array is required" });
+    return;
+  }
+  const existing = await qAll<{ id: number }>(
+    `SELECT id FROM resources WHERE id IN (${ids.map(() => "?").join(",")})`,
+    ...ids,
+  );
+  if (existing.length !== ids.length) {
+    res.status(400).json({ error: "One or more resource ids are invalid" });
+    return;
+  }
+  for (let i = 0; i < ids.length; i++) {
+    await qRun("UPDATE resources SET sort_order = ? WHERE id = ?", i + 1, ids[i]);
+  }
+  res.json({ ok: true, ids });
 });
 
 router.post("/resources", extendUploadSocketTimeouts, resourceFileUpload, async (req, res) => {
@@ -1595,11 +1616,17 @@ router.post("/resources", extendUploadSocketTimeouts, resourceFileUpload, async 
     if (!isExternal && req.file) stored = await persistMulterFile(req.file, "resource");
     const fileUrl = isExternal ? null : (stored?.url ?? null);
     const fileSize = isExternal ? null : (stored?.size ?? null);
+    const originalFilename = isExternal ? null : (req.file?.originalname?.trim() || null);
     const vis = String(visibility || "PUBLIC").toUpperCase() === "PRIVATE" ? "PRIVATE" : "PUBLIC";
+    let order = Number(sortOrder);
+    if (!Number.isFinite(order)) {
+      const maxRow = await qGet<{ m: number | null }>("SELECT COALESCE(MAX(sort_order), 0) as m FROM resources");
+      order = Number(maxRow?.m ?? 0) + 1;
+    }
     const result = await qRun(`
-      INSERT INTO resources (title, category, description, content_url, external_url, published_at, enabled, uploader_id, file_size, version, sort_order, visibility)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, title, normalizedCategory, description || "", fileUrl, external, ts, enabled === "false" ? 0 : 1, req.user!.id, fileSize, version || null, Number(sortOrder) || 0, vis);
+      INSERT INTO resources (title, category, description, content_url, external_url, published_at, enabled, uploader_id, file_size, version, sort_order, visibility, original_filename)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, title, normalizedCategory, description || "", fileUrl, external, ts, enabled === "false" ? 0 : 1, req.user!.id, fileSize, version || null, order, vis, originalFilename);
     if (!isExternal) {
       logAdminUpload({
         ok: true,
@@ -1676,7 +1703,15 @@ router.patch("/resources/:id", extendUploadSocketTimeouts, resourceFileUpload, a
   }
   if (description !== undefined) { fields.push("description = ?"); vals.push(description); }
   if (version !== undefined) { fields.push("version = ?"); vals.push(version); }
-  if (sortOrder !== undefined) { fields.push("sort_order = ?"); vals.push(Number(sortOrder)); }
+  if (sortOrder !== undefined && String(sortOrder).trim() !== "") {
+    const n = Number(sortOrder);
+    if (!Number.isFinite(n)) {
+      cleanupTempFile(req.file);
+      res.status(400).json({ error: "Invalid display order" });
+      return;
+    }
+    fields.push("sort_order = ?"); vals.push(n);
+  }
   if (enabled !== undefined) { fields.push("enabled = ?"); vals.push(enabled === "false" || enabled === false ? 0 : 1); }
   if (visibility !== undefined) {
     fields.push("visibility = ?");
@@ -1700,6 +1735,7 @@ router.patch("/resources/:id", extendUploadSocketTimeouts, resourceFileUpload, a
         fields.push("external_url = ?"); vals.push(checked.url);
         fields.push("content_url = ?"); vals.push(null);
         fields.push("file_size = ?"); vals.push(null);
+        fields.push("original_filename = ?"); vals.push(null);
         replacedFile = existing.content_url;
       } else if (!existing.external_url) {
         res.status(400).json({ error: "External download URL is required for App resources" });
@@ -1714,6 +1750,7 @@ router.patch("/resources/:id", extendUploadSocketTimeouts, resourceFileUpload, a
         fields.push("content_url = ?"); vals.push(stored.url);
         fields.push("file_size = ?"); vals.push(stored.size);
         fields.push("external_url = ?"); vals.push(null);
+        fields.push("original_filename = ?"); vals.push(req.file.originalname?.trim() || null);
         replacedFile = existing.content_url;
       }
     }

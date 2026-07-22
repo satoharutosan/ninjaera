@@ -151,11 +151,36 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
 
   const [applications, setApplications] = useState<TeamApplication[]>([]);
   const [resources, setResources] = useState<AdminResource[]>([]);
+  const [resourceCategoryFilter, setResourceCategoryFilter] = useState<"All" | (typeof RESOURCE_CATEGORIES)[number]>("All");
   const [editResource, setEditResource] = useState<Partial<AdminResource> | null>(null);
   const [resourceFile, setResourceFile] = useState<File | null>(null);
   const [resourceUploading, setResourceUploading] = useState(false);
   const [resourceUploadProgress, setResourceUploadProgress] = useState<AdminUploadProgressState | null>(null);
   const [resourceUploadBytes, setResourceUploadBytes] = useState<{ loaded: number; total: number } | null>(null);
+
+  const filteredResources = useMemo(
+    () => (resourceCategoryFilter === "All"
+      ? resources
+      : resources.filter((r) => r.category === resourceCategoryFilter)),
+    [resources, resourceCategoryFilter],
+  );
+
+  const reorderResourcesList = (fromFilteredIndex: number, toFilteredIndex: number) => {
+    if (toFilteredIndex < 0 || toFilteredIndex >= filteredResources.length) return;
+    const fromId = filteredResources[fromFilteredIndex]?.id;
+    const toId = filteredResources[toFilteredIndex]?.id;
+    if (fromId == null || toId == null) return;
+    const fromFull = resources.findIndex((r) => r.id === fromId);
+    const toFull = resources.findIndex((r) => r.id === toId);
+    if (fromFull < 0 || toFull < 0) return;
+    const next = [...resources];
+    [next[fromFull], next[toFull]] = [next[toFull], next[fromFull]];
+    setResources(next);
+    void handleUserAction(
+      () => api.admin.reorderResources(next.map((r) => r.id)),
+      "Resource order saved",
+    );
+  };
 
   const [gameBuilds, setGameBuilds] = useState<AdminGameDownload[]>([]);
   const [editGameBuild, setEditGameBuild] = useState<Partial<AdminGameDownload> & {
@@ -513,6 +538,9 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
       form.append("category", category);
       form.append("description", editResource.description || "");
       if (editResource.version) form.append("version", editResource.version);
+      if (editResource.sortOrder != null && String(editResource.sortOrder).trim() !== "") {
+        form.append("sortOrder", String(editResource.sortOrder));
+      }
       form.append("enabled", String(editResource.enabled !== false));
       form.append("visibility", editResource.visibility === "PRIVATE" ? "PRIVATE" : "PUBLIC");
       if (isAppExternal) {
@@ -1378,9 +1406,52 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                     setResourceUploadBytes(null);
                   }}>Add Resource</FilledBtn>
                 </div>
+                <div className="flex flex-wrap gap-2 mb-4">
+                  {(["All", ...RESOURCE_CATEGORIES] as const).map((cat) => (
+                    <button
+                      key={cat}
+                      type="button"
+                      onClick={() => setResourceCategoryFilter(cat)}
+                      className="px-3 py-1.5 rounded-full text-xs font-medium transition-all"
+                      style={{
+                        background: resourceCategoryFilter === cat ? C.primary : C.surface,
+                        color: resourceCategoryFilter === cat ? "white" : C.onSurfaceVar,
+                        boxShadow: SH1,
+                        fontFamily: "Roboto",
+                      }}
+                    >
+                      {cat}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-xs mb-4" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
+                  Use the arrows to set the order shown on the Resources page. Order is saved immediately.
+                </p>
                 <div className="space-y-3">
-                  {resources.map(r => (
+                  {filteredResources.map((r, index) => (
                     <div key={r.id} className="rounded-2xl p-4 flex items-center gap-4" style={{ background: C.surface, boxShadow: SH1 }}>
+                      <div className="flex flex-col gap-0.5 shrink-0">
+                        <button
+                          type="button"
+                          title="Move up"
+                          disabled={index === 0}
+                          onClick={() => reorderResourcesList(index, index - 1)}
+                          className="p-1 rounded-full hover:bg-black/5 disabled:opacity-30"
+                          style={{ color: C.onSurfaceVar }}
+                        >
+                          <ArrowUpwardIcon style={{ fontSize: 16 }} />
+                        </button>
+                        <button
+                          type="button"
+                          title="Move down"
+                          disabled={index >= filteredResources.length - 1}
+                          onClick={() => reorderResourcesList(index, index + 1)}
+                          className="p-1 rounded-full hover:bg-black/5 disabled:opacity-30"
+                          style={{ color: C.onSurfaceVar }}
+                        >
+                          <ArrowDownwardIcon style={{ fontSize: 16 }} />
+                        </button>
+                      </div>
                       <MenuBookIcon style={{ fontSize: 24, color: C.primary }} />
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
@@ -1402,6 +1473,8 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                         <p className="text-xs" style={{ color: C.onSurfaceVar }}>
                           {r.description}
                           {r.category === "App" && r.externalUrl ? " · External URL" : r.fileSize ? ` · ${(r.fileSize / 1048576).toFixed(1)} MB` : ""}
+                          {r.originalFilename ? ` · ${r.originalFilename}` : ""}
+                          {r.sortOrder != null ? ` · Order ${r.sortOrder}` : ""}
                         </p>
                       </div>
                       <div className="flex gap-1">
@@ -1410,7 +1483,11 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                       </div>
                     </div>
                   ))}
-                  {resources.length === 0 && <p className="text-center py-10 text-sm" style={{ color: C.onSurfaceVar }}>No resources</p>}
+                  {filteredResources.length === 0 && (
+                    <p className="text-center py-10 text-sm" style={{ color: C.onSurfaceVar }}>
+                      {resources.length === 0 ? "No resources" : "No resources in this category"}
+                    </p>
+                  )}
                 </div>
               </div>
             )}
@@ -1731,6 +1808,16 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
               </div>
               <Field label="Description" value={editResource.description || ""} onChange={v => setEditResource({ ...editResource, description: v })} rows={2} />
               <Field label="Version (optional)" value={editResource.version || ""} onChange={v => setEditResource({ ...editResource, version: v })} />
+              <Field
+                label="Display order"
+                type="number"
+                value={editResource.sortOrder != null && Number.isFinite(editResource.sortOrder) ? String(editResource.sortOrder) : ""}
+                onChange={v => setEditResource({
+                  ...editResource,
+                  sortOrder: v.trim() === "" ? undefined : Number(v),
+                })}
+                placeholder="Lower numbers appear first"
+              />
               <div className="relative mt-1">
                 <select
                   value={editResource.visibility === "PRIVATE" ? "PRIVATE" : "PUBLIC"}
@@ -1767,11 +1854,15 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                     className="mt-1 text-sm w-full disabled:opacity-50"
                     style={{ color: C.onSurface }}
                   />
-                  {resourceFile && (
+                  {resourceFile ? (
                     <p className="text-xs mt-1" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
                       {resourceFile.name}
                     </p>
-                  )}
+                  ) : editResource.originalFilename ? (
+                    <p className="text-xs mt-1" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
+                      Download name: {editResource.originalFilename}
+                    </p>
+                  ) : null}
                 </div>
               )}
               <label className="flex items-center gap-2 text-sm" style={{ color: C.onSurface, fontFamily: "Roboto" }}>

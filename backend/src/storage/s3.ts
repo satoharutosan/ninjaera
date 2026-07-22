@@ -8,6 +8,7 @@ import { Upload } from "@aws-sdk/lib-storage";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import type { PutObjectInput, PutObjectResult, StorageProvider } from "./types.js";
 import { resolvePutBody } from "./putBody.js";
+import { contentDispositionAttachment } from "../services/downloadFilename.js";
 
 export type S3StorageOptions = {
   endpoint?: string;
@@ -112,12 +113,21 @@ export function createS3Storage(opts: S3StorageOptions): StorageProvider {
       return `/uploads/${key}`;
     },
 
-    async getSignedDownloadUrl(urlOrKey: string, expiresInSeconds = 300) {
+    async getSignedDownloadUrl(
+      urlOrKey: string,
+      expiresInSeconds = 300,
+      signedOpts?: { downloadFilename?: string },
+    ) {
       const key = keyFromUrl(urlOrKey) || urlOrKey.replace(/^[/\\]+/, "").replace(/\.\./g, "");
       if (!key || key.includes("..")) throw new Error("Invalid object key");
+      const filename = signedOpts?.downloadFilename?.trim();
       return getSignedUrl(
         client,
-        new GetObjectCommand({ Bucket: opts.bucket, Key: key }),
+        new GetObjectCommand({
+          Bucket: opts.bucket,
+          Key: key,
+          ...(filename ? { ResponseContentDisposition: contentDispositionAttachment(filename) } : {}),
+        }),
         { expiresIn: expiresInSeconds },
       );
     },

@@ -604,15 +604,31 @@ export const api = {
       }
       const contentType = res.headers.get("Content-Type") || "";
       if (contentType.includes("application/json")) {
-        const data = await res.json() as { externalUrl?: string };
+        const data = await res.json() as { externalUrl?: string; downloadUrl?: string; filename?: string };
         if (data.externalUrl) {
           await openExternalDownload(data.externalUrl);
           return;
         }
+        if (data.downloadUrl) {
+          const fileRes = await fetch(data.downloadUrl);
+          if (!fileRes.ok) {
+            throw new ApiError("Download failed", fileRes.status);
+          }
+          const blob = await fileRes.blob();
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = data.filename || `resource-${id}`;
+          a.click();
+          URL.revokeObjectURL(url);
+          return;
+        }
       }
       const disposition = res.headers.get("Content-Disposition") || "";
-      const match = /filename\*?=(?:UTF-8''|")?([^\";]+)/i.exec(disposition);
-      const filename = match ? decodeURIComponent(match[1].replace(/"/g, "")) : `resource-${id}`;
+      const utfMatch = /filename\*=UTF-8''([^;]+)/i.exec(disposition);
+      const plainMatch = /filename="?([^";]+)"?/i.exec(disposition);
+      const rawName = utfMatch?.[1] || plainMatch?.[1];
+      const filename = rawName ? decodeURIComponent(rawName.replace(/"/g, "").trim()) : `resource-${id}`;
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -775,6 +791,11 @@ export const api = {
       request<{ id: number }>("/admin/resources", { method: "POST", body: form, onUploadProgress: opts?.onUploadProgress }),
     updateResource: (id: number, form: FormData, opts?: { onUploadProgress?: (p: UploadProgress) => void }) =>
       request<{ ok: boolean }>(`/admin/resources/${id}`, { method: "PATCH", body: form, onUploadProgress: opts?.onUploadProgress }),
+    reorderResources: (ids: number[]) =>
+      request<{ ok: boolean; ids: number[] }>("/admin/resources/reorder", {
+        method: "PUT",
+        body: JSON.stringify({ ids }),
+      }),
     deleteResource: (id: number) => request<{ ok: boolean }>(`/admin/resources/${id}`, { method: "DELETE" }),
     gameDownloads: () => request<{ downloads: AdminGameDownload[] }>("/admin/game-downloads"),
     createGameDownload: (data: {
@@ -1110,6 +1131,7 @@ export type AdminResource = {
   fileSize?: number;
   version?: string;
   sortOrder?: number;
+  originalFilename?: string | null;
   uploaderName?: string;
   visibility?: "PUBLIC" | "PRIVATE";
 };

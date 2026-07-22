@@ -4,9 +4,11 @@
  * Flow: query backend metadata → download installer directly from GitHub →
  * verify checksum → silent install → restart when idle.
  *
+ * Background schedule: one startup check (non-blocking) + hourly checks.
+ * Single scheduler instance; survives tray hide, sleep/resume, and network blips.
  * The Ninja Era backend never proxies or streams update packages.
  */
-import { app, Notification, shell } from 'electron'
+import { app, Notification, shell, powerMonitor } from 'electron'
 import { createWriteStream } from 'node:fs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
@@ -19,8 +21,13 @@ import { IPC } from '@shared-electron/ipc'
 export const UPDATE_APP_ID = 'messenger'
 export const UPDATE_CHANNEL = 'stable'
 
-const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
+/** Hourly background checks after the startup pass. */
+const CHECK_INTERVAL_MS = 60 * 60 * 1000
+/** Let window/tray/auth/sockets settle before the first check. */
+const STARTUP_CHECK_DELAY_MS = 8_000
 const BUSY_POLL_MS = 5_000
+/** Ignore overlapping resume ticks within this window of a completed check. */
+const MIN_CHECK_GAP_MS = 30_000
 
 export type UpdaterBusyState = {
   inCall: boolean
@@ -38,6 +45,8 @@ type LatestRelease = {
 }
 
 let wired = false
+let schedulerStarted = false
+let powerMonitorWired = false
 let busy: UpdaterBusyState = {
   inCall: false,
   screenSharing: false,
@@ -49,7 +58,9 @@ let pendingVersion: string | null = null
 let pendingInstallerPath: string | null = null
 let busyTimer: ReturnType<typeof setInterval> | null = null
 let checkTimer: ReturnType<typeof setInterval> | null = null
+let startupTimer: ReturnType<typeof setTimeout> | null = null
 let checkInFlight = false
+let lastCheckFinishedAt = 0
 
 function log(level: 'info' | 'warn' | 'error', message: string, extra?: Record<string, unknown>) {
   const payload = extra ? ` ${JSON.stringify(extra)}` : ''
@@ -96,6 +107,22 @@ function isNewerVersion(remote: string, local: string): boolean {
   return false
 }
 
+function classifyUpdateError(err: unknown): { kind: string; message: string } {
+  const message = err instanceof Error ? err.message : String(err)
+  const lower = message.toLowerCase()
+  if (/abort|timeout|timed out/i.test(message)) return { kind: 'timeout', message }
+  if (/enotfound|getaddrinfo|dns/i.test(lower)) return { kind: 'dns', message }
+  if (/network|fetch failed|econnreset|econnrefused|socket/i.test(lower)) {
+    return { kind: 'network', message }
+  }
+  if (/github/i.test(lower)) return { kind: 'github', message }
+  if (/checksum|tamper/i.test(lower)) return { kind: 'checksum', message }
+  if (/metadata|manifest|json/i.test(lower)) return { kind: 'manifest', message }
+  if (/enospc|space/i.test(lower)) return { kind: 'disk', message }
+  if (/eacces|eperm|permission/i.test(lower)) return { kind: 'permission', message }
+  return { kind: 'unknown', message }
+}
+
 function stopBusyWatch() {
   if (busyTimer) {
     clearInterval(busyTimer)
@@ -105,13 +132,19 @@ function stopBusyWatch() {
 
 async function fetchLatestRelease(): Promise<LatestRelease | null> {
   const url = `${BACKEND_URL.replace(/\/$/, '')}/api/desktop-releases/latest?appId=${encodeURIComponent(UPDATE_APP_ID)}&channel=${encodeURIComponent(UPDATE_CHANNEL)}`
+  log('info', 'Update server contacted', { url: url.replace(/\?.*/, '?…') })
   const res = await fetch(url, {
     headers: { Accept: 'application/json', 'User-Agent': `NinjaEraMessenger/${app.getVersion()}` },
     signal: AbortSignal.timeout(20_000),
   })
   if (res.status === 404) return null
   if (!res.ok) throw new Error(`Metadata request failed (${res.status})`)
-  const data = (await res.json()) as { release?: LatestRelease }
+  let data: { release?: LatestRelease }
+  try {
+    data = (await res.json()) as { release?: LatestRelease }
+  } catch {
+    throw new Error('Version manifest invalid (JSON parse failed)')
+  }
   if (!data.release?.version || !data.release?.githubReleaseUrl) return null
   return data.release
 }
@@ -146,7 +179,7 @@ async function downloadFromGithub(
     /* ok */
   }
 
-  log('info', 'downloading from GitHub', { host: urlObj.hostname, version })
+  log('info', 'Downloading update', { host: urlObj.hostname, version })
 
   const res = await fetch(githubUrl, {
     headers: {
@@ -169,36 +202,45 @@ async function downloadFromGithub(
   let loaded = 0
   const file = createWriteStream(dest)
 
-  await new Promise<void>((resolve, reject) => {
-    const reader = res.body!.getReader()
-    const pump = async (): Promise<void> => {
-      try {
-        for (;;) {
-          const { done, value } = await reader.read()
-          if (done) break
-          if (value) {
-            loaded += value.byteLength
-            file.write(Buffer.from(value))
-            if (total > 0) onProgress(Math.min(100, Math.round((loaded / total) * 100)))
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const reader = res.body!.getReader()
+      const pump = async (): Promise<void> => {
+        try {
+          for (;;) {
+            const { done, value } = await reader.read()
+            if (done) break
+            if (value) {
+              loaded += value.byteLength
+              const ok = file.write(Buffer.from(value))
+              if (!ok) {
+                await new Promise<void>((r) => file.once('drain', r))
+              }
+              if (total > 0) onProgress(Math.min(100, Math.round((loaded / total) * 100)))
+            }
           }
+          file.once('finish', () => resolve())
+          file.once('error', reject)
+          file.end()
+        } catch (err) {
+          file.destroy()
+          reject(err)
         }
-        file.end()
-        file.on('finish', () => resolve())
-        file.on('error', reject)
-      } catch (err) {
-        file.destroy()
-        reject(err)
       }
-    }
-    void pump()
-  })
+      void pump()
+    })
+  } catch (err) {
+    await fs.unlink(dest).catch(() => {})
+    throw err
+  }
 
   onProgress(100)
+  log('info', 'Download completed', { bytes: loaded, path: dest })
   return dest
 }
 
 function runInstallerAndQuit(installerPath: string) {
-  log('info', 'launching GitHub installer', { installerPath })
+  log('info', 'Installing update — Restarting application', { installerPath })
   // Squirrel Setup.exe — silent update of the existing per-user install.
   // Publish NinjaEraMessenger-Squirrel-Setup-*.exe for auto-updates (not the NSIS Setup).
   const child = spawn(installerPath, ['--silent'], {
@@ -220,7 +262,7 @@ function tryInstallNow(reason: string) {
     emit({ type: 'install-deferred', version: pendingVersion, busy: { ...busy } })
     return
   }
-  log('info', 'installing update and restarting', { version: pendingVersion, reason })
+  log('info', 'Installing update and restarting', { version: pendingVersion, reason })
   emit({ type: 'installing', version: pendingVersion })
   notifyStatus('Installing update…', 'Ninja Era Messenger will restart automatically.')
   pendingInstall = false
@@ -228,8 +270,9 @@ function tryInstallNow(reason: string) {
   try {
     runInstallerAndQuit(pendingInstallerPath)
   } catch (err) {
-    log('error', 'install failed', { error: String(err) })
-    emit({ type: 'error', message: String(err) })
+    const classified = classifyUpdateError(err)
+    log('error', 'install failed', classified)
+    emit({ type: 'error', message: classified.message })
   }
 }
 
@@ -260,33 +303,35 @@ export function setUpdaterBusyState(next: Partial<UpdaterBusyState>): void {
 export function initUpdater(): void {
   if (wired) return
   wired = true
-  log('info', 'GitHub Releases updater ready', {
+  log('info', 'Desktop updater ready', {
     appId: UPDATE_APP_ID,
     channel: UPDATE_CHANNEL,
     backend: BACKEND_URL,
+    version: app.getVersion(),
+    packaged: app.isPackaged,
   })
 }
 
-async function runUpdatePipeline(notifyNoUpdate: boolean): Promise<void> {
+async function runUpdatePipeline(notifyNoUpdate: boolean, reason: string): Promise<void> {
   emit({ type: 'checking' })
-  log('info', 'checking for update via backend metadata')
+  const current = app.getVersion()
+  log('info', 'Checking current version', { current, reason })
 
   const release = await fetchLatestRelease()
   if (!release) {
-    log('info', 'no update available')
+    log('info', 'No update available')
     emit({ type: 'not-available' })
-    if (notifyNoUpdate) emit({ type: 'not-available' })
     return
   }
 
-  const current = app.getVersion()
+  log('info', 'Latest version', { current, latest: release.version })
+
   if (!isNewerVersion(release.version, current)) {
-    log('info', 'already on latest', { current, remote: release.version })
+    log('info', 'No update available', { current, remote: release.version })
     emit({ type: 'not-available' })
     return
   }
 
-  // Optional min version gate (client too old for this package — still try if set incorrectly)
   if (release.minSupportedVersion && isNewerVersion(release.minSupportedVersion, current)) {
     log('warn', 'current version below minSupportedVersion — still attempting update', {
       current,
@@ -294,7 +339,7 @@ async function runUpdatePipeline(notifyNoUpdate: boolean): Promise<void> {
     })
   }
 
-  log('info', 'update available', { version: release.version, url: release.githubReleaseUrl })
+  log('info', 'Update found', { version: release.version, url: release.githubReleaseUrl })
   emit({ type: 'available', version: release.version })
   notifyStatus('Downloading update…', `Version ${release.version} is downloading from GitHub.`)
 
@@ -302,7 +347,7 @@ async function runUpdatePipeline(notifyNoUpdate: boolean): Promise<void> {
   let installerPath: string
   try {
     installerPath = await downloadFromGithub(release.githubReleaseUrl, release.version, (percent) => {
-      if (percent === 0 || percent === 100 || percent % 10 === 0) {
+      if (percent === 0 || percent === 100 || percent % 25 === 0) {
         log('info', 'download progress', { percent })
       }
       emit({ type: 'progress', percent })
@@ -327,8 +372,13 @@ async function runUpdatePipeline(notifyNoUpdate: boolean): Promise<void> {
   scheduleInstallWhenIdle()
 }
 
-export async function checkForUpdates(notifyNoUpdate = false): Promise<void> {
+/**
+ * Silent / manual update check. Safe to call repeatedly; overlaps are skipped.
+ * Failures never disable future scheduled checks.
+ */
+export async function checkForUpdates(notifyNoUpdate = false, reason = 'manual'): Promise<void> {
   if (!app.isPackaged) {
+    log('info', 'Update check skipped — unpackaged build', { reason })
     emit({
       type: notifyNoUpdate ? 'not-available' : 'dev-skip',
       message: 'Updates are only checked in packaged builds.',
@@ -336,31 +386,117 @@ export async function checkForUpdates(notifyNoUpdate = false): Promise<void> {
     return
   }
   if (!IS_PRODUCTION_BACKEND) {
-    log('info', 'skipping update check — non-production backend')
+    log('info', 'Update check skipped — non-production backend', { reason })
     emit({
       type: notifyNoUpdate ? 'not-available' : 'dev-skip',
       message: 'Updates are enabled for production deployments only.',
     })
     return
   }
-  if (checkInFlight) return
+  if (checkInFlight) {
+    log('info', 'Update check already in flight — skipping', { reason })
+    return
+  }
   checkInFlight = true
   try {
     initUpdater()
-    await runUpdatePipeline(notifyNoUpdate)
+    await runUpdatePipeline(notifyNoUpdate, reason)
   } catch (err) {
-    log('error', 'checkForUpdates failed', { error: String(err) })
-    emit({ type: 'error', message: String(err) })
+    const classified = classifyUpdateError(err)
+    if (classified.kind === 'github') log('error', 'GitHub unavailable', classified)
+    else if (classified.kind === 'timeout') log('error', 'Connection timeout', classified)
+    else if (classified.kind === 'network' || classified.kind === 'dns') {
+      log('warn', 'Network unavailable — will retry on next schedule', classified)
+    } else if (classified.kind === 'manifest') log('error', 'Version manifest invalid', classified)
+    else log('error', 'Update check failed', classified)
+    emit({ type: 'error', message: classified.message })
+    // Do not disable the scheduler — next hourly / resume tick retries.
   } finally {
     checkInFlight = false
+    lastCheckFinishedAt = Date.now()
   }
 }
 
+function runScheduledCheck(reason: 'startup' | 'hourly' | 'resume'): void {
+  if (reason === 'hourly') log('info', 'Hourly update check started')
+  else if (reason === 'startup') log('info', 'Startup update check started')
+  else log('info', 'Scheduler resumed — update check started')
+
+  // Resume can fire close to an interval tick; avoid hammering the network.
+  if (reason === 'resume' && lastCheckFinishedAt && Date.now() - lastCheckFinishedAt < MIN_CHECK_GAP_MS) {
+    log('info', 'Resume check skipped — recent check', {
+      agoMs: Date.now() - lastCheckFinishedAt,
+    })
+    return
+  }
+
+  void checkForUpdates(false, reason)
+}
+
+function wirePowerMonitor(): void {
+  if (powerMonitorWired) return
+  powerMonitorWired = true
+  try {
+    powerMonitor.on('resume', () => {
+      log('info', 'Scheduler resumed after sleep/wake')
+      const due =
+        !lastCheckFinishedAt || Date.now() - lastCheckFinishedAt >= CHECK_INTERVAL_MS
+      if (due) runScheduledCheck('resume')
+      else log('info', 'Post-resume hourly check not yet due')
+    })
+  } catch (err) {
+    log('warn', 'powerMonitor resume hook unavailable', { error: String(err) })
+  }
+}
+
+/**
+ * Single background scheduler: delayed startup check + hourly interval.
+ * Idempotent — window/tray/socket/login churn must not create extra timers.
+ */
+export function startBackgroundUpdateScheduler(): void {
+  if (schedulerStarted) {
+    log('info', 'Update scheduler already running — not duplicating')
+    return
+  }
+  schedulerStarted = true
+  initUpdater()
+
+  if (!app.isPackaged) {
+    log('info', 'Update scheduler idle — unpackaged build')
+    return
+  }
+  if (!IS_PRODUCTION_BACKEND) {
+    log('info', 'Update scheduler idle — non-production backend')
+    return
+  }
+
+  log('info', 'Update scheduler armed', {
+    startupDelayMs: STARTUP_CHECK_DELAY_MS,
+    intervalMs: CHECK_INTERVAL_MS,
+  })
+
+  wirePowerMonitor()
+
+  if (!startupTimer) {
+    startupTimer = setTimeout(() => {
+      startupTimer = null
+      runScheduledCheck('startup')
+    }, STARTUP_CHECK_DELAY_MS)
+    // Do not keep the process alive solely for the startup delay.
+    startupTimer.unref?.()
+  }
+
+  if (!checkTimer) {
+    checkTimer = setInterval(() => {
+      runScheduledCheck('hourly')
+    }, CHECK_INTERVAL_MS)
+    // Interval must keep the process alive while tray-resident — do not unref.
+  }
+}
+
+/** @deprecated Use startBackgroundUpdateScheduler — kept for call-site compatibility. */
 export function startPeriodicUpdateChecks(): void {
-  if (checkTimer || !app.isPackaged) return
-  checkTimer = setInterval(() => {
-    void checkForUpdates(false)
-  }, CHECK_INTERVAL_MS)
+  startBackgroundUpdateScheduler()
 }
 
 export function quitAndInstall(): void {

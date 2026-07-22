@@ -25,6 +25,7 @@ import { showNotification } from './notifications'
 import { checkForUpdates, quitAndInstall, setUpdaterBusyState } from './updater'
 import { startOAuth } from './oauth'
 import { getMainWindow } from './window'
+import { syncLoginItemSettings } from './launchContext'
 import type { NotifyPayload } from '@shared-electron/ipc'
 
 const isStr = (v: unknown): v is string => typeof v === 'string'
@@ -35,14 +36,7 @@ const isObj = (v: unknown): v is Record<string, unknown> =>
 /** Sync OS login-item + DevTools with persisted settings (call on startup and on change). */
 export function applySettingsSideEffects(): void {
   const s = getSettings()
-  try {
-    app.setLoginItemSettings({
-      openAtLogin: s.general.launchAtStartup,
-      openAsHidden: s.general.startMinimized,
-    })
-  } catch {
-    /* unsupported platform */
-  }
+  syncLoginItemSettings(s)
   const win = getMainWindow()
   if (win) {
     const devToolsOpen = win.webContents.isDevToolsOpened()

@@ -142,7 +142,7 @@ export function SettingsDialog({
                 <Toggle label="Launch at startup" value={settings.general.launchAtStartup} onChange={(v) => onPatch({ general: { launchAtStartup: v } })} />
                 <Toggle label="Minimize to tray" value={settings.general.minimizeToTray} onChange={(v) => onPatch({ general: { minimizeToTray: v } })} />
                 <Toggle label="Close button minimizes to tray" value={settings.general.closeToTray} onChange={(v) => onPatch({ general: { closeToTray: v } })} />
-                <Toggle label="Start minimized" value={settings.general.startMinimized} onChange={(v) => onPatch({ general: { startMinimized: v } })} />
+                <Toggle label="Start minimized at startup" value={settings.general.startMinimized} onChange={(v) => onPatch({ general: { startMinimized: v } })} />
                 <SelectRow label="Language" value={settings.general.language} onChange={(v) => onPatch({ general: { language: v } })} options={[["en", "English"], ["ja", "日本語"], ["es", "Español"], ["fr", "Français"], ["de", "Deutsch"]]} />
                 <SelectRow label="Theme" value={settings.general.theme} onChange={(v) => onPatch({ general: { theme: v as DesktopSettings["general"]["theme"] } })} options={[["system", "Match system"], ["light", "Light"], ["dark", "Dark"]]} />
                 <Row label="Accent color">

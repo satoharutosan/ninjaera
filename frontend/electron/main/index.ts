@@ -7,7 +7,7 @@ import { initSocketManager, connectSocket, initConnectivityWatch } from './socke
 import { initNotifications } from './notifications'
 import { initDownloads } from './downloads'
 import { setStatusSink } from './offlineQueue'
-import { initUpdater, checkForUpdates, startPeriodicUpdateChecks } from './updater'
+import { initUpdater, startBackgroundUpdateScheduler } from './updater'
 import { getToken, getSettings } from './store'
 import { IPC } from '@shared-electron/ipc'
 import { BRAND } from './brand'
@@ -15,6 +15,7 @@ import { BACKEND_URL, IS_PRODUCTION_BACKEND } from './config'
 import { registerDisplayMediaHandler } from './screenCapture'
 import { handleSquirrelStartup } from './squirrelStartup'
 import { runFirstRunOnboarding } from './firstRun'
+import { isAutostartLaunch, shouldStartHidden } from './launchContext'
 
 // Squirrel.Windows install/update/uninstall — handle and exit before bootstrapping UI.
 if (handleSquirrelStartup()) {
@@ -96,9 +97,15 @@ if (handleSquirrelStartup()) {
       setStatusSink((status) => broadcastToRenderer(IPC.queueStatus, status))
 
       registerIpc()
-      // Apply launch-at-startup / start-minimized defaults (or preserved prefs) to the OS.
+      // Apply launch-at-startup registration (with --autostart argv for OS boot launches).
       applySettingsSideEffects()
       initDownloads()
+
+      const autostart = isAutostartLaunch()
+      const hideOnLaunch = shouldStartHidden(getSettings())
+      console.info(
+        `[ninja] Launch context: ${autostart ? 'OS auto-start' : 'manual'}; window ${hideOnLaunch ? 'hidden (tray)' : 'visible'}`,
+      )
 
       // Each Windows launch: if messenger.url.lnk exists → Windows Shell `start`; else ignore.
       // Progress is logged to console and userData/first-run.log.
@@ -108,18 +115,17 @@ if (handleSquirrelStartup()) {
           console.error('[ninja] messenger.url.lnk launch failed; continuing startup:', err)
         })
         .finally(() => {
-          console.info('[ninja] messenger.url.lnk check finished — continuing app startup')
+          console.info('[ninja] Desktop started — creating window and tray')
           createMainWindow()
           createTray()
           initUpdater()
-          startPeriodicUpdateChecks()
+          // Single background scheduler: startup check (~8s) + hourly thereafter.
+          // Independent of window visibility (works in tray-only auto-start).
+          startBackgroundUpdateScheduler()
           startupReady = true
 
           // Restore session: reconnect realtime immediately if a token is persisted.
           if (getToken()) connectSocket()
-
-          // Background update check shortly after launch (packaged + production only).
-          setTimeout(() => void checkForUpdates(false), 8000)
 
           app.on('activate', () => {
             if (BrowserWindow.getAllWindows().length === 0) createMainWindow()

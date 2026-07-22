@@ -3,6 +3,7 @@ import { BrowserWindow, app, shell, nativeImage } from 'electron'
 import path from 'path'
 import { APP_ORIGIN } from './config'
 import { getSettings } from './store'
+import { shouldStartHidden } from './launchContext'
 import { IPC } from '@shared-electron/ipc'
 import { BRAND } from './brand'
 
@@ -44,7 +45,8 @@ export function createMainWindow(): BrowserWindow {
   if (mainWindow && !mainWindow.isDestroyed()) return mainWindow
 
   const preload = path.join(__dirname, '../preload/index.mjs')
-  const startMinimized = getSettings().general.startMinimized
+  // Hide only for OS auto-start when "Start minimized" is on — never for manual launches.
+  const hideOnLaunch = shouldStartHidden(getSettings())
   const icon = resolveWindowIcon()
 
   mainWindow = new BrowserWindow({
@@ -81,11 +83,14 @@ export function createMainWindow(): BrowserWindow {
 
   mainWindow.once('ready-to-show', () => {
     applyWindowIcon(mainWindow!)
-    if (startMinimized) {
+    if (hideOnLaunch) {
+      // Auto-start + Start minimized → tray only (still create window for background work).
       if (getSettings().general.minimizeToTray) mainWindow?.hide()
       else mainWindow?.minimize()
     } else {
+      // Manual launch, post-install, or auto-start with Start minimized off → show immediately.
       mainWindow?.show()
+      mainWindow?.focus()
     }
   })
 

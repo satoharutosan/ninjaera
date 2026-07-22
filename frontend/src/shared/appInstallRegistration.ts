@@ -45,8 +45,8 @@ function newInstallationId(): string {
   return `web-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-/** Stable per-browser install id (query → localStorage → create). */
-function resolveInstallationId(appId: string): string {
+/** Stable per-browser / per-desktop install id (query → localStorage → create). */
+export function resolveInstallationId(appId: string): string {
   const fromQuery = readQueryParam("iid") || readQueryParam("installationId");
   if (fromQuery && fromQuery.length >= 8) {
     try {

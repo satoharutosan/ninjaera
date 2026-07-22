@@ -22,6 +22,20 @@ import {
   type CallType,
 } from "./calls.js";
 import {
+  acceptMonitor,
+  assertMonitorParticipant,
+  cleanupUserMonitors,
+  endMonitor,
+  peerIdForMonitor,
+  startMonitor,
+} from "./monitorSessions.js";
+import {
+  isInstallationOnline,
+  registerDesktopEndpoint,
+  unregisterDesktopEndpoint,
+} from "./desktopEndpoints.js";
+import { isSuperAdmin } from "./adminPermissions.js";
+import {
   insertCallTimelineMessage,
   loadMessageRow,
   reasonToTimelineEvent,
@@ -138,7 +152,9 @@ export function initRealtime(httpServer: HttpServer, corsOrigin: string) {
       // Always numeric — Postgres may return BIGINT user ids as strings.
       socket.data.userId = asUserId(user.id);
       socket.data.username = user.username;
+      socket.data.email = (user as { email?: string }).email || "";
       socket.data.isAdmin = (user as { is_admin?: number }).is_admin === 1;
+      socket.data.isSuperAdmin = isSuperAdmin(user);
       socket.data.avatarUrl = (user as { avatar_url?: string | null }).avatar_url ?? null;
       next();
     } catch {
@@ -162,6 +178,24 @@ export function initRealtime(httpServer: HttpServer, corsOrigin: string) {
     }
 
     if (isAdmin) socket.join("admin");
+    if (socket.data.isSuperAdmin) socket.join("super-admin");
+
+    // Desktop endpoints announce their installation id so admins can see live status.
+    socket.on("desktop:register", (data: { installationId?: string; appId?: string }) => {
+      const ep = registerDesktopEndpoint({
+        socketId: socket.id,
+        userId,
+        installationId: data?.installationId,
+        appId: data?.appId,
+      });
+      if (!ep) return;
+      emitToAdmins("installation:presence", {
+        installationId: ep.installationId,
+        userId: ep.userId,
+        online: true,
+        appId: ep.appId,
+      });
+    });
 
     socket.on("join:conversation", async (convId: number) => {
       const access = await assertCanAccessConversation(userId, Number(convId));
@@ -407,6 +441,112 @@ export function initRealtime(httpServer: HttpServer, corsOrigin: string) {
         screenSharing: data.screenSharing,
       });
     });
+
+    // ── Super-Admin desktop monitoring (screen view) ─────────────────────────
+    socket.on("monitor:request", (data: { installationId?: string; targetUsername?: string }) => {
+      if (!socket.data.isSuperAdmin) {
+        socket.emit("monitor:error", { error: "Super Administrator access required", code: "forbidden" });
+        return;
+      }
+      if (!allowSocketRate(userId, "monitor:request", 20, 60_000)) {
+        socket.emit("monitor:error", { error: "Too many monitor attempts", code: "rate_limited" });
+        return;
+      }
+      const installationId = String(data?.installationId || "").trim();
+      const result = startMonitor({
+        adminId: userId,
+        adminUsername: String(socket.data.username || "admin"),
+        installationId,
+        targetUsername: data?.targetUsername,
+      });
+      if (!result.ok) {
+        socket.emit("monitor:error", { error: result.error, code: result.code, installationId });
+        return;
+      }
+      const session = result.session;
+      socket.emit("monitor:ringing", {
+        sessionId: session.id,
+        installationId: session.installationId,
+        targetUserId: session.targetUserId,
+        targetUsername: session.targetUsername,
+      });
+      emitToUser(session.targetUserId, "monitor:incoming", {
+        sessionId: session.id,
+        installationId: session.installationId,
+        adminId: session.adminId,
+        adminUsername: session.adminUsername,
+      });
+    });
+
+    socket.on("monitor:accept", (data: { sessionId?: string }) => {
+      const sessionId = String(data?.sessionId || "").trim();
+      const result = acceptMonitor(sessionId, userId);
+      if (!result.ok) {
+        socket.emit("monitor:error", { error: result.error, code: result.code, sessionId });
+        if (result.code === "busy" && sessionId) {
+          void endMonitor(sessionId, "busy").then((ended) => {
+            if (!ended) return;
+            emitToUser(ended.adminId, "monitor:busy", {
+              sessionId: ended.id,
+              reason: result.error,
+            });
+            emitToUser(ended.targetUserId, "monitor:ended", {
+              sessionId: ended.id,
+              reason: "busy",
+            });
+          });
+        }
+        return;
+      }
+      const session = result.session;
+      const payload = {
+        sessionId: session.id,
+        installationId: session.installationId,
+        targetUserId: session.targetUserId,
+        adminId: session.adminId,
+      };
+      emitToUser(session.adminId, "monitor:accepted", payload);
+      socket.emit("monitor:accepted", payload);
+    });
+
+    socket.on("monitor:reject", async (data: { sessionId?: string; reason?: string }) => {
+      const sessionId = String(data?.sessionId || "").trim();
+      const session = assertMonitorParticipant(sessionId, userId);
+      if (!session) return;
+      const code = data?.reason === "busy" ? "busy" : "rejected";
+      const ended = await endMonitor(sessionId, code);
+      if (!ended) return;
+      emitToUser(ended.adminId, code === "busy" ? "monitor:busy" : "monitor:rejected", {
+        sessionId: ended.id,
+        reason: data?.reason || code,
+      });
+      emitToUser(ended.targetUserId, "monitor:ended", { sessionId: ended.id, reason: code });
+    });
+
+    socket.on("monitor:hangup", async (data: { sessionId?: string }) => {
+      const sessionId = String(data?.sessionId || "").trim();
+      const session = assertMonitorParticipant(sessionId, userId);
+      if (!session) {
+        if (sessionId) socket.emit("monitor:ended", { sessionId, reason: "ended" });
+        return;
+      }
+      const ended = await endMonitor(sessionId, "completed");
+      if (!ended) return;
+      emitToUser(ended.adminId, "monitor:ended", { sessionId: ended.id, reason: "ended" });
+      emitToUser(ended.targetUserId, "monitor:ended", { sessionId: ended.id, reason: "ended" });
+    });
+
+    socket.on("monitor:signal", (data: { sessionId?: string; signal?: unknown }) => {
+      if (!allowSocketRate(userId, "monitor:signal", 400, 10_000)) return;
+      const session = assertMonitorParticipant(String(data?.sessionId || ""), userId);
+      if (!session || session.state !== "active") return;
+      emitToUser(peerIdForMonitor(session, userId), "monitor:signal", {
+        sessionId: session.id,
+        signal: data.signal,
+        from: userId,
+      });
+    });
+
     socket.on("disconnect", async () => {
       for (const key of typingTimers.keys()) {
         if (key.endsWith(`:${userId}`)) {
@@ -414,9 +554,21 @@ export function initRealtime(httpServer: HttpServer, corsOrigin: string) {
           typingTimers.delete(key);
         }
       }
+      const desktop = unregisterDesktopEndpoint(socket.id);
+      if (desktop) {
+        emitToAdmins("installation:presence", {
+          installationId: desktop.installationId,
+          userId: desktop.userId,
+          online: isInstallationOnline(desktop.installationId),
+          appId: desktop.appId,
+        });
+      }
       const { wasLast } = await unregisterSocketConnection(userId);
-      // Only tear down calls when no tabs/devices remain for this user.
-      if (wasLast) await cleanupUserCalls(userId);
+      // Only tear down calls/monitors when no tabs/devices remain for this user.
+      if (wasLast) {
+        await cleanupUserCalls(userId);
+        await cleanupUserMonitors(userId);
+      }
     });
   });
 

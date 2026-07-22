@@ -8,6 +8,7 @@ import {
   mapInstallation,
   type AppInstallationRow,
 } from "../services/appInstallations.js";
+import { getOnlineInstallationIds, isInstallationOnline } from "../services/desktopEndpoints.js";
 
 const router = Router();
 
@@ -74,9 +75,22 @@ router.get("/app-installations", requireSuperAdmin, async (req, res) => {
     where.push("app_id = ?");
     params.push(appId.trim().toLowerCase());
   }
-  if (status.trim() && status.trim().toLowerCase() !== "all") {
-    where.push("status = ?");
-    params.push(status.trim().toLowerCase());
+
+  // Realtime desktop presence filter (not the DB "active" registration flag).
+  const statusNorm = status.trim().toLowerCase();
+  const onlineIds = getOnlineInstallationIds();
+  if (statusNorm === "online" || statusNorm === "active" || statusNorm === "running") {
+    if (onlineIds.length === 0) {
+      res.json({ total: 0, page: pageN, limit: limitN, installations: [] });
+      return;
+    }
+    where.push(`installation_id IN (${onlineIds.map(() => "?").join(",")})`);
+    params.push(...onlineIds);
+  } else if (statusNorm === "offline" || statusNorm === "disconnected") {
+    if (onlineIds.length > 0) {
+      where.push(`installation_id NOT IN (${onlineIds.map(() => "?").join(",")})`);
+      params.push(...onlineIds);
+    }
   }
 
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
@@ -97,7 +111,10 @@ router.get("/app-installations", requireSuperAdmin, async (req, res) => {
     total: Number(totalRow?.c) || 0,
     page: pageN,
     limit: limitN,
-    installations: rows.map(mapInstallation),
+    installations: rows.map((r) => ({
+      ...mapInstallation(r),
+      online: isInstallationOnline(r.installation_id),
+    })),
   });
 });
 

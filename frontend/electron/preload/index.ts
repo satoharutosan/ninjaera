@@ -158,6 +158,11 @@ const api = {
     start: (provider: 'google' | 'github' | 'discord'): Promise<OAuthResult> =>
       ipcRenderer.invoke(IPC.oauthStart, provider),
   },
+
+  displayMedia: {
+    setSilent: (enabled: boolean): Promise<{ ok: boolean; silent: boolean }> =>
+      ipcRenderer.invoke(IPC.displayMediaSetSilent, enabled),
+  },
 }
 
 contextBridge.exposeInMainWorld('ninja', api)

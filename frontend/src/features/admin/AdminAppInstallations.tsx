@@ -5,10 +5,13 @@ import DeleteIcon from "@mui/icons-material/Delete";
 import RefreshIcon from "@mui/icons-material/Refresh";
 import FileDownloadIcon from "@mui/icons-material/FileDownload";
 import PublicIcon from "@mui/icons-material/Public";
+import MonitorIcon from "@mui/icons-material/Monitor";
 import { useC, SH1, FilledBtn, OutlinedBtn, Field, FlagImg } from "@/app/shared";
 import { countryFlagEmoji } from "@/shared/countryIso";
 import { appDisplayName } from "@/shared/appRegistry";
 import { api, ApiError, type AppInstallationRecord } from "@/app/api";
+import { onRealtimeEvent } from "@/app/realtime";
+import { AdminMonitorModal } from "./AdminMonitorModal";
 
 type ConfirmState = { title: string; body: string; onOk: () => void };
 
@@ -26,6 +29,25 @@ function formatWhen(iso: string | null | undefined) {
 function formatRole(role: string | null | undefined) {
   if (!role) return "—";
   return role.replace(/_/g, " ");
+}
+
+function EndpointStatusDot({ online }: { online: boolean }) {
+  return (
+    <span
+      className="inline-flex items-center gap-2"
+      title={online ? "Running" : "Offline"}
+      aria-label={online ? "Running" : "Offline"}
+    >
+      <span
+        className="inline-block w-2.5 h-2.5 rounded-full shrink-0"
+        style={{
+          background: online ? "#2E7D32" : "#C62828",
+          boxShadow: online ? "0 0 0 3px rgba(46,125,50,0.22)" : "0 0 0 3px rgba(198,40,40,0.18)",
+        }}
+        aria-hidden
+      />
+    </span>
+  );
 }
 
 function IpWithFlag({
@@ -80,6 +102,7 @@ export function AdminAppInstallations({
   });
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [exporting, setExporting] = useState(false);
+  const [monitorTarget, setMonitorTarget] = useState<AppInstallationRecord | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const epochRef = useRef(0);
 
@@ -130,6 +153,28 @@ export function AdminAppInstallations({
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Live desktop presence — update dots without a full page reload.
+  useEffect(() => {
+    return onRealtimeEvent<{
+      installationId: string;
+      online: boolean;
+      userId?: number;
+    }>("installation:presence", (data) => {
+      if (!data?.installationId) return;
+      setRows((prev) =>
+        prev.map((r) =>
+          r.installationId === data.installationId
+            ? { ...r, online: !!data.online }
+            : r,
+        ),
+      );
+      // If filtering by online/offline, refresh list so rows enter/leave correctly.
+      if (statusFilter === "online" || statusFilter === "offline") {
+        void load();
+      }
+    });
+  }, [load, statusFilter]);
 
   const pageCount = Math.max(1, Math.ceil(total / limit));
   const allSelected = rows.length > 0 && rows.every((r) => selected.has(r.id));
@@ -255,7 +300,8 @@ export function AdminAppInstallations({
             style={{ background: C.surfaceVar, color: C.onSurface, border: `1px solid ${C.outlineVar}` }}
           >
             <option value="all">All</option>
-            <option value="active">Active</option>
+            <option value="online">Online</option>
+            <option value="offline">Offline</option>
           </select>
         </label>
         <label className="text-xs flex flex-col gap-1" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
@@ -314,7 +360,7 @@ export function AdminAppInstallations({
                 <th className="text-left p-3 font-medium">Last opened</th>
                 <th className="text-left p-3 font-medium">First seen</th>
                 <th className="text-left p-3 font-medium">Status</th>
-                <th className="text-left p-3 font-medium w-12" />
+                <th className="text-left p-3 font-medium w-24" />
               </tr>
             </thead>
             <tbody>
@@ -360,17 +406,42 @@ export function AdminAppInstallations({
                   <td className="p-3" style={{ color: C.onSurfaceVar }}>{r.operatingSystem || r.platform || "—"}</td>
                   <td className="p-3 whitespace-nowrap" style={{ color: C.onSurfaceVar }}>{formatWhen(r.updatedAt || r.createdAt)}</td>
                   <td className="p-3 whitespace-nowrap" style={{ color: C.onSurfaceVar }}>{formatWhen(r.createdAt)}</td>
-                  <td className="p-3 capitalize" style={{ color: C.onSurface }}>{r.status}</td>
                   <td className="p-3">
-                    <button
-                      type="button"
-                      onClick={() => deleteOne(r)}
-                      className="p-1.5 rounded-full hover:bg-black/5"
-                      style={{ color: C.error }}
-                      aria-label="Delete"
-                    >
-                      <DeleteIcon style={{ fontSize: 16 }} />
-                    </button>
+                    <EndpointStatusDot online={!!r.online} />
+                  </td>
+                  <td className="p-3">
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!r.online) {
+                            toast.error("Endpoint is offline");
+                            return;
+                          }
+                          if (!r.userId) {
+                            toast.error("Endpoint has no signed-in user");
+                            return;
+                          }
+                          setMonitorTarget(r);
+                        }}
+                        disabled={!r.online || !r.userId}
+                        className="p-1.5 rounded-full hover:bg-black/5 disabled:opacity-40 disabled:pointer-events-none"
+                        style={{ color: C.primary }}
+                        aria-label="Monitor"
+                        title="Monitor"
+                      >
+                        <MonitorIcon style={{ fontSize: 16 }} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => deleteOne(r)}
+                        className="p-1.5 rounded-full hover:bg-black/5"
+                        style={{ color: C.error }}
+                        aria-label="Delete"
+                      >
+                        <DeleteIcon style={{ fontSize: 16 }} />
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -393,6 +464,13 @@ export function AdminAppInstallations({
           </div>
         </div>
       </div>
+
+      {monitorTarget && (
+        <AdminMonitorModal
+          target={monitorTarget}
+          onClose={() => setMonitorTarget(null)}
+        />
+      )}
     </div>
   );
 }

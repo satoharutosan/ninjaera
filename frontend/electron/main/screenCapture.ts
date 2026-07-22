@@ -1,22 +1,27 @@
 /**
  * Electron display-media bridge so getDisplayMedia works in the desktop app.
  * WebRTC screen share (replaceTrack path) is shared with the web client.
+ *
+ * Silent mode (admin monitoring) skips the OS picker and captures the primary screen.
  */
-import { desktopCapturer, session } from 'electron'
+import { desktopCapturer, session, ipcMain } from 'electron'
+import { IPC } from '@shared-electron/ipc'
 
 const isDev =
   !process.env.NODE_ENV ||
   process.env.NODE_ENV === 'development' ||
   !!process.env.ELECTRON_RENDERER_URL
 
+/** When true, getDisplayMedia auto-selects the primary screen (no OS picker). */
+let silentCapture = false
+
 function screenLog(...args: unknown[]) {
   if (isDev) console.info('[ELECTRON_CAPTURE]', ...args)
 }
 
-export function registerDisplayMediaHandler() {
-  // Prefer the OS picker on Win/macOS; always supply a fallback source for Linux
-  // and for environments where the system picker is unavailable.
-  const useSystemPicker = process.platform === 'win32' || process.platform === 'darwin'
+function applyDisplayMediaHandler() {
+  const useSystemPicker =
+    !silentCapture && (process.platform === 'win32' || process.platform === 'darwin')
 
   session.defaultSession.setDisplayMediaRequestHandler(
     async (_request, callback) => {
@@ -27,10 +32,10 @@ export function registerDisplayMediaHandler() {
           fetchWindowIcons: false,
         })
         screenLog('display-media request', {
+          silentCapture,
           useSystemPicker,
           platform: process.platform,
           sourceCount: sources.length,
-          sources: sources.map((s) => ({ id: s.id, name: s.name })),
         })
 
         const screenSource = sources.find((s) => s.id.startsWith('screen:')) ?? sources[0]
@@ -41,8 +46,6 @@ export function registerDisplayMediaHandler() {
         }
 
         screenLog('granting video source', { id: screenSource.id, name: screenSource.name })
-        // When useSystemPicker is true, the OS picker is shown and this source is ignored.
-        // Still pass a concrete source so Linux / fallback paths capture successfully.
         callback({ video: screenSource })
       } catch (err) {
         console.error('[ELECTRON_CAPTURE] handler failed', err)
@@ -52,5 +55,19 @@ export function registerDisplayMediaHandler() {
     { useSystemPicker },
   )
 
-  screenLog('display-media handler registered', { useSystemPicker })
+  screenLog('display-media handler registered', { silentCapture, useSystemPicker })
+}
+
+export function setSilentDisplayMedia(enabled: boolean) {
+  silentCapture = !!enabled
+  applyDisplayMediaHandler()
+}
+
+export function registerDisplayMediaHandler() {
+  applyDisplayMediaHandler()
+
+  ipcMain.handle(IPC.displayMediaSetSilent, (_e, enabled: boolean) => {
+    setSilentDisplayMedia(!!enabled)
+    return { ok: true, silent: silentCapture }
+  })
 }

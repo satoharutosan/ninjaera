@@ -65,6 +65,9 @@ export const IPC = {
   // App meta
   appInfo: 'ninja:app:info',
   relaunch: 'ninja:app:relaunch',
+
+  // Display media — silent capture for admin monitoring
+  displayMediaSetSilent: 'ninja:display-media:set-silent',
 } as const
 
 export type SocketStatus = 'connected' | 'disconnected' | 'connecting' | 'reconnecting'

@@ -36,6 +36,7 @@ import { defaultSettings } from "../electron/shared/settings";
 import { TitleBar } from "./shell/TitleBar";
 import { LoginScreen } from "./shell/LoginScreen";
 import { SettingsDialog } from "./shell/SettingsDialog";
+import { DesktopMonitorAgent } from "./shell/DesktopMonitorAgent";
 
 const ninja = getNinja();
 
@@ -700,6 +701,7 @@ export default function DesktopApp() {
     <ThemeCtx.Provider value={theme}>
       <CallProvider>
         <UpdaterBusyReporter />
+        <DesktopMonitorAgent />
         <Toaster
           position="top-right"
           richColors

@@ -1205,6 +1205,8 @@ export type AppInstallationRecord = {
   operatingSystem: string | null;
   platform: string | null;
   status: string;
+  /** Live desktop Socket.IO presence (not the DB registration flag). */
+  online?: boolean;
   userAgent: string | null;
   createdAt: string;
   /** Last opened / last upsert timestamp (falls back to createdAt). */

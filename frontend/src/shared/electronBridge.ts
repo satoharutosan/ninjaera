@@ -118,6 +118,9 @@ export interface NinjaBridgeApi {
   oauth: {
     start: (provider: 'google' | 'github' | 'discord') => Promise<NinjaOAuthResult>
   }
+  displayMedia?: {
+    setSilent: (enabled: boolean) => Promise<{ ok: boolean; silent: boolean }>
+  }
 }
 
 declare global {

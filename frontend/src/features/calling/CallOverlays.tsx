@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode, type RefObject } from "react";
 import CallIcon from "@mui/icons-material/Call";
 import CallEndIcon from "@mui/icons-material/CallEnd";
 import VideocamIcon from "@mui/icons-material/Videocam";
@@ -354,7 +354,7 @@ function RemoteStreamDebug({
   if (!import.meta.env.DEV || !info) return null;
   return (
     <div
-      className="absolute top-3 right-3 z-[2] text-[10px] px-2 py-1 rounded bg-black/80 text-emerald-300 font-mono pointer-events-none max-w-[95%] truncate"
+      className="absolute top-3 left-3 z-[2] text-[10px] px-2 py-1 rounded bg-black/80 text-emerald-300 font-mono pointer-events-none max-w-[70%] truncate"
     >
       {info}
     </div>
@@ -417,7 +417,10 @@ function FullscreenMediaFrame({
     const el = frameRef.current as (HTMLDivElement & {
       webkitRequestFullscreen?: () => Promise<void> | void;
     }) | null;
-    if (!el) return;
+    if (!el) {
+      if (import.meta.env.DEV) console.warn("[CALL_FS] native toggle: no frame ref");
+      return;
+    }
     try {
       const fsEl = document.fullscreenElement
         || (document as Document & { webkitFullscreenElement?: Element }).webkitFullscreenElement;
@@ -430,32 +433,45 @@ function FullscreenMediaFrame({
       } else {
         el.webkitRequestFullscreen?.();
       }
-    } catch {
-      /* fullscreen blocked */
+    } catch (err) {
+      if (import.meta.env.DEV) console.warn("[CALL_FS] native fullscreen failed", err);
     }
   }, []);
 
-  const toggle = useCallback(() => {
+  const onFsClick = useCallback((e: MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (import.meta.env.DEV) {
+      console.info("[CALL_FS] button click", {
+        mode,
+        expanded: isFs,
+        hasOnToggle: typeof onToggle === "function",
+        desktop: !!getNinja(),
+      });
+    }
     if (mode === "layout") {
-      onToggle?.();
+      if (!onToggle) {
+        if (import.meta.env.DEV) console.warn("[CALL_FS] layout mode missing onToggle");
+        return;
+      }
+      onToggle();
       return;
     }
     void toggleNative();
-  }, [mode, onToggle, toggleNative]);
+  }, [mode, onToggle, toggleNative, isFs]);
 
   const frameClass = [
-    "relative overflow-hidden bg-black/50 h-full w-full",
-    expanded && mode === "layout"
-      ? "rounded-none min-h-0"
-      : "rounded-2xl min-h-[30vh] md:min-h-0",
+    "relative overflow-hidden bg-black h-full w-full min-h-0 min-w-0",
+    expanded && mode === "layout" ? "rounded-none" : "rounded-2xl",
+    !(expanded && mode === "layout") && "min-h-[30vh] md:min-h-0",
     className,
   ].filter(Boolean).join(" ");
 
   return (
-    <div ref={frameRef} className={frameClass}>
+    <div ref={frameRef} className={frameClass} data-call-fs={isFs ? "1" : "0"}>
       {children}
       {!hideChrome && (
-        <div className="absolute bottom-3 left-3 text-xs text-white/80 px-2 py-1 rounded-full bg-black/50" style={{ fontFamily: "Roboto" }}>
+        <div className="absolute bottom-3 left-3 z-[1] text-xs text-white/80 px-2 py-1 rounded-full bg-black/50 pointer-events-none" style={{ fontFamily: "Roboto" }}>
           {label}
         </div>
       )}
@@ -469,8 +485,8 @@ function FullscreenMediaFrame({
           type="button"
           aria-label={isFs ? "Exit full screen" : "View full screen"}
           title={isFs ? "Exit full screen" : "View full screen"}
-          onClick={toggle}
-          className="absolute top-3 right-3 z-[3] w-9 h-9 rounded-full flex items-center justify-center text-white transition-opacity hover:opacity-100 opacity-90 focus:outline-none focus-visible:ring-2"
+          onClick={onFsClick}
+          className="absolute top-3 right-3 z-[5] w-9 h-9 rounded-full flex items-center justify-center text-white transition-opacity hover:opacity-100 opacity-90 focus:outline-none focus-visible:ring-2"
           style={{ background: "rgba(0,0,0,0.55)", boxShadow: "0 1px 4px rgba(0,0,0,0.35)" }}
         >
           {isFs ? <FullscreenExitIcon style={{ fontSize: 20 }} /> : <FullscreenIcon style={{ fontSize: 20 }} />}
@@ -554,10 +570,19 @@ export function CallOverlays() {
   const toggleRemoteLayoutFs = useCallback(() => {
     setRemoteLayoutFs((prev) => {
       const next = !prev;
+      if (import.meta.env.DEV) {
+        console.info("[CALL_FS] layout state", { from: prev, to: next });
+      }
       if (next) setChatOpen(false);
       return next;
     });
   }, []);
+
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    if (!desktop) return;
+    console.info("[CALL_FS] remoteLayoutFs render branch", { remoteLayoutFs });
+  }, [desktop, remoteLayoutFs]);
 
   const closeChat = useCallback(() => setChatOpen(false), []);
   const toggleChat = useCallback(() => {
@@ -710,71 +735,93 @@ export function CallOverlays() {
       role="dialog"
       aria-modal="true"
       aria-label="In call"
+      data-remote-layout-fs={remoteLayoutFs ? "1" : "0"}
       onMouseMove={remoteLayoutFs ? bumpFsControls : undefined}
     >
-      {/* Main column: video + controls only — chat overlays and never shrinks this. */}
-      <div className="relative flex-1 min-h-0 flex flex-col">
+      {/*
+        Media stage:
+        - Normal: grid with remote + local
+        - Desktop layout FS: absolute inset-0 so remote fills the entire client
+          area under the title bar (avoids fragile percentage-height flex chains)
+      */}
+      <div
+        className={
+          remoteLayoutFs
+            ? "absolute inset-0 z-[1] bg-black"
+            : "relative flex-1 min-h-0 flex flex-col"
+        }
+      >
         <div
           className={
             remoteLayoutFs
-              ? "flex-1 relative min-h-0"
+              ? "absolute inset-0"
               : "flex-1 relative min-h-0 grid grid-cols-1 md:grid-cols-2 gap-2 p-3"
           }
         >
-          <FullscreenMediaFrame
-            mode={desktop ? "layout" : "native"}
-            expanded={remoteLayoutFs}
-            onToggle={desktop ? toggleRemoteLayoutFs : undefined}
-            hideChrome={remoteLayoutFs}
-            label={[
-              peerName,
-              !call.peerMicOn ? "Muted" : "",
-              !call.peerCamOn && !call.peerScreenReceiving && !call.peerScreenSharing ? "Cam off" : "",
-              call.peerScreenReceiving
-                ? "is sharing their screen"
-                : call.peerScreenSharing
-                  ? "is starting screen share"
-                  : "",
-            ].filter(Boolean).join(" · ")}
-          >
-            {/* Remote video is always muted; audio plays via RemoteAudioSink. */}
-            <VideoTile
-              key={`remote-${call.remoteBindEpoch}-${paintKick}`}
-              stream={call.remoteStream}
-              muted
-              videoRef={remoteVideoRef}
-              rebindToken={call.remoteBindEpoch + paintKick}
-              label={
-                call.phase === "connecting"
-                  ? "Connecting…"
-                  : call.peerScreenReceiving
-                    ? `${peerName} is sharing their screen`
-                    : call.peerScreenSharing
-                      ? `${peerName} is starting screen share…`
-                      : call.callType === "video"
-                        ? (call.remoteStream ? peerName : "Waiting for video…")
-                        : "Voice connected"
-              }
-            />
-            <ScreenReceiveWatch
-              peerSharing={call.peerScreenSharing}
-              videoElRef={remoteVideoRef}
-              getStats={call.getPeerStats}
-              onNeedsRebind={() => setPaintKick((n) => n + 1)}
-            />
-            <RemoteStreamDebug
-              videoElRef={remoteVideoRef}
-              getStats={call.getPeerStats}
-              getVideoDirection={call.getVideoDirection}
-              remoteStream={call.remoteStream}
-            />
-            <RemoteAudioSink
-              stream={call.remoteAudioStream}
-              sinkId={call.selectedOutputId || undefined}
-            />
-          </FullscreenMediaFrame>
+          <div className={remoteLayoutFs ? "absolute inset-0" : "min-h-0 h-full w-full"}>
+            <FullscreenMediaFrame
+              mode={desktop ? "layout" : "native"}
+              expanded={remoteLayoutFs}
+              onToggle={desktop ? toggleRemoteLayoutFs : undefined}
+              hideChrome={remoteLayoutFs}
+              label={[
+                peerName,
+                !call.peerMicOn ? "Muted" : "",
+                !call.peerCamOn && !call.peerScreenReceiving && !call.peerScreenSharing ? "Cam off" : "",
+                call.peerScreenReceiving
+                  ? "is sharing their screen"
+                  : call.peerScreenSharing
+                    ? "is starting screen share"
+                    : "",
+              ].filter(Boolean).join(" · ")}
+            >
+              {/* Remote video is always muted; audio plays via RemoteAudioSink. */}
+              <VideoTile
+                key={`remote-${call.remoteBindEpoch}-${paintKick}`}
+                stream={call.remoteStream}
+                muted
+                videoRef={remoteVideoRef}
+                rebindToken={call.remoteBindEpoch + paintKick}
+                label={
+                  call.phase === "connecting"
+                    ? "Connecting…"
+                    : call.peerScreenReceiving
+                      ? `${peerName} is sharing their screen`
+                      : call.peerScreenSharing
+                        ? `${peerName} is starting screen share…`
+                        : call.callType === "video"
+                          ? (call.remoteStream ? peerName : "Waiting for video…")
+                          : "Voice connected"
+                }
+              />
+              <ScreenReceiveWatch
+                peerSharing={call.peerScreenSharing}
+                videoElRef={remoteVideoRef}
+                getStats={call.getPeerStats}
+                onNeedsRebind={() => setPaintKick((n) => n + 1)}
+              />
+              <RemoteStreamDebug
+                videoElRef={remoteVideoRef}
+                getStats={call.getPeerStats}
+                getVideoDirection={call.getVideoDirection}
+                remoteStream={call.remoteStream}
+              />
+              <RemoteAudioSink
+                stream={call.remoteAudioStream}
+                sinkId={call.selectedOutputId || undefined}
+              />
+            </FullscreenMediaFrame>
+          </div>
 
-          <div className={remoteLayoutFs ? "hidden" : "contents"}>
+          {/* Keep local preview mounted; park it off-layout during FS (no remount). */}
+          <div
+            className={
+              remoteLayoutFs
+                ? "absolute w-px h-px opacity-0 overflow-hidden pointer-events-none"
+                : "contents"
+            }
+            aria-hidden={remoteLayoutFs}
+          >
             <FullscreenMediaFrame
               enableFullscreen={!desktop}
               label={[
@@ -813,10 +860,12 @@ export function CallOverlays() {
           </div>
         </div>
 
-        {/* Overlay sidebar — does not resize video; no dimming backdrop.
-            Stay mounted during layout FS so session lines/unread are preserved. */}
+        {/* Chat stays mounted so session lines/unread survive layout FS. */}
         {chatActive && (
-          <div className={remoteLayoutFs ? "hidden" : "contents"}>
+          <div
+            className={remoteLayoutFs ? "absolute w-px h-px opacity-0 overflow-hidden pointer-events-none" : "contents"}
+            aria-hidden={remoteLayoutFs}
+          >
             <CallChatPanel
               conversationId={conversationId}
               active={chatActive}
@@ -834,7 +883,7 @@ export function CallOverlays() {
             ? `absolute inset-x-0 bottom-0 z-[4] px-4 py-4 flex flex-col items-center gap-3 transition-opacity duration-300 ${
                 fsControlsVisible ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"
               }`
-            : "px-4 py-4 flex flex-col items-center gap-3 border-t shrink-0"
+            : "relative z-[2] px-4 py-4 flex flex-col items-center gap-3 border-t shrink-0"
         }
         style={
           remoteLayoutFs

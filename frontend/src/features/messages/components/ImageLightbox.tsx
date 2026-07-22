@@ -39,7 +39,7 @@ export function ImageLightbox({
     setRotation(r => (r + 90) % 360);
   }, []);
 
-  /** Desktop: dropdown collapses the window (same path as title-bar minimize / tray). */
+  /** Desktop: minimize to the Windows taskbar (standard window minimize). */
   const minimizePreviewWindow = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
     getNinja()?.window?.minimize();

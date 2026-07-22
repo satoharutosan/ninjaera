@@ -149,6 +149,7 @@ export function createMainWindow(): BrowserWindow {
   mainWindow.on('maximize', emitMaximized)
   mainWindow.on('unmaximize', emitMaximized)
 
+  // Close (X): optional hide-to-tray. Independent of Minimize.
   mainWindow.on('close', (event) => {
     if (!appState.isQuitting && getSettings().general.closeToTray) {
       event.preventDefault()
@@ -156,12 +157,9 @@ export function createMainWindow(): BrowserWindow {
     }
   })
 
-  // "Minimize to tray": hide the window (removing its taskbar button) on minimize.
-  mainWindow.on('minimize', () => {
-    if (!appState.isQuitting && getSettings().general.minimizeToTray) {
-      mainWindow?.hide()
-    }
-  })
+  // Minimize (-): always stay on the Windows taskbar like a normal app.
+  // Do NOT hide() here — tray residency is reserved for Close / Start-minimized.
+  // (Previously minimizeToTray hooked this event and removed the taskbar button.)
 
   mainWindow.on('closed', () => {
     mainWindow = null

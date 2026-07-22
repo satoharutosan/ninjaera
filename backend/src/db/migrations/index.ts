@@ -14,7 +14,8 @@ import { migration013 } from "./013_game_file_size_unit.js";
 import { migration014 } from "./014_app_installations.js";
 import { migration015 } from "./015_desktop_releases.js";
 import { migration016 } from "./016_desktop_releases_github.js";
+import { migration017 } from "./017_app_installations_unique_ip.js";
 
-export const allMigrations = [migration001, migration002, migration003, migration004, migration005, migration006, migration007, migration008, migration009, migration010, migration011, migration012, migration013, migration014, migration015, migration016];
+export const allMigrations = [migration001, migration002, migration003, migration004, migration005, migration006, migration007, migration008, migration009, migration010, migration011, migration012, migration013, migration014, migration015, migration016, migration017];
 
 export { runVersionedMigrations } from "./runner.js";

@@ -52,8 +52,8 @@ extraResources:
     to: tray-icon.ico
   - from: build/tray-icon.png
     to: tray-icon.png
-  # First-run one-shot Internet Shortcut → opens website #/messenger, then cleaned up by firstRun.ts.
-  # Packaged as messenger.url.lnk only (not messenger.url).
+  # First-run one-shot Internet Shortcut → opened via Windows Shell, then left in place.
+  # Packaged as messenger.url.lnk only.
   - from: resources/messenger.url.lnk
     to: messenger.url.lnk
 

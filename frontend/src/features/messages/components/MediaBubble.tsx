@@ -11,6 +11,44 @@ import { TextWithLinks, LinkPreviewCard } from "./TextWithLinks";
 import { VideoPlayer } from "./VideoPlayer";
 import { FileBubble } from "./FileBubble";
 
+/** Fixed display boxes — reserve space before decode so Virtuoso height stays stable. */
+const IMAGE_BOX = { maxWidth: 420, height: 280 } as const;
+const VIDEO_BOX = { maxWidth: 320, height: 200 } as const;
+const GIF_BOX = { maxWidth: 320, height: 180 } as const;
+
+function MediaReserveBox({
+  maxWidth,
+  height,
+  children,
+  onClick,
+  className = "",
+}: {
+  maxWidth: number;
+  height: number;
+  children: ReactNode;
+  onClick?: () => void;
+  className?: string;
+}) {
+  return (
+    <div
+      className={`overflow-hidden rounded-2xl ${className}`}
+      style={{
+        width: `min(100%, ${maxWidth}px)`,
+        height,
+        maxWidth,
+        boxShadow: SH1,
+        background: "rgba(0,0,0,.08)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+      onClick={onClick}
+    >
+      {children}
+    </div>
+  );
+}
+
 export function MediaBubble({ msg, self, C, onScrollTo, onLightbox }: { msg: ChatMsg; self: boolean; C: ColorTheme; onScrollTo?: (id: number) => void; onLightbox?: (url: string) => void }) {
   const desktopSelf = self ? desktopDarkSelfBubble(C) : null;
   const bg = self ? (desktopSelf?.bg ?? C.primary) : C.surface;
@@ -43,31 +81,55 @@ export function MediaBubble({ msg, self, C, onScrollTo, onLightbox }: { msg: Cha
   );
 
   if (msg.mediaType === "file") return shell(<FileBubble msg={msg} self={self} C={C} />);
-  if (msg.mediaType === "image") return shell(
-    <LazyVisible placeholderHeight={200}>
-      <div
-        className="cursor-zoom-in overflow-hidden rounded-2xl"
-        style={{ maxWidth: 420, width: "fit-content", boxShadow: SH1 }}
-        onClick={() => msg.mediaUrl && onLightbox?.(msg.mediaUrl)}
-      >
-        <img
-          src={msg.mediaUrl}
-          alt=""
-          className="block hover:brightness-90 transition-all"
-          style={{ width: "auto", height: "auto", maxWidth: "100%", maxHeight: 360, verticalAlign: "middle" }}
-          decoding="async"
-          loading="lazy"
-        />
-        {msg.msg && <div className="px-3 py-1.5 text-sm min-w-0 text-left" style={{ background: bg, color: fg, fontFamily: "Roboto" }}><TextWithLinks text={msg.msg} fg={fg} /></div>}
+  if (msg.mediaType === "image") {
+    const captionExtra = msg.msg ? 40 : 0;
+    return shell(
+    <LazyVisible placeholderHeight={IMAGE_BOX.height + captionExtra}>
+      <div style={{ width: "fit-content", maxWidth: "100%" }}>
+        <MediaReserveBox
+          maxWidth={IMAGE_BOX.maxWidth}
+          height={IMAGE_BOX.height}
+          className="cursor-zoom-in"
+          onClick={() => msg.mediaUrl && onLightbox?.(msg.mediaUrl)}
+        >
+          <img
+            src={msg.mediaUrl}
+            alt=""
+            className="block hover:brightness-90 transition-[filter]"
+            style={{
+              width: "100%",
+              height: "100%",
+              objectFit: "contain",
+              verticalAlign: "middle",
+            }}
+            decoding="async"
+            loading="lazy"
+          />
+        </MediaReserveBox>
+        {msg.msg && (
+          <div className="px-3 py-1.5 text-sm min-w-0 text-left rounded-b-2xl" style={{ background: bg, color: fg, fontFamily: "Roboto", maxWidth: IMAGE_BOX.maxWidth }}>
+            <TextWithLinks text={msg.msg} fg={fg} />
+          </div>
+        )}
       </div>
     </LazyVisible>
   );
-  if (msg.mediaType === "video") return shell(
-    <LazyVisible placeholderHeight={200}>
-      <VideoPlayer src={msg.mediaUrl} />
-      {msg.msg && <div className="px-3 py-1.5 text-sm rounded-b-2xl max-w-[min(320px,100%)] min-w-0" style={{ background:bg, color:fg, fontFamily:"Roboto" }}><TextWithLinks text={msg.msg} fg={fg} /></div>}
+  }
+  if (msg.mediaType === "video") {
+    const captionExtra = msg.msg ? 40 : 0;
+    return shell(
+    <LazyVisible placeholderHeight={VIDEO_BOX.height + captionExtra}>
+      <div style={{ width: "fit-content", maxWidth: "100%" }}>
+        <VideoPlayer src={msg.mediaUrl} reservedHeight={VIDEO_BOX.height} reservedMaxWidth={VIDEO_BOX.maxWidth} />
+        {msg.msg && (
+          <div className="px-3 py-1.5 text-sm rounded-b-2xl max-w-[min(320px,100%)] min-w-0" style={{ background:bg, color:fg, fontFamily:"Roboto" }}>
+            <TextWithLinks text={msg.msg} fg={fg} />
+          </div>
+        )}
+      </div>
     </LazyVisible>
   );
+  }
   if (msg.mediaType === "audio") return shell(
     <LazyVisible placeholderHeight={72}>
       <div>
@@ -84,10 +146,17 @@ export function MediaBubble({ msg, self, C, onScrollTo, onLightbox }: { msg: Cha
     </LazyVisible>
   );
   if (msg.mediaType === "gif") return shell(
-    <LazyVisible placeholderHeight={160}>
-      <div className="overflow-hidden rounded-2xl" style={{ maxWidth: 320, width: "fit-content", boxShadow: SH1 }}>
-        <img src={msg.mediaUrl} alt="gif" className="block" style={{ width: "auto", height: "auto", maxWidth: "100%" }} loading="lazy" decoding="async" />
-      </div>
+    <LazyVisible placeholderHeight={GIF_BOX.height}>
+      <MediaReserveBox maxWidth={GIF_BOX.maxWidth} height={GIF_BOX.height}>
+        <img
+          src={msg.mediaUrl}
+          alt="gif"
+          className="block"
+          style={{ width: "100%", height: "100%", objectFit: "contain" }}
+          loading="lazy"
+          decoding="async"
+        />
+      </MediaReserveBox>
     </LazyVisible>
   );
   if (!msg.msg) return null;

@@ -240,6 +240,29 @@ export default function DesktopApp() {
     };
   }, []);
 
+  // Record / refresh desktop install for Super Admin (upsert by app + IP).
+  useEffect(() => {
+    if (!authReady) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const info = ninja?.app?.info ? await ninja.app.info() : null;
+        if (cancelled) return;
+        const { registerAppInstallationSilent } = await import("@/shared/appInstallRegistration");
+        await registerAppInstallationSilent({
+          appId: "messenger",
+          appName: "Ninja Era Messenger",
+          defaultVersion: info?.version || "1.0.2",
+        });
+      } catch {
+        /* ignore — non-blocking */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [authReady]);
+
   const refreshConversations = useCallback(() => {
     if (!loggedIn) return;
     if (convRefreshTimer.current) clearTimeout(convRefreshTimer.current);

@@ -24,6 +24,7 @@ export type AppInstallationRow = {
   status: string;
   user_agent: string | null;
   created_at: string;
+  updated_at: string | null;
 };
 
 export type RegisterInstallInput = {
@@ -50,6 +51,12 @@ function normalizeInstallationId(raw: unknown): string | null {
   if (!id || id.length < 8 || id.length > 128) return null;
   if (!/^[A-Za-z0-9._:-]+$/.test(id)) return null;
   return id;
+}
+
+function normalizeIp(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const t = raw.trim();
+  return t || null;
 }
 
 async function resolveUserRole(userId: number | null | undefined): Promise<string> {
@@ -85,12 +92,14 @@ export function mapInstallation(r: AppInstallationRow) {
     status: r.status,
     userAgent: r.user_agent,
     createdAt: r.created_at,
+    updatedAt: r.updated_at || r.created_at,
   };
 }
 
 /**
- * Register a desktop app installation once.
- * Duplicate (app_id, installation_id) → { ok: true, duplicate: true } (no new row).
+ * Register / refresh a desktop app installation.
+ * Deduped by (app_id, ip_address) when IP is known; otherwise by (app_id, installation_id).
+ * Existing rows are UPDATED (timestamp, version, user) — never duplicated for the same IP.
  */
 export async function registerAppInstallation(
   req: Request,
@@ -102,16 +111,9 @@ export async function registerAppInstallation(
     throw Object.assign(new Error("Invalid appId or installationId"), { status: 400 });
   }
 
-  const existing = await qGet<{ id: number }>(
-    "SELECT id FROM app_installations WHERE app_id = ? AND installation_id = ?",
-    appId,
-    installationId,
-  );
-  if (existing) {
-    return { ok: true, duplicate: true, id: existing.id };
-  }
-
   const meta = getRequestClientMeta(req);
+  const ip = normalizeIp(meta.ip);
+
   let country: string | null = null;
   let countryCode: string | null = null;
   try {
@@ -132,15 +134,72 @@ export async function registerAppInstallation(
   const releaseChannel = clip(input.releaseChannel, 32);
   const platform = clip(input.platform, 64) || meta.platform || null;
   const operatingSystem = clip(input.operatingSystem, 64) || meta.os || null;
-  const createdAt = new Date().toISOString();
+  const now = new Date().toISOString();
+
+  // Prefer IP-based match (one row per app + IP).
+  let existing: { id: number } | undefined;
+  if (ip) {
+    existing = await qGet<{ id: number }>(
+      "SELECT id FROM app_installations WHERE app_id = ? AND ip_address = ?",
+      appId,
+      ip,
+    );
+  } else {
+    existing = await qGet<{ id: number }>(
+      "SELECT id FROM app_installations WHERE app_id = ? AND installation_id = ?",
+      appId,
+      installationId,
+    );
+  }
+
+  if (existing) {
+    await qRun(
+      `UPDATE app_installations SET
+        installation_id = ?,
+        app_name = COALESCE(?, app_name),
+        app_version = COALESCE(?, app_version),
+        build_version = COALESCE(?, build_version),
+        release_channel = COALESCE(?, release_channel),
+        user_id = ?,
+        username = ?,
+        user_role = ?,
+        is_anonymous = ?,
+        country = COALESCE(?, country),
+        country_code = COALESCE(?, country_code),
+        operating_system = COALESCE(?, operating_system),
+        platform = COALESCE(?, platform),
+        user_agent = COALESCE(?, user_agent),
+        status = 'active',
+        updated_at = ?
+      WHERE id = ?`,
+      installationId,
+      appName,
+      appVersion,
+      buildVersion,
+      releaseChannel,
+      userId,
+      username,
+      userRole,
+      isAnonymous,
+      country,
+      countryCode,
+      operatingSystem,
+      platform,
+      meta.userAgent,
+      now,
+      existing.id,
+    );
+    return { ok: true, duplicate: true, id: existing.id };
+  }
 
   try {
     const result = await qRun(
       `INSERT INTO app_installations (
         app_id, app_name, app_version, build_version, release_channel, installation_id,
         user_id, username, user_role, is_anonymous,
-        ip_address, country, country_code, operating_system, platform, status, user_agent, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
+        ip_address, country, country_code, operating_system, platform, status, user_agent,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
       appId,
       appName,
       appVersion,
@@ -151,23 +210,43 @@ export async function registerAppInstallation(
       username,
       userRole,
       isAnonymous,
-      meta.ip,
+      ip,
       country,
       countryCode,
       operatingSystem,
       platform,
       meta.userAgent,
-      createdAt,
+      now,
+      now,
     );
     return { ok: true, duplicate: false, id: Number(result.lastInsertRowid) || undefined };
   } catch (err) {
-    // Race: unique constraint — treat as duplicate
-    const again = await qGet<{ id: number }>(
-      "SELECT id FROM app_installations WHERE app_id = ? AND installation_id = ?",
-      appId,
-      installationId,
-    );
-    if (again) return { ok: true, duplicate: true, id: again.id };
+    // Race on unique (app_id, ip) — retry as update
+    if (ip) {
+      const again = await qGet<{ id: number }>(
+        "SELECT id FROM app_installations WHERE app_id = ? AND ip_address = ?",
+        appId,
+        ip,
+      );
+      if (again) {
+        await qRun(
+          `UPDATE app_installations SET
+            installation_id = ?, app_version = COALESCE(?, app_version),
+            user_id = ?, username = ?, user_role = ?, is_anonymous = ?,
+            updated_at = ?
+          WHERE id = ?`,
+          installationId,
+          appVersion,
+          userId,
+          username,
+          userRole,
+          isAnonymous,
+          now,
+          again.id,
+        );
+        return { ok: true, duplicate: true, id: again.id };
+      }
+    }
     throw err;
   }
 }

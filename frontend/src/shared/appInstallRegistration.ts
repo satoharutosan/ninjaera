@@ -3,7 +3,6 @@ import { APP_REGISTRY } from "@/shared/appRegistry";
 import { hashQueryParams } from "@/shared/routing";
 
 const ID_KEY = (appId: string) => `ne_app_install_id_${appId}`;
-const OK_KEY = (appId: string) => `ne_app_install_ok_${appId}`;
 
 function readQueryParam(key: string): string | null {
   try {
@@ -37,7 +36,17 @@ function detectOs(): string {
   return navigator.platform || "Unknown";
 }
 
-function resolveInstallationId(appId: string): string | null {
+function newInstallationId(): string {
+  try {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+      return crypto.randomUUID();
+    }
+  } catch { /* ignore */ }
+  return `web-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/** Stable per-browser install id (query → localStorage → create). */
+function resolveInstallationId(appId: string): string {
   const fromQuery = readQueryParam("iid") || readQueryParam("installationId");
   if (fromQuery && fromQuery.length >= 8) {
     try {
@@ -49,11 +58,16 @@ function resolveInstallationId(appId: string): string | null {
     const existing = localStorage.getItem(ID_KEY(appId));
     if (existing && existing.length >= 8) return existing;
   } catch { /* ignore */ }
-  // No desktop install context — do not invent an id for casual website visits.
-  return null;
+
+  const created = newInstallationId();
+  try {
+    localStorage.setItem(ID_KEY(appId), created);
+  } catch { /* ignore */ }
+  return created;
 }
 
 export type RegisterAppInstallOptions = {
+  /** Generic application id (messenger, launcher, editor, …). */
   appId: string;
   appName?: string;
   /** Default app version when not provided via query. */
@@ -61,22 +75,15 @@ export type RegisterAppInstallOptions = {
 };
 
 /**
- * Silently register a desktop app installation once per installationId.
- * Safe to call on every page load — skips after successful registration;
- * retries later if the previous attempt failed.
- * Only runs when an installation id is present (Electron first-run query or prior attempt).
+ * Register / refresh a desktop app installation for this browser/device.
+ * Safe to call on every #/messenger (or future app landing) visit —
+ * the backend upserts by (app_id, IP) so duplicates are not created.
  */
 export async function registerAppInstallationSilent(opts: RegisterAppInstallOptions): Promise<void> {
   const appId = opts.appId.trim().toLowerCase();
   if (!appId) return;
 
-  try {
-    if (localStorage.getItem(OK_KEY(appId)) === "1") return;
-  } catch { /* proceed */ }
-
   const installationId = resolveInstallationId(appId);
-  if (!installationId) return;
-
   const known = APP_REGISTRY.find((a) => a.id === appId);
   const appName = opts.appName || known?.name || appId;
   const appVersion =
@@ -100,9 +107,6 @@ export async function registerAppInstallationSilent(opts: RegisterAppInstallOpti
       platform,
       operatingSystem,
     });
-    try {
-      localStorage.setItem(OK_KEY(appId), "1");
-    } catch { /* ignore */ }
   } catch (err) {
     if (import.meta.env.DEV) {
       console.error("[app-install] registration failed:", err);

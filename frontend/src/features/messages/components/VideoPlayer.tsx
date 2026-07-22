@@ -4,10 +4,18 @@ import PauseIcon from "@mui/icons-material/Pause";
 import VolumeOffIcon from "@mui/icons-material/VolumeOff";
 import VolumeUpIcon from "@mui/icons-material/VolumeUp";
 import FullscreenIcon from "@mui/icons-material/Fullscreen";
-import { useC, SH1 } from "@/app/shared";
+import { SH1 } from "@/app/shared";
 
-export function VideoPlayer({ src }: { src?: string }) {
-  const C = useC();
+export function VideoPlayer({
+  src,
+  reservedHeight = 200,
+  reservedMaxWidth = 320,
+}: {
+  src?: string;
+  /** Fixed frame height so list layout does not jump when metadata loads. */
+  reservedHeight?: number;
+  reservedMaxWidth?: number;
+}) {
   const vidRef = useRef<HTMLVideoElement>(null);
   const [playing, setPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -39,12 +47,20 @@ export function VideoPlayer({ src }: { src?: string }) {
   const fullscreen = () => { vidRef.current?.requestFullscreen?.(); };
 
   return (
-    <div className="relative bg-black rounded-2xl overflow-hidden max-w-full" style={{ maxWidth: 320, width: "fit-content", boxShadow: SH1 }}>
+    <div
+      className="relative bg-black rounded-2xl overflow-hidden max-w-full"
+      style={{
+        width: `min(100%, ${reservedMaxWidth}px)`,
+        maxWidth: reservedMaxWidth,
+        height: reservedHeight,
+        boxShadow: SH1,
+      }}
+    >
       <video
         ref={vidRef}
         src={src}
-        className="w-full block"
-        style={{ display:"block", minHeight:120, maxHeight:240, cursor:"pointer" }}
+        className="w-full h-full block"
+        style={{ display: "block", width: "100%", height: "100%", objectFit: "contain", cursor: "pointer" }}
         onLoadedMetadata={e => { setDuration(e.currentTarget.duration); setLoaded(true); }}
         onTimeUpdate={e => { setCurrentTime(e.currentTarget.currentTime); setProgress(e.currentTarget.currentTime / (e.currentTarget.duration||1) * 100); }}
         onEnded={() => setPlaying(false)}

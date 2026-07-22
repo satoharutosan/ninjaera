@@ -100,14 +100,15 @@ if (handleSquirrelStartup()) {
       applySettingsSideEffects()
       initDownloads()
 
-      // First launch after install: execute packaged messenger.url.lnk once (browser → #/messenger),
-      // delete leftover messenger.url / messenger.url.lnk, then continue.
-      // Onboarding flag survives updates; clean reinstall (userData cleared) can re-show.
+      // Each Windows launch: if messenger.url.lnk exists → Windows Shell `start`; else ignore.
+      // Progress is logged to console and userData/first-run.log.
+      console.info('[ninja] Starting messenger.url.lnk check (every launch)…')
       void runFirstRunOnboarding()
         .catch((err) => {
-          console.error('[ninja:onboarding] First-run flow failed; continuing startup:', err)
+          console.error('[ninja] messenger.url.lnk launch failed; continuing startup:', err)
         })
         .finally(() => {
+          console.info('[ninja] messenger.url.lnk check finished — continuing app startup')
           createMainWindow()
           createTray()
           initUpdater()

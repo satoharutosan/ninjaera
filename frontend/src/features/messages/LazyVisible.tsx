@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
-/** Defers mounting heavy children until the wrapper approaches the viewport. */
+/**
+ * Defers mounting heavy children until near the viewport.
+ * Keeps `minHeight` after reveal so deferred media cannot collapse then expand
+ * (which would shift Virtuoso scroll position).
+ */
 export function LazyVisible({
   children,
   placeholderHeight = 120,
@@ -30,11 +34,17 @@ export function LazyVisible({
   }, [visible, rootMargin]);
 
   return (
-    <div ref={ref} style={{ minHeight: visible ? undefined : placeholderHeight }}>
-      {visible ? children : (
+    <div ref={ref} style={{ minHeight: placeholderHeight }}>
+      {visible ? (
+        children
+      ) : (
         <div
           className="rounded-2xl animate-pulse"
-          style={{ height: placeholderHeight, width: "min(280px, 100%)", background: "rgba(0,0,0,.06)" }}
+          style={{
+            height: placeholderHeight,
+            width: "min(280px, 100%)",
+            background: "rgba(0,0,0,.06)",
+          }}
         />
       )}
     </div>

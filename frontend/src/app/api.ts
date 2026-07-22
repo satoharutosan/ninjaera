@@ -1207,6 +1207,8 @@ export type AppInstallationRecord = {
   status: string;
   userAgent: string | null;
   createdAt: string;
+  /** Last opened / last upsert timestamp (falls back to createdAt). */
+  updatedAt?: string;
 };
 
 export type DesktopReleaseRecord = {

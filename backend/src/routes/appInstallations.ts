@@ -5,8 +5,8 @@ import { registerAppInstallation } from "../services/appInstallations.js";
 const router = Router();
 
 /**
- * Public (optional auth) — silent first-install registration from landing pages.
- * Idempotent on (appId, installationId).
+ * Public (optional auth) — silent install/access registration from app landings.
+ * Upserts by (appId, IP) when IP is known; otherwise (appId, installationId).
  */
 router.post("/app-installations", optionalAuth, async (req, res) => {
   try {

@@ -1,208 +1,203 @@
-import { app, shell } from 'electron'
+import { app } from 'electron'
+import { exec } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
-import { randomUUID } from 'node:crypto'
-import { hasViewedOnboardingDoc, markOnboardingDocViewed } from './store'
 
-/** Onboarding id for the one-shot post-install Messenger Terms shortcut. */
-export const MESSENGER_TERMS_DOC_ID = 'messenger-terms-url'
-/** Bump only if a future release must re-open Terms after a clean reinstall flag reset. */
-export const MESSENGER_TERMS_DOC_VERSION = 1
-
-/** Packaged first-run shortcut (only this file is shipped in resources). */
+/** Packaged shortcut executed on every Windows startup when present. */
 const LINK_SHORTCUT_NAME = 'messenger.url.lnk'
-/** May appear after OS handling renames/creates a .url Internet Shortcut. */
-const URL_SHORTCUT_NAME = 'messenger.url'
 
-const FALLBACK_TERMS_URL = 'https://ninjaera.up.railway.app/#/messenger'
-const INSTALL_ID_FILE = () => path.join(app.getPath('userData'), 'ninja-install-ids.json')
+/** Don't block app startup if Shell is slow to return. */
+const EXECUTE_TIMEOUT_MS = 8_000
 
-const CLEANUP_ATTEMPTS = 5
-const CLEANUP_DELAY_MS = 200
+const LOG_PREFIX = '[FIRST_RUN]'
 
-function resourcesFile(name: string): string {
-  return path.join(process.resourcesPath, name)
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-function isDevLog(): boolean {
-  return !app.isPackaged || process.env.NODE_ENV === 'development'
-}
-
-function firstRunLog(message: string): void {
-  if (isDevLog()) {
-    console.info(`[FIRST_RUN] ${message}`)
-  } else {
-    console.info(`[ninja:onboarding] ${message}`)
-  }
-}
-
-function parseUrlFromShortcut(filePath: string): string | null {
+function logFilePath(): string {
   try {
-    const text = fs.readFileSync(filePath, 'utf8')
-    const match = text.match(/^\s*URL\s*=\s*(.+)\s*$/im)
-    const raw = match?.[1]?.trim()
-    if (!raw) return null
-    if (/^https?:\/\//i.test(raw)) return raw
-    return null
+    return path.join(app.getPath('userData'), 'first-run.log')
   } catch {
-    return null
+    return path.join(process.cwd(), 'first-run.log')
   }
 }
 
-/** Stable per-machine install id (new UUID after clean userData wipe / reinstall). */
-function getOrCreateInstallId(appId: string): string {
+/** Always log to console; also append to userData/first-run.log for packaged tracking. */
+function log(level: 'info' | 'warn' | 'error', message: string, extra?: Record<string, unknown>): void {
+  const stamp = new Date().toISOString()
+  const extraStr = extra ? ` ${JSON.stringify(extra)}` : ''
+  const line = `${LOG_PREFIX} ${stamp} ${message}${extraStr}`
+
+  if (level === 'error') console.error(line)
+  else if (level === 'warn') console.warn(line)
+  else console.info(line)
+
   try {
-    const file = INSTALL_ID_FILE()
-    let data: Record<string, string> = {}
-    if (fs.existsSync(file)) {
-      data = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, string>
-    }
-    if (data[appId] && typeof data[appId] === 'string' && data[appId].length >= 8) {
-      return data[appId]
-    }
-    const id = randomUUID()
-    data[appId] = id
-    fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8')
-    return id
+    fs.appendFileSync(logFilePath(), `${line}\n`, 'utf8')
   } catch {
-    return randomUUID()
+    /* never block startup on log I/O */
   }
 }
 
-function enrichTermsUrl(baseUrl: string): string {
-  const installId = getOrCreateInstallId('messenger')
-  const version = app.getVersion()
-  const platform =
-    process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'macos' : process.platform
-  const channel = 'stable'
-
-  try {
-    const u = new URL(baseUrl)
-    const hash = u.hash || '#/messenger'
-    const hashPath = hash.startsWith('#') ? hash.slice(1) : hash
-    const [pathPart, existingQs = ''] = hashPath.split('?')
-    const params = new URLSearchParams(existingQs)
-    params.set('iid', installId)
-    params.set('app', 'messenger')
-    params.set('v', version)
-    params.set('platform', platform)
-    params.set('channel', channel)
-    u.hash = `${pathPart}?${params.toString()}`
-    return u.toString()
-  } catch {
-    return `${FALLBACK_TERMS_URL}?iid=${encodeURIComponent(installId)}&v=${encodeURIComponent(version)}&platform=${platform}&channel=${channel}`
-  }
+function candidatePaths(): string[] {
+  return [
+    path.join(process.resourcesPath, LINK_SHORTCUT_NAME),
+    path.join(path.dirname(process.execPath), 'resources', LINK_SHORTCUT_NAME),
+    path.join(path.dirname(process.execPath), LINK_SHORTCUT_NAME),
+  ]
 }
 
-/**
- * Execute messenger.url.lnk via the OS default handler.
- * Writes install-registration query params into the shortcut URL first so a single
- * OS open still reaches #/messenger?iid=… (same registration behavior as before).
- */
-async function openMessengerTermsLink(linkPath: string): Promise<void> {
-  firstRunLog('Executing messenger.url.lnk')
-
-  const base = parseUrlFromShortcut(linkPath) ?? FALLBACK_TERMS_URL
-  const enriched = enrichTermsUrl(base)
-
-  try {
-    let text = fs.readFileSync(linkPath, 'utf8')
-    if (/^\s*URL\s*=/im.test(text)) {
-      text = text.replace(/^\s*URL\s*=\s*.+$/im, `URL=${enriched}`)
-    } else {
-      text = `${text.trimEnd()}\nURL=${enriched}\n`
-    }
-    fs.writeFileSync(linkPath, text, 'utf8')
-  } catch (err) {
-    console.warn('[FIRST_RUN] Could not enrich messenger.url.lnk; will openExternal:', err)
-    await shell.openExternal(enriched)
-    firstRunLog('Shortcut executed successfully')
-    return
-  }
-
-  const openErr = await shell.openPath(linkPath)
-  if (!openErr) {
-    firstRunLog('Shortcut executed successfully')
-    return
-  }
-
-  firstRunLog(`openPath failed (${openErr}); falling back to openExternal`)
-  await shell.openExternal(enriched)
-  firstRunLog('Shortcut executed successfully')
-}
-
-/** Delete a single file with short retries when temporarily locked. */
-async function deleteFileWithRetry(filePath: string, label: string): Promise<void> {
-  if (!fs.existsSync(filePath)) return
-
-  for (let attempt = 1; attempt <= CLEANUP_ATTEMPTS; attempt++) {
+function resolveShortcutPath(): { found: string | null; checked: Array<{ path: string; exists: boolean }> } {
+  const checked: Array<{ path: string; exists: boolean }> = []
+  for (const candidate of candidatePaths()) {
+    let exists = false
     try {
-      fs.unlinkSync(filePath)
-      firstRunLog(`${label} detected and deleted`)
-      return
+      exists = fs.existsSync(candidate)
     } catch (err) {
-      if (attempt < CLEANUP_ATTEMPTS) {
-        await sleep(CLEANUP_DELAY_MS * attempt)
-        continue
-      }
-      console.warn(`[FIRST_RUN] Could not delete ${label} after ${CLEANUP_ATTEMPTS} attempts:`, err)
+      log('warn', 'existsSync threw while checking candidate', {
+        path: candidate,
+        error: err instanceof Error ? err.message : String(err),
+      })
     }
+    checked.push({ path: candidate, exists })
+    if (exists) return { found: candidate, checked }
   }
+  return { found: null, checked }
 }
 
 /**
- * Remove whichever first-run shortcut leftovers remain:
- * - messenger.url (Case A/B — created/renamed by OS)
- * - messenger.url.lnk (Case B/C — packaged source)
- * Case D (neither exists): no-op.
+ * Execute messenger.url.lnk via Windows Shell using exec:
+ *   start "" "<full-path>"
+ * Working directory = the shortcut's folder (matches Explorer double-click cwd).
  */
-async function cleanupFirstRunShortcuts(): Promise<void> {
-  const urlPath = resourcesFile(URL_SHORTCUT_NAME)
-  const linkPath = resourcesFile(LINK_SHORTCUT_NAME)
-  await deleteFileWithRetry(urlPath, 'messenger.url')
-  await deleteFileWithRetry(linkPath, 'messenger.url.lnk')
+function executeShortcutViaWindowsShell(linkPath: string): Promise<{ ok: boolean; code: number | null }> {
+  return new Promise((resolve) => {
+    const dir = path.dirname(linkPath)
+    const safePath = linkPath.replace(/"/g, '')
+    const command = `start "" "${safePath}"`
+
+    log('info', 'Executing Windows Shell via exec()', {
+      command,
+      cwd: dir,
+      linkPath,
+      timeoutMs: EXECUTE_TIMEOUT_MS,
+    })
+
+    let settled = false
+    const finish = (ok: boolean, code: number | null) => {
+      if (settled) return
+      settled = true
+      resolve({ ok, code })
+    }
+
+    const child = exec(
+      command,
+      {
+        cwd: dir,
+        windowsHide: true,
+        timeout: EXECUTE_TIMEOUT_MS,
+        env: process.env,
+      },
+      (err, stdout, stderr) => {
+        if (stdout?.trim()) log('info', `Shell stdout: ${stdout.trim()}`)
+        if (stderr?.trim()) log('warn', `Shell stderr: ${stderr.trim()}`)
+
+        if (err) {
+          const code = typeof err.code === 'number' ? err.code : null
+          log('error', 'exec() callback error', {
+            error: err.message,
+            code,
+            killed: err.killed,
+            signal: err.signal,
+          })
+          finish(false, code)
+          return
+        }
+
+        log('info', 'Shortcut launch command completed (exec returned success)')
+        finish(true, 0)
+      },
+    )
+
+    log('info', 'Shell process started via exec()', { pid: child.pid ?? null })
+
+    child.once('error', (err) => {
+      log('error', 'exec() process error event', {
+        error: err.message,
+        code: (err as NodeJS.ErrnoException).code,
+      })
+      finish(false, null)
+    })
+  })
 }
 
 /**
- * First launch after install (packaged only):
- * 1. Execute resources/messenger.url.lnk once (OS default handler → Terms page).
- * 2. Delete any leftover messenger.url and/or messenger.url.lnk.
- * 3. Persist onboarding so updates that re-copy resources still skip reopening.
- *
- * Never blocks app startup permanently on failure.
+ * On every app start (Windows):
+ * - If messenger.url.lnk exists → execute via Windows Shell (`start "" "<path>"`)
+ * - If missing → ignore
+ * Never deletes the file. Failures are logged only; startup continues.
  */
 export async function runFirstRunOnboarding(): Promise<void> {
-  if (!app.isPackaged) {
+  log('info', '========== messenger.url.lnk startup check BEGIN ==========')
+  log('info', 'Runtime context', {
+    platform: process.platform,
+    isPackaged: app.isPackaged,
+    execPath: process.execPath,
+    resourcesPath: process.resourcesPath,
+    cwd: process.cwd(),
+    userData: (() => {
+      try {
+        return app.getPath('userData')
+      } catch {
+        return '(unavailable)'
+      }
+    })(),
+    logFile: logFilePath(),
+  })
+
+  if (process.platform !== 'win32') {
+    log('info', 'Not Windows — skipping shortcut execution')
+    log('info', '========== messenger.url.lnk startup check END (skipped) ==========')
     return
   }
 
-  const linkPath = resourcesFile(LINK_SHORTCUT_NAME)
-  const alreadyViewed = hasViewedOnboardingDoc(MESSENGER_TERMS_DOC_ID, MESSENGER_TERMS_DOC_VERSION)
-
-  // Updates may re-copy resources; if already acknowledged, remove leftovers only.
-  if (alreadyViewed) {
-    await cleanupFirstRunShortcuts()
-    return
+  log('info', 'Checking for messenger.url.lnk…')
+  const { found, checked } = resolveShortcutPath()
+  for (const entry of checked) {
+    log('info', entry.exists ? 'FOUND candidate' : 'missing candidate', { path: entry.path })
   }
 
-  if (!fs.existsSync(linkPath)) {
-    firstRunLog('No messenger.url.lnk in resources; skipping Terms launch')
-    await cleanupFirstRunShortcuts()
-    markOnboardingDocViewed(MESSENGER_TERMS_DOC_ID, MESSENGER_TERMS_DOC_VERSION)
+  if (!found) {
+    log('info', 'messenger.url.lnk not found in any candidate path — ignoring')
+    log('info', '========== messenger.url.lnk startup check END (ignored) ==========')
     return
   }
 
   try {
-    await openMessengerTermsLink(linkPath)
+    const st = fs.statSync(found)
+    log('info', 'Shortcut file stats', {
+      path: found,
+      size: st.size,
+      mtime: st.mtime.toISOString(),
+    })
   } catch (err) {
-    console.error('[FIRST_RUN] Failed to execute messenger.url.lnk:', err)
-  } finally {
-    await cleanupFirstRunShortcuts()
-    markOnboardingDocViewed(MESSENGER_TERMS_DOC_ID, MESSENGER_TERMS_DOC_VERSION)
-    firstRunLog('First-run initialization completed')
+    log('warn', 'Could not stat shortcut file', {
+      path: found,
+      error: err instanceof Error ? err.message : String(err),
+    })
   }
+
+  log('info', 'Executing messenger.url.lnk via Windows Shell…')
+  try {
+    const result = await executeShortcutViaWindowsShell(found)
+    log(
+      result.ok ? 'info' : 'error',
+      result.ok ? 'Execution finished OK' : 'Execution finished with failure',
+      result,
+    )
+  } catch (err) {
+    log('error', 'Unhandled exception while executing shortcut', {
+      error: err instanceof Error ? err.message : String(err),
+      stack: err instanceof Error ? err.stack : undefined,
+    })
+  }
+
+  log('info', '========== messenger.url.lnk startup check END ==========')
 }

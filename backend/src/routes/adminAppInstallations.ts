@@ -13,6 +13,7 @@ const router = Router();
 
 const SORT_MAP: Record<string, string> = {
   created_at: "created_at",
+  updated_at: "updated_at",
   app_id: "app_id",
   app_name: "app_name",
   app_version: "app_version",
@@ -42,15 +43,17 @@ router.get("/app-installations", requireSuperAdmin, async (req, res) => {
     status = "",
     page = "1",
     limit = "50",
-    sortBy = "created_at",
+    sortBy = "updated_at",
     sortDir = "desc",
   } = req.query as Record<string, string>;
 
   const pageN = Math.max(1, Number(page) || 1);
   const limitN = Math.min(200, Math.max(1, Number(limit) || 50));
   const offset = (pageN - 1) * limitN;
-  const col = SORT_MAP[sortBy] || "created_at";
+  const col = SORT_MAP[sortBy] || "updated_at";
   const dir = sortDir.toLowerCase() === "asc" ? "ASC" : "DESC";
+  const orderExpr =
+    col === "updated_at" ? "COALESCE(updated_at, created_at)" : col;
 
   const where: string[] = [];
   const params: unknown[] = [];
@@ -83,7 +86,7 @@ router.get("/app-installations", requireSuperAdmin, async (req, res) => {
   );
   const rows = await qAll<AppInstallationRow>(
     `SELECT * FROM app_installations ${whereSql}
-     ORDER BY ${col} ${dir}, id ${dir}
+     ORDER BY ${orderExpr} ${dir}, id ${dir}
      LIMIT ? OFFSET ?`,
     ...params,
     limitN,
@@ -122,7 +125,7 @@ router.get("/app-installations/export", requireSuperAdmin, async (req, res) => {
 
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
   const rows = await qAll<AppInstallationRow>(
-    `SELECT * FROM app_installations ${whereSql} ORDER BY created_at DESC, id DESC LIMIT 10000`,
+    `SELECT * FROM app_installations ${whereSql} ORDER BY COALESCE(updated_at, created_at) DESC, id DESC LIMIT 10000`,
     ...params,
   );
 
@@ -145,6 +148,7 @@ router.get("/app-installations/export", requireSuperAdmin, async (req, res) => {
     "platform",
     "status",
     "created_at",
+    "updated_at",
   ];
   const esc = (v: unknown) => {
     const s = v == null ? "" : String(v);
@@ -173,6 +177,7 @@ router.get("/app-installations/export", requireSuperAdmin, async (req, res) => {
         r.platform,
         r.status,
         r.created_at,
+        r.updated_at || r.created_at,
       ]
         .map(esc)
         .join(","),

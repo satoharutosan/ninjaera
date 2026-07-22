@@ -75,7 +75,7 @@ export function AdminAppInstallations({
   const [statusFilter, setStatusFilter] = useState("all");
   const [appIds, setAppIds] = useState<string[]>([]);
   const [sort, setSort] = useState<{ sortBy: string; sortDir: "asc" | "desc" }>({
-    sortBy: "created_at",
+    sortBy: "updated_at",
     sortDir: "desc",
   });
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -212,7 +212,7 @@ export function AdminAppInstallations({
             Application Installations
           </h2>
           <p className="text-sm mt-1" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
-            First-install registrations for desktop applications (Messenger and future apps).
+            Latest access per application and IP (Messenger and future apps). Reopens update the same record.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -269,8 +269,10 @@ export function AdminAppInstallations({
             className="rounded-xl px-3 py-2 text-sm"
             style={{ background: C.surfaceVar, color: C.onSurface, border: `1px solid ${C.outlineVar}` }}
           >
-            <option value="created_at:desc">Newest</option>
-            <option value="created_at:asc">Oldest</option>
+            <option value="updated_at:desc">Last opened</option>
+            <option value="updated_at:asc">Oldest opened</option>
+            <option value="created_at:desc">First seen</option>
+            <option value="created_at:asc">Oldest first seen</option>
             <option value="app_id:asc">App A–Z</option>
             <option value="app_id:desc">App Z–A</option>
             <option value="username:asc">User A–Z</option>
@@ -307,9 +309,10 @@ export function AdminAppInstallations({
                 <th className="text-left p-3 font-medium">User</th>
                 <th className="text-left p-3 font-medium">Role</th>
                 <th className="text-left p-3 font-medium">IP Address</th>
-                <th className="text-left p-3 font-medium">Installed</th>
-                <th className="text-left p-3 font-medium">Platform</th>
+                <th className="text-left p-3 font-medium">Country</th>
                 <th className="text-left p-3 font-medium">OS</th>
+                <th className="text-left p-3 font-medium">Last opened</th>
+                <th className="text-left p-3 font-medium">First seen</th>
                 <th className="text-left p-3 font-medium">Status</th>
                 <th className="text-left p-3 font-medium w-12" />
               </tr>
@@ -317,12 +320,12 @@ export function AdminAppInstallations({
             <tbody>
               {loading && !loaded && (
                 <tr>
-                  <td colSpan={11} className="p-8 text-center" style={{ color: C.onSurfaceVar }}>Loading…</td>
+                  <td colSpan={12} className="p-8 text-center" style={{ color: C.onSurfaceVar }}>Loading…</td>
                 </tr>
               )}
               {!loading && rows.length === 0 && (
                 <tr>
-                  <td colSpan={11} className="p-8 text-center" style={{ color: C.onSurfaceVar }}>No installation records</td>
+                  <td colSpan={12} className="p-8 text-center" style={{ color: C.onSurfaceVar }}>No installation records</td>
                 </tr>
               )}
               {rows.map((r) => (
@@ -351,9 +354,12 @@ export function AdminAppInstallations({
                   <td className="p-3">
                     <IpWithFlag ip={r.ipAddress} country={r.country} countryCode={r.countryCode} />
                   </td>
+                  <td className="p-3 whitespace-nowrap" style={{ color: C.onSurfaceVar }}>
+                    {r.country || r.countryCode || "—"}
+                  </td>
+                  <td className="p-3" style={{ color: C.onSurfaceVar }}>{r.operatingSystem || r.platform || "—"}</td>
+                  <td className="p-3 whitespace-nowrap" style={{ color: C.onSurfaceVar }}>{formatWhen(r.updatedAt || r.createdAt)}</td>
                   <td className="p-3 whitespace-nowrap" style={{ color: C.onSurfaceVar }}>{formatWhen(r.createdAt)}</td>
-                  <td className="p-3" style={{ color: C.onSurfaceVar }}>{r.platform || "—"}</td>
-                  <td className="p-3" style={{ color: C.onSurfaceVar }}>{r.operatingSystem || "—"}</td>
                   <td className="p-3 capitalize" style={{ color: C.onSurface }}>{r.status}</td>
                   <td className="p-3">
                     <button

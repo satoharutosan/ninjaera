@@ -338,6 +338,55 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
     });
   }, [pinToBottomRef, isNearBottomRef, setShowJumpBtn, setUnreadBelow]);
 
+  /**
+   * Open-at-bottom: exactly one positioning pass after Virtuoso mounts.
+   * Media uses reserved boxes so later decode does not shift the viewport.
+   * Unread / mid-thread opens (pinBottom=false) are left alone.
+   */
+  const initialOpenScrollDoneRef = useRef(false);
+  const suppressFollowOutputRef = useRef(false);
+
+  useEffect(() => {
+    initialOpenScrollDoneRef.current = false;
+    suppressFollowOutputRef.current = false;
+  }, [threadBootId]);
+
+  useEffect(() => {
+    if (!threadReady || msgs.length === 0) return;
+    if (!pinToBottomRef.current) return;
+    if (initialOpenScrollDoneRef.current) return;
+
+    suppressFollowOutputRef.current = true;
+    let cancelled = false;
+    let frames = 0;
+
+    const settle = () => {
+      if (cancelled) return;
+      frames += 1;
+      // Two frames for commit/measure, then one final align.
+      if (frames < 2) {
+        requestAnimationFrame(settle);
+        return;
+      }
+      if (!pinToBottomRef.current) {
+        suppressFollowOutputRef.current = false;
+        return;
+      }
+      initialOpenScrollDoneRef.current = true;
+      virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "auto" });
+      // Re-enable followOutput on the next frame so live messages still auto-follow.
+      requestAnimationFrame(() => {
+        if (!cancelled) suppressFollowOutputRef.current = false;
+      });
+    };
+
+    requestAnimationFrame(settle);
+    return () => {
+      cancelled = true;
+      suppressFollowOutputRef.current = false;
+    };
+  }, [threadReady, threadBootId, msgs.length, pinToBottomRef]);
+
   const persistConversation = useCallback((conversationId: number) => {
     const list = msgsRef.current;
     if (!conversationId || !list.length || !currentUserId) return;
@@ -2201,7 +2250,10 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
               initialTopMostItemIndex={initialScrollIndex ?? msgs.length - 1}
               increaseViewportBy={{ top: 600, bottom: 600 }}
               defaultItemHeight={72}
-              followOutput={() => (pinToBottomRef.current ? "auto" : false)}
+              followOutput={() => {
+                if (suppressFollowOutputRef.current) return false;
+                return pinToBottomRef.current ? "auto" : false;
+              }}
               startReached={() => { void loadOlderMessages(); }}
               endReached={() => { void loadNewerMessages(); }}
               atBottomStateChange={(atBottom) => {

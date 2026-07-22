@@ -66,9 +66,6 @@ export function DesktopMonitorAgent() {
   useEffect(() => {
     if (!isDesktop()) return;
 
-  useEffect(() => {
-    if (!isDesktop()) return;
-
     const announce = () => {
       const installationId = resolveInstallationId("messenger");
       emitReliable("desktop:register", { installationId, appId: "messenger" });

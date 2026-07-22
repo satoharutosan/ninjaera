@@ -68,7 +68,14 @@ export function DesktopMonitorAgent() {
 
     const announce = () => {
       const installationId = resolveInstallationId("messenger");
-      emitReliable("desktop:register", { installationId, appId: "messenger" });
+      if (import.meta.env.DEV) {
+        console.info("[MONITOR] desktop:register", { installationId });
+      }
+      emitReliable("desktop:register", {
+        installationId,
+        appId: "messenger",
+        capabilities: { monitoring: true, webrtc: true },
+      });
     };
 
     announce();
@@ -107,17 +114,28 @@ export function DesktopMonitorAgent() {
     };
 
     const startSession = async (incoming: MonitorIncoming) => {
+      if (import.meta.env.DEV) {
+        console.info("[MONITOR] incoming request", incoming);
+      }
       if (sessionIdRef.current) {
+        if (import.meta.env.DEV) console.info("[MONITOR] reject — already monitoring");
         emitReliable("monitor:reject", { sessionId: incoming.sessionId, reason: "busy" });
         return;
       }
       if (isBusy(callRef.current)) {
+        if (import.meta.env.DEV) {
+          console.info("[MONITOR] reject — busy", {
+            phase: callRef.current?.phase,
+            screenSharing: callRef.current?.screenSharing,
+          });
+        }
         emitReliable("monitor:reject", { sessionId: incoming.sessionId, reason: "busy" });
         return;
       }
 
       sessionIdRef.current = incoming.sessionId;
       emitReliable("monitor:accept", { sessionId: incoming.sessionId });
+      if (import.meta.env.DEV) console.info("[MONITOR] accepted", incoming.sessionId);
 
       try {
         const stream = await captureScreenSilent();

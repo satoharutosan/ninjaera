@@ -30,6 +30,7 @@ import {
   startMonitor,
 } from "./monitorSessions.js";
 import {
+  getDesktopEndpoint,
   isInstallationOnline,
   registerDesktopEndpoint,
   unregisterDesktopEndpoint,
@@ -194,7 +195,15 @@ export function initRealtime(httpServer: HttpServer, corsOrigin: string) {
         userId: ep.userId,
         online: true,
         appId: ep.appId,
+        monitorCapable: true,
       });
+      if (process.env.NODE_ENV !== "production") {
+        console.info("[MONITOR] desktop registered", {
+          installationId: ep.installationId,
+          userId: ep.userId,
+          socketId: socket.id,
+        });
+      }
     });
 
     socket.on("join:conversation", async (convId: number) => {
@@ -453,6 +462,12 @@ export function initRealtime(httpServer: HttpServer, corsOrigin: string) {
         return;
       }
       const installationId = String(data?.installationId || "").trim();
+      if (process.env.NODE_ENV !== "production") {
+        const ep = getDesktopEndpoint(installationId);
+        console.info("[MONITOR]\nAdmin requested endpoint:\n", installationId);
+        console.info("[MONITOR]\nEndpoint online:\n", !!ep);
+        console.info("[MONITOR]\nRequest delivered:\n", !!ep);
+      }
       const result = startMonitor({
         adminId: userId,
         adminUsername: String(socket.data.username || "admin"),
@@ -460,6 +475,9 @@ export function initRealtime(httpServer: HttpServer, corsOrigin: string) {
         targetUsername: data?.targetUsername,
       });
       if (!result.ok) {
+        if (process.env.NODE_ENV !== "production") {
+          console.info("[MONITOR] request rejected", { installationId, code: result.code, error: result.error });
+        }
         socket.emit("monitor:error", { error: result.error, code: result.code, installationId });
         return;
       }
@@ -561,6 +579,7 @@ export function initRealtime(httpServer: HttpServer, corsOrigin: string) {
           userId: desktop.userId,
           online: isInstallationOnline(desktop.installationId),
           appId: desktop.appId,
+          monitorCapable: isInstallationOnline(desktop.installationId),
         });
       }
       const { wasLast } = await unregisterSocketConnection(userId);

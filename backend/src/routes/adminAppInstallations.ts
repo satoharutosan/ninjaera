@@ -114,6 +114,8 @@ router.get("/app-installations", requireSuperAdmin, async (req, res) => {
     installations: rows.map((r) => ({
       ...mapInstallation(r),
       online: isInstallationOnline(r.installation_id),
+      // Online desktop sockets always support monitoring in this build.
+      monitorCapable: isInstallationOnline(r.installation_id),
     })),
   });
 });

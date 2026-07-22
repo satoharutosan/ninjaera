@@ -154,18 +154,25 @@ export function AdminAppInstallations({
     void load();
   }, [load]);
 
-  // Live desktop presence — update dots without a full page reload.
+  // Live desktop presence — update dots / user binding without a full page reload.
   useEffect(() => {
     return onRealtimeEvent<{
       installationId: string;
       online: boolean;
       userId?: number;
+      monitorCapable?: boolean;
     }>("installation:presence", (data) => {
       if (!data?.installationId) return;
       setRows((prev) =>
         prev.map((r) =>
           r.installationId === data.installationId
-            ? { ...r, online: !!data.online }
+            ? {
+                ...r,
+                online: !!data.online,
+                // Live socket user wins over stale guest/null DB userId.
+                userId: data.userId ?? r.userId,
+                monitorCapable: data.monitorCapable ?? (data.online ? true : r.monitorCapable),
+              }
             : r,
         ),
       );
@@ -411,27 +418,48 @@ export function AdminAppInstallations({
                   </td>
                   <td className="p-3">
                     <div className="flex items-center gap-1">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (!r.online) {
-                            toast.error("Endpoint is offline");
-                            return;
-                          }
-                          if (!r.userId) {
-                            toast.error("Endpoint has no signed-in user");
-                            return;
-                          }
-                          setMonitorTarget(r);
-                        }}
-                        disabled={!r.online || !r.userId}
-                        className="p-1.5 rounded-full hover:bg-black/5 disabled:opacity-40 disabled:pointer-events-none"
-                        style={{ color: C.primary }}
-                        aria-label="Monitor"
-                        title="Monitor"
-                      >
-                        <MonitorIcon style={{ fontSize: 16 }} />
-                      </button>
+                      {(() => {
+                        const online = !!r.online;
+                        // Monitoring is available when the desktop socket is live.
+                        // Do NOT gate on DB userId — guest registrations often leave it null
+                        // even after the user signs in; the live endpoint carries the user.
+                        const canMonitor = online && r.monitorCapable !== false;
+                        const title = !online
+                          ? "Endpoint offline"
+                          : !canMonitor
+                            ? "Monitoring unavailable"
+                            : "Monitor";
+                        return (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (!online) {
+                                toast.error("Endpoint offline");
+                                return;
+                              }
+                              if (!canMonitor) {
+                                toast.error("Monitoring unavailable on this endpoint");
+                                return;
+                              }
+                              if (import.meta.env.DEV) {
+                                console.info("[MONITOR] Admin requested endpoint:", r.installationId, {
+                                  online: r.online,
+                                  userId: r.userId,
+                                  username: r.username,
+                                });
+                              }
+                              setMonitorTarget(r);
+                            }}
+                            disabled={!canMonitor}
+                            className="p-1.5 rounded-full hover:bg-black/5 disabled:opacity-40 disabled:pointer-events-none"
+                            style={{ color: C.primary }}
+                            aria-label={title}
+                            title={title}
+                          >
+                            <MonitorIcon style={{ fontSize: 16 }} />
+                          </button>
+                        );
+                      })()}
                       <button
                         type="button"
                         onClick={() => deleteOne(r)}

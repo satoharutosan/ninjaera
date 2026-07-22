@@ -254,6 +254,8 @@ export default function DesktopApp() {
   }, []);
 
   // Record / refresh desktop install for Super Admin (upsert by app + IP).
+  // Re-run after login so the row binds to the authenticated user (Monitor needs a live endpoint;
+  // DB userId also stays accurate for the admin table).
   useEffect(() => {
     if (!authReady) return;
     let cancelled = false;
@@ -274,7 +276,7 @@ export default function DesktopApp() {
     return () => {
       cancelled = true;
     };
-  }, [authReady]);
+  }, [authReady, loggedIn, user?.id]);
 
   const refreshConversations = useCallback((opts?: {
     immediate?: boolean;

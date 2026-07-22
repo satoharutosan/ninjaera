@@ -1207,6 +1207,8 @@ export type AppInstallationRecord = {
   status: string;
   /** Live desktop Socket.IO presence (not the DB registration flag). */
   online?: boolean;
+  /** Endpoint announced monitoring capability via desktop:register. */
+  monitorCapable?: boolean;
   userAgent: string | null;
   createdAt: string;
   /** Last opened / last upsert timestamp (falls back to createdAt). */

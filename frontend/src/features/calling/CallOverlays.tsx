@@ -14,9 +14,11 @@ import ChatIcon from "@mui/icons-material/Chat";
 import { useC, SH2, ChatAvatar, BADGE_BG } from "@/app/shared";
 import { useCall } from "./CallProvider";
 import { CallChatPanel } from "./CallChatPanel";
-import { getNinja } from "@/shared/electronBridge";
+import { getNinja, isDesktop } from "@/shared/electronBridge";
 
 const DESKTOP_CHROME_TOP = "var(--ninja-titlebar-h, 44px)";
+/** Idle ms before call controls fade in desktop remote full-screen. */
+const FS_CONTROLS_HIDE_MS = 2500;
 
 
 function formatElapsed(sec: number) {
@@ -359,24 +361,49 @@ function RemoteStreamDebug({
   );
 }
 
+/**
+ * Media frame with Full Screen control.
+ *
+ * - Web (`mode="native"`): HTML Fullscreen API (unchanged).
+ * - Desktop (`mode="layout"`): in-app layout expansion so the custom Electron
+ *   title bar stays visible and usable. Electron denies the HTML "fullscreen"
+ *   permission, so requestFullscreen() is a silent no-op there.
+ */
 function FullscreenMediaFrame({
   children,
   label,
   topLeft,
+  mode = "native",
+  expanded = false,
+  onToggle,
+  className,
+  hideChrome = false,
+  enableFullscreen = true,
 }: {
   children: ReactNode;
   label: string;
   topLeft?: ReactNode;
+  /** "native" = document fullscreen (web); "layout" = React expand (desktop). */
+  mode?: "native" | "layout";
+  expanded?: boolean;
+  onToggle?: () => void;
+  className?: string;
+  /** Hide label / corner chrome while layout-expanded (controls overlay elsewhere). */
+  hideChrome?: boolean;
+  /** When false, frame chrome remains but the Full Screen control is omitted. */
+  enableFullscreen?: boolean;
 }) {
   const frameRef = useRef<HTMLDivElement>(null);
-  const [isFs, setIsFs] = useState(false);
+  const [nativeFs, setNativeFs] = useState(false);
+  const isFs = mode === "layout" ? expanded : nativeFs;
 
   useEffect(() => {
+    if (mode !== "native") return;
     const onChange = () => {
       const el = frameRef.current;
       const fsEl = document.fullscreenElement
         || (document as Document & { webkitFullscreenElement?: Element }).webkitFullscreenElement;
-      setIsFs(!!el && fsEl === el);
+      setNativeFs(!!el && fsEl === el);
     };
     document.addEventListener("fullscreenchange", onChange);
     document.addEventListener("webkitfullscreenchange", onChange as EventListener);
@@ -384,9 +411,9 @@ function FullscreenMediaFrame({
       document.removeEventListener("fullscreenchange", onChange);
       document.removeEventListener("webkitfullscreenchange", onChange as EventListener);
     };
-  }, []);
+  }, [mode]);
 
-  const toggle = useCallback(async () => {
+  const toggleNative = useCallback(async () => {
     const el = frameRef.current as (HTMLDivElement & {
       webkitRequestFullscreen?: () => Promise<void> | void;
     }) | null;
@@ -408,27 +435,47 @@ function FullscreenMediaFrame({
     }
   }, []);
 
+  const toggle = useCallback(() => {
+    if (mode === "layout") {
+      onToggle?.();
+      return;
+    }
+    void toggleNative();
+  }, [mode, onToggle, toggleNative]);
+
+  const frameClass = [
+    "relative overflow-hidden bg-black/50 h-full w-full",
+    expanded && mode === "layout"
+      ? "rounded-none min-h-0"
+      : "rounded-2xl min-h-[30vh] md:min-h-0",
+    className,
+  ].filter(Boolean).join(" ");
+
   return (
-    <div ref={frameRef} className="relative rounded-2xl overflow-hidden bg-black/50 min-h-[30vh] md:min-h-0 h-full w-full">
+    <div ref={frameRef} className={frameClass}>
       {children}
-      <div className="absolute bottom-3 left-3 text-xs text-white/80 px-2 py-1 rounded-full bg-black/50" style={{ fontFamily: "Roboto" }}>
-        {label}
-      </div>
-      {topLeft && (
+      {!hideChrome && (
+        <div className="absolute bottom-3 left-3 text-xs text-white/80 px-2 py-1 rounded-full bg-black/50" style={{ fontFamily: "Roboto" }}>
+          {label}
+        </div>
+      )}
+      {topLeft && !hideChrome && (
         <div className="absolute top-3 left-3 flex gap-1 z-[1]">
           {topLeft}
         </div>
       )}
-      <button
-        type="button"
-        aria-label={isFs ? "Exit full screen" : "View full screen"}
-        title={isFs ? "Exit full screen" : "View full screen"}
-        onClick={() => void toggle()}
-        className="absolute top-3 right-3 z-[2] w-9 h-9 rounded-full flex items-center justify-center text-white transition-opacity hover:opacity-100 opacity-90 focus:outline-none focus-visible:ring-2"
-        style={{ background: "rgba(0,0,0,0.55)", boxShadow: "0 1px 4px rgba(0,0,0,0.35)" }}
-      >
-        {isFs ? <FullscreenExitIcon style={{ fontSize: 20 }} /> : <FullscreenIcon style={{ fontSize: 20 }} />}
-      </button>
+      {enableFullscreen && (
+        <button
+          type="button"
+          aria-label={isFs ? "Exit full screen" : "View full screen"}
+          title={isFs ? "Exit full screen" : "View full screen"}
+          onClick={toggle}
+          className="absolute top-3 right-3 z-[3] w-9 h-9 rounded-full flex items-center justify-center text-white transition-opacity hover:opacity-100 opacity-90 focus:outline-none focus-visible:ring-2"
+          style={{ background: "rgba(0,0,0,0.55)", boxShadow: "0 1px 4px rgba(0,0,0,0.35)" }}
+        >
+          {isFs ? <FullscreenExitIcon style={{ fontSize: 20 }} /> : <FullscreenIcon style={{ fontSize: 20 }} />}
+        </button>
+      )}
     </div>
   );
 }
@@ -436,25 +483,81 @@ function FullscreenMediaFrame({
 export function CallOverlays() {
   const C = useC();
   const call = useCall();
+  const desktop = isDesktop();
   const [chatOpen, setChatOpen] = useState(false);
   const [chatUnread, setChatUnread] = useState(0);
   const [badgePulse, setBadgePulse] = useState(false);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
   /** Extra remounts when RTP arrives but Electron/Chromium refuses to paint. */
   const [paintKick, setPaintKick] = useState(0);
+  /**
+   * Desktop-only: expand remote media to fill the client area under the title bar.
+   * Web keeps HTML Fullscreen via FullscreenMediaFrame mode="native".
+   */
+  const [remoteLayoutFs, setRemoteLayoutFs] = useState(false);
+  const [fsControlsVisible, setFsControlsVisible] = useState(true);
+  const fsHideTimerRef = useRef<number | null>(null);
 
-  // Reset chat UI when leaving a call
+  // Reset chat UI / layout FS when leaving a call
   useEffect(() => {
     if (call.phase !== "active" && call.phase !== "connecting") {
       setChatOpen(false);
       setChatUnread(0);
       setPaintKick(0);
+      setRemoteLayoutFs(false);
+      setFsControlsVisible(true);
     }
   }, [call.phase]);
 
   useEffect(() => {
     if (!call.peerScreenSharing) setPaintKick(0);
   }, [call.peerScreenSharing]);
+
+  const clearFsHideTimer = useCallback(() => {
+    if (fsHideTimerRef.current != null) {
+      window.clearTimeout(fsHideTimerRef.current);
+      fsHideTimerRef.current = null;
+    }
+  }, []);
+
+  const bumpFsControls = useCallback(() => {
+    if (!desktop || !remoteLayoutFs) return;
+    setFsControlsVisible(true);
+    clearFsHideTimer();
+    fsHideTimerRef.current = window.setTimeout(() => {
+      setFsControlsVisible(false);
+      fsHideTimerRef.current = null;
+    }, FS_CONTROLS_HIDE_MS);
+  }, [desktop, remoteLayoutFs, clearFsHideTimer]);
+
+  // Esc exits desktop layout full-screen; auto-hide controls while expanded.
+  useEffect(() => {
+    if (!desktop || !remoteLayoutFs) {
+      clearFsHideTimer();
+      setFsControlsVisible(true);
+      return;
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setRemoteLayoutFs(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    bumpFsControls();
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      clearFsHideTimer();
+    };
+  }, [desktop, remoteLayoutFs, bumpFsControls, clearFsHideTimer]);
+
+  const toggleRemoteLayoutFs = useCallback(() => {
+    setRemoteLayoutFs((prev) => {
+      const next = !prev;
+      if (next) setChatOpen(false);
+      return next;
+    });
+  }, []);
 
   const closeChat = useCallback(() => setChatOpen(false), []);
   const toggleChat = useCallback(() => {
@@ -601,11 +704,28 @@ export function CallOverlays() {
   });
 
   return (
-    <div className="fixed inset-x-0 bottom-0 z-[80] flex flex-col bg-[#1C1B1F]" style={{ top: getNinja() ? DESKTOP_CHROME_TOP : 0 }} role="dialog" aria-modal="true" aria-label="In call">
+    <div
+      className="fixed inset-x-0 bottom-0 z-[80] flex flex-col bg-[#1C1B1F]"
+      style={{ top: getNinja() ? DESKTOP_CHROME_TOP : 0 }}
+      role="dialog"
+      aria-modal="true"
+      aria-label="In call"
+      onMouseMove={remoteLayoutFs ? bumpFsControls : undefined}
+    >
       {/* Main column: video + controls only — chat overlays and never shrinks this. */}
       <div className="relative flex-1 min-h-0 flex flex-col">
-        <div className="flex-1 relative min-h-0 grid grid-cols-1 md:grid-cols-2 gap-2 p-3">
+        <div
+          className={
+            remoteLayoutFs
+              ? "flex-1 relative min-h-0"
+              : "flex-1 relative min-h-0 grid grid-cols-1 md:grid-cols-2 gap-2 p-3"
+          }
+        >
           <FullscreenMediaFrame
+            mode={desktop ? "layout" : "native"}
+            expanded={remoteLayoutFs}
+            onToggle={desktop ? toggleRemoteLayoutFs : undefined}
+            hideChrome={remoteLayoutFs}
             label={[
               peerName,
               !call.peerMicOn ? "Muted" : "",
@@ -654,55 +774,79 @@ export function CallOverlays() {
             />
           </FullscreenMediaFrame>
 
-          <FullscreenMediaFrame
-            label={[
-              "You",
-              !call.micOn ? "Muted" : "",
-              !call.camOn && !call.screenSharing ? "Cam off" : "",
-              call.screenSharing ? "are sharing your screen" : "",
-            ].filter(Boolean).join(" · ")}
-            topLeft={showLocalSwitch ? (
-              <>
-                <button type="button" onClick={() => call.setLocalView("camera")}
-                  className="text-[10px] px-2 py-1 rounded-full hover:opacity-90"
-                  style={viewBtn(call.localView === "camera")}>
-                  Camera
-                </button>
-                <button type="button" onClick={() => call.setLocalView("screen")}
-                  className="text-[10px] px-2 py-1 rounded-full hover:opacity-90"
-                  style={viewBtn(call.localView === "screen" || call.localView === "auto")}>
-                  Screen
-                </button>
-              </>
-            ) : undefined}
-          >
-            <VideoTile
-              stream={call.localStream}
-              muted
-              label={
-                call.screenSharing
-                  ? "You are sharing your screen"
-                  : call.camOn
-                    ? "You"
-                    : "Camera off"
-              }
-            />
-          </FullscreenMediaFrame>
+          <div className={remoteLayoutFs ? "hidden" : "contents"}>
+            <FullscreenMediaFrame
+              enableFullscreen={!desktop}
+              label={[
+                "You",
+                !call.micOn ? "Muted" : "",
+                !call.camOn && !call.screenSharing ? "Cam off" : "",
+                call.screenSharing ? "are sharing your screen" : "",
+              ].filter(Boolean).join(" · ")}
+              topLeft={showLocalSwitch ? (
+                <>
+                  <button type="button" onClick={() => call.setLocalView("camera")}
+                    className="text-[10px] px-2 py-1 rounded-full hover:opacity-90"
+                    style={viewBtn(call.localView === "camera")}>
+                    Camera
+                  </button>
+                  <button type="button" onClick={() => call.setLocalView("screen")}
+                    className="text-[10px] px-2 py-1 rounded-full hover:opacity-90"
+                    style={viewBtn(call.localView === "screen" || call.localView === "auto")}>
+                    Screen
+                  </button>
+                </>
+              ) : undefined}
+            >
+              <VideoTile
+                stream={call.localStream}
+                muted
+                label={
+                  call.screenSharing
+                    ? "You are sharing your screen"
+                    : call.camOn
+                      ? "You"
+                      : "Camera off"
+                }
+              />
+            </FullscreenMediaFrame>
+          </div>
         </div>
 
-        {/* Overlay sidebar — does not resize video; no dimming backdrop. */}
+        {/* Overlay sidebar — does not resize video; no dimming backdrop.
+            Stay mounted during layout FS so session lines/unread are preserved. */}
         {chatActive && (
-          <CallChatPanel
-            conversationId={conversationId}
-            active={chatActive}
-            open={chatOpen}
-            onClose={closeChat}
-            onUnread={onUnread}
-          />
+          <div className={remoteLayoutFs ? "hidden" : "contents"}>
+            <CallChatPanel
+              conversationId={conversationId}
+              active={chatActive}
+              open={chatOpen && !remoteLayoutFs}
+              onClose={closeChat}
+              onUnread={onUnread}
+            />
+          </div>
         )}
       </div>
 
-      <div className="px-4 py-4 flex flex-col items-center gap-3 border-t shrink-0" style={{ borderColor: "#49454F", background: "#2B2930" }}>
+      <div
+        className={
+          remoteLayoutFs
+            ? `absolute inset-x-0 bottom-0 z-[4] px-4 py-4 flex flex-col items-center gap-3 transition-opacity duration-300 ${
+                fsControlsVisible ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"
+              }`
+            : "px-4 py-4 flex flex-col items-center gap-3 border-t shrink-0"
+        }
+        style={
+          remoteLayoutFs
+            ? {
+                background: "linear-gradient(transparent, rgba(0,0,0,0.75))",
+                borderColor: "transparent",
+              }
+            : { borderColor: "#49454F", background: "#2B2930" }
+        }
+        onMouseEnter={remoteLayoutFs ? () => { clearFsHideTimer(); setFsControlsVisible(true); } : undefined}
+        onMouseLeave={remoteLayoutFs ? bumpFsControls : undefined}
+      >
         <p className="text-sm text-white/80" style={{ fontFamily: "Roboto Mono, monospace" }}>
           {call.phase === "connecting" ? "Connecting…" : formatElapsed(call.elapsedSec)} · {call.callType === "video" ? "Video" : "Voice"}
           {call.connectionState === "connected" ? "" : ` · ${call.connectionState}`}
@@ -728,7 +872,7 @@ export function CallOverlays() {
           >
             {call.screenSharing ? <StopScreenShareIcon /> : <ScreenShareIcon />}
           </button>
-          {!!conversationId && (
+          {!!conversationId && !remoteLayoutFs && (
             <button
               type="button"
               data-call-chat-toggle
@@ -761,32 +905,34 @@ export function CallOverlays() {
             <CallEndIcon />
           </button>
         </div>
-        <div className="flex flex-wrap gap-3 justify-center max-w-2xl w-full">
-          {call.audioInputs.length > 0 && (
-            <DeviceSelect
-              label="Microphone"
-              value={call.selectedMicId || call.audioInputs[0]?.deviceId || ""}
-              onChange={id => void call.switchMic(id)}
-              options={call.audioInputs}
-            />
-          )}
-          {call.videoInputs.length > 0 && (
-            <DeviceSelect
-              label="Camera"
-              value={call.selectedCamId || call.videoInputs[0]?.deviceId || ""}
-              onChange={id => void call.switchCam(id)}
-              options={call.videoInputs}
-            />
-          )}
-          {call.audioOutputs.length > 0 && (
-            <DeviceSelect
-              label="Speaker"
-              value={call.selectedOutputId || call.audioOutputs[0]?.deviceId || ""}
-              onChange={id => void call.setAudioOutput(id)}
-              options={call.audioOutputs}
-            />
-          )}
-        </div>
+        {!remoteLayoutFs && (
+          <div className="flex flex-wrap gap-3 justify-center max-w-2xl w-full">
+            {call.audioInputs.length > 0 && (
+              <DeviceSelect
+                label="Microphone"
+                value={call.selectedMicId || call.audioInputs[0]?.deviceId || ""}
+                onChange={id => void call.switchMic(id)}
+                options={call.audioInputs}
+              />
+            )}
+            {call.videoInputs.length > 0 && (
+              <DeviceSelect
+                label="Camera"
+                value={call.selectedCamId || call.videoInputs[0]?.deviceId || ""}
+                onChange={id => void call.switchCam(id)}
+                options={call.videoInputs}
+              />
+            )}
+            {call.audioOutputs.length > 0 && (
+              <DeviceSelect
+                label="Speaker"
+                value={call.selectedOutputId || call.audioOutputs[0]?.deviceId || ""}
+                onChange={id => void call.setAudioOutput(id)}
+                options={call.audioOutputs}
+              />
+            )}
+          </div>
+        )}
       </div>
       <style>{`
         @keyframes ne-badge-pop { 0%{transform:scale(1)} 50%{transform:scale(1.2)} 100%{transform:scale(1)} }

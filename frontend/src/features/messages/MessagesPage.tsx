@@ -82,7 +82,10 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
   setContacts: React.Dispatch<React.SetStateAction<Contact[]>>;
   onUnreadChange?: (n: number) => void;
   /** Shared App-level coalesced conversation refresh (avoids duplicate list fetches). */
-  onConversationsRefresh?: () => void;
+  onConversationsRefresh?: (opts?: {
+    immediate?: boolean;
+    recoveryFilter?: "All" | "Channels" | "DMs";
+  }) => void;
   currentUserId: number;
   currentUser?: import("@/app/api").ApiUser | null;
   onUserUpdate?: (u: import("@/app/api").ApiUser) => void;
@@ -456,7 +459,26 @@ function MessagesPage({ settings, showEmailToast, showPushNotif, contacts, setCo
   const selectListFilter = useCallback((next: ListFilter) => {
     setListFilter(next);
     if (currentUserId) setStoredListFilter(currentUserId, next);
-  }, [currentUserId]);
+
+    // Desktop-only: recover when BOTH channel and DM lists are locally empty.
+    // Do not refresh merely because the active filter subsection is empty
+    // (e.g. Channels exist but DMs do not).
+    if (!desktopMode) return;
+    if (next !== "all" && next !== "channel" && next !== "dm") return;
+
+    const active = contacts.filter((c) => !(c.type === "dm" && c.isDeleted));
+    const channelCount = active.filter((c) => c.type === "channel").length;
+    const dmCount = active.filter((c) => c.type === "dm").length;
+    if (channelCount > 0 || dmCount > 0) return;
+
+    const recoveryFilter = next === "channel" ? "Channels" : next === "dm" ? "DMs" : "All";
+    if (onConversationsRefresh) {
+      onConversationsRefresh({ immediate: true, recoveryFilter });
+    } else {
+      // Fallback path (should not hit on desktop shell) — still guard against floods.
+      refreshContacts();
+    }
+  }, [currentUserId, desktopMode, contacts, onConversationsRefresh, refreshContacts]);
 
   // External navigation into a conversation (e.g. Teamwork → Message). One-shot only.
   useEffect(() => {

@@ -164,6 +164,11 @@ export default function DesktopApp() {
   const [connectionStatus, setConnectionStatus] = useState<RealtimeStatus>("connected");
   const [realtimeEpoch, setRealtimeEpoch] = useState(0);
   const convRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** In-flight guard — prevents overlapping GET /conversations (stale empty overwrites). */
+  const convRefreshing = useRef(false);
+  /** One trailing refresh if events fire while a fetch is already running. */
+  const convRefreshQueued = useRef(false);
+  const convRefreshSeq = useRef(0);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
 
@@ -198,6 +203,13 @@ export default function DesktopApp() {
     setDmRequestCount(0);
     setSelectedConversationId(null);
     setSettingsOpen(false);
+    if (convRefreshTimer.current) {
+      clearTimeout(convRefreshTimer.current);
+      convRefreshTimer.current = null;
+    }
+    convRefreshing.current = false;
+    convRefreshQueued.current = false;
+    convRefreshSeq.current += 1;
     if (uid) {
       clearActiveConversation(uid);
       clearAllConversationDrafts(uid);
@@ -263,18 +275,80 @@ export default function DesktopApp() {
     };
   }, [authReady]);
 
-  const refreshConversations = useCallback(() => {
+  const refreshConversations = useCallback((opts?: {
+    immediate?: boolean;
+    /** Desktop empty-list recovery — DEV logs only when set. */
+    recoveryFilter?: "All" | "Channels" | "DMs";
+  }) => {
     if (!loggedIn) return;
-    if (convRefreshTimer.current) clearTimeout(convRefreshTimer.current);
-    convRefreshTimer.current = setTimeout(() => {
-      convRefreshTimer.current = null;
+
+    const runFetch = () => {
+      if (convRefreshing.current) {
+        convRefreshQueued.current = true;
+        return;
+      }
+      convRefreshing.current = true;
+      const seq = ++convRefreshSeq.current;
+      const recoveryFilter = opts?.recoveryFilter;
+
+      if (import.meta.env.DEV && recoveryFilter) {
+        console.info(
+          `[Conversation Sync]\nRecovery triggered\nReason: No local conversations\nFilter: ${recoveryFilter}`,
+        );
+      }
+
       api.messages
         .conversations()
         .then((r) => {
-          setContacts(r.conversations as Contact[]);
-          setMsgUnread(r.conversations.filter((c) => c.type === "dm").reduce((s, c) => s + c.unread, 0));
+          // Drop stale responses from overlapping/cancelled generations.
+          if (seq !== convRefreshSeq.current) return;
+
+          const list = r.conversations as Contact[];
+          // Replace in place — never clear to [] before the response arrives.
+          setContacts(list);
+          setMsgUnread(list.filter((c) => c.type === "dm").reduce((s, c) => s + c.unread, 0));
+
+          if (import.meta.env.DEV && recoveryFilter) {
+            const channels = list.filter((c) => c.type === "channel").length;
+            const dms = list.filter((c) => c.type === "dm" && !c.isDeleted).length;
+            if (list.length === 0) {
+              console.info("[Conversation Sync]\nServer returned zero conversations");
+            } else {
+              console.info(
+                `[Conversation Sync]\nRecovery completed\n\nChannels: ${channels}\nDMs: ${dms}`,
+              );
+            }
+          }
         })
-        .catch(() => {});
+        .catch(() => {
+          if (import.meta.env.DEV && recoveryFilter) {
+            console.info("[Conversation Sync]\nRecovery failed — will retry on next filter click");
+          }
+        })
+        .finally(() => {
+          if (seq !== convRefreshSeq.current) return;
+          convRefreshing.current = false;
+          if (convRefreshQueued.current) {
+            convRefreshQueued.current = false;
+            // Trailing coalesced refresh (no recovery log spam).
+            refreshConversations({ immediate: true });
+          }
+        });
+    };
+
+    if (opts?.immediate) {
+      if (convRefreshTimer.current) {
+        clearTimeout(convRefreshTimer.current);
+        convRefreshTimer.current = null;
+      }
+      runFetch();
+      return;
+    }
+
+    if (convRefreshTimer.current) clearTimeout(convRefreshTimer.current);
+    convRefreshTimer.current = setTimeout(() => {
+      convRefreshTimer.current = null;
+      runFetch();
     }, 400);
   }, [loggedIn]);
 

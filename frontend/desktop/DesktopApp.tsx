@@ -265,7 +265,7 @@ export default function DesktopApp() {
         await registerAppInstallationSilent({
           appId: "messenger",
           appName: "Ninja Era Messenger",
-          defaultVersion: info?.version || "1.0.2",
+          defaultVersion: info?.version || "1.0.3",
         });
       } catch {
         /* ignore — non-blocking */

@@ -55,7 +55,7 @@ function MessengerTermsPage({ setPage }: { setPage?: (p: Page) => void }) {
     void registerAppInstallationSilent({
       appId: "messenger",
       appName: "Ninja Era Messenger",
-      defaultVersion: "1.0.1",
+      defaultVersion: "1.0.3",
     });
   }, []);
 

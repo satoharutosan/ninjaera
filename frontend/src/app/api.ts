@@ -610,25 +610,39 @@ export const api = {
           return;
         }
         if (data.downloadUrl) {
-          const fileRes = await fetch(data.downloadUrl);
-          if (!fileRes.ok) {
-            throw new ApiError("Download failed", fileRes.status);
+          const filename = data.filename || `resource-${id}`;
+          try {
+            const fileRes = await fetch(data.downloadUrl);
+            if (!fileRes.ok) {
+              // Signed URL may reject browser fetch (CORS / provider rules) — open directly.
+              await openExternalDownload(data.downloadUrl);
+              return;
+            }
+            const blob = await fileRes.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = filename;
+            a.click();
+            URL.revokeObjectURL(url);
+          } catch {
+            await openExternalDownload(data.downloadUrl);
           }
-          const blob = await fileRes.blob();
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement("a");
-          a.href = url;
-          a.download = data.filename || `resource-${id}`;
-          a.click();
-          URL.revokeObjectURL(url);
           return;
         }
+        throw new ApiError("Download response was incomplete", 500);
       }
       const disposition = res.headers.get("Content-Disposition") || "";
       const utfMatch = /filename\*=UTF-8''([^;]+)/i.exec(disposition);
-      const plainMatch = /filename="?([^";]+)"?/i.exec(disposition);
-      const rawName = utfMatch?.[1] || plainMatch?.[1];
-      const filename = rawName ? decodeURIComponent(rawName.replace(/"/g, "").trim()) : `resource-${id}`;
+      const plainMatch = /filename="([^"]+)"/i.exec(disposition)
+        || /filename=([^;]+)/i.exec(disposition);
+      let filename = `resource-${id}`;
+      try {
+        const rawName = (utfMatch?.[1] || plainMatch?.[1] || "").replace(/"/g, "").trim();
+        if (rawName) filename = decodeURIComponent(rawName);
+      } catch {
+        /* keep fallback name */
+      }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");

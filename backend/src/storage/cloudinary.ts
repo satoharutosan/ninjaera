@@ -245,23 +245,19 @@ export function createCloudinaryStorage(opts: CloudinaryStorageOptions): Storage
     async getSignedDownloadUrl(
       urlOrKey: string,
       expiresInSeconds = 300,
-      signedOpts?: { downloadFilename?: string },
+      _signedOpts?: { downloadFilename?: string },
     ) {
       const ref = parseCloudinaryRef(urlOrKey, cloudName);
       if (!ref) throw new Error("Invalid Cloudinary object reference");
       const expiresAt = Math.floor(Date.now() / 1000) + Math.max(30, expiresInSeconds);
-      const rawName = signedOpts?.downloadFilename?.trim();
-      // Cloudinary fl_attachment flag: keep characters that are safe in transformation URLs.
-      const attachName = rawName
-        ? rawName.replace(/[^a-zA-Z0-9._\- ]+/g, "_").replace(/\s+/g, "_").slice(0, 180)
-        : "";
+      // Avoid fl_attachment on signed URLs — it can break delivery / auth.
+      // The API returns the display filename to the client separately.
       return cloudinary.url(ref.publicId, {
         secure: true,
         resource_type: ref.resourceType,
         sign_url: true,
         type: "upload",
         expires_at: expiresAt,
-        ...(attachName ? { flags: `attachment:${attachName}` } : {}),
       });
     },
 

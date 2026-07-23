@@ -8,7 +8,6 @@ import { Upload } from "@aws-sdk/lib-storage";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import type { PutObjectInput, PutObjectResult, StorageProvider } from "./types.js";
 import { resolvePutBody } from "./putBody.js";
-import { contentDispositionAttachment } from "../services/downloadFilename.js";
 
 export type S3StorageOptions = {
   endpoint?: string;
@@ -116,18 +115,17 @@ export function createS3Storage(opts: S3StorageOptions): StorageProvider {
     async getSignedDownloadUrl(
       urlOrKey: string,
       expiresInSeconds = 300,
-      signedOpts?: { downloadFilename?: string },
+      _signedOpts?: { downloadFilename?: string },
     ) {
       const key = keyFromUrl(urlOrKey) || urlOrKey.replace(/^[/\\]+/, "").replace(/\.\./g, "");
       if (!key || key.includes("..")) throw new Error("Invalid object key");
-      const filename = signedOpts?.downloadFilename?.trim();
+      // Do NOT set ResponseContentDisposition here.
+      // S3/R2 often return 400 InvalidArgument for signed URLs that override
+      // Content-Disposition (especially with filename* / non-ASCII names).
+      // Callers pass the display filename separately to the client.
       return getSignedUrl(
         client,
-        new GetObjectCommand({
-          Bucket: opts.bucket,
-          Key: key,
-          ...(filename ? { ResponseContentDisposition: contentDispositionAttachment(filename) } : {}),
-        }),
+        new GetObjectCommand({ Bucket: opts.bucket, Key: key }),
         { expiresIn: expiresInSeconds },
       );
     },

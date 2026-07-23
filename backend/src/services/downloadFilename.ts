@@ -1,18 +1,26 @@
 import path from "path";
 
-/** Sanitize a filename for Content-Disposition (ASCII-safe quoted form). */
+/** Sanitize a filename for Content-Disposition / browser save-as. */
 export function sanitizeDownloadFilename(filename: string): string {
-  const cleaned = filename
+  // Never allow path segments — disposition filenames must be a single leaf name.
+  const base = path.basename(String(filename || "").replace(/\\/g, "/").trim()) || "file";
+  const cleaned = base
     .replace(/["\r\n\\]/g, "_")
-    .replace(/[<>:|?*\x00-\x1f]/g, "_")
+    .replace(/[<>:|?*\x00-\x1f/]/g, "_")
+    .replace(/\s+/g, " ")
     .trim();
   return cleaned || "file";
 }
 
+/**
+ * ASCII-only quoted filename for S3/R2 ResponseContentDisposition compatibility.
+ * Prefer filename* (RFC 5987) for the real name when serving from our own API.
+ */
 export function contentDispositionAttachment(filename: string): string {
   const safe = sanitizeDownloadFilename(filename);
+  const ascii = safe.replace(/[^\x20-\x7E]/g, "_").replace(/["\\]/g, "_") || "file";
   const encoded = encodeURIComponent(safe);
-  return `attachment; filename="${safe}"; filename*=UTF-8''${encoded}`;
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encoded}`;
 }
 
 /**

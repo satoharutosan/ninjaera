@@ -13,9 +13,10 @@ import AutoStoriesIcon from "@mui/icons-material/AutoStories";
 import LinkIcon from "@mui/icons-material/Link";
 import InstallDesktopIcon from "@mui/icons-material/InstallDesktop";
 import SystemUpdateAltIcon from "@mui/icons-material/SystemUpdateAlt";
+import BackupIcon from "@mui/icons-material/Backup";
 import { api } from "@/app/api";
 
-export type Section = "dashboard" | "users" | "notifications" | "contacts" | "channels" | "applications" | "resources" | "game-downloads" | "messaging-history" | "activity-logs" | "database" | "about-our-story" | "link-file-management" | "app-installations" | "desktop-updates";
+export type Section = "dashboard" | "users" | "notifications" | "contacts" | "channels" | "applications" | "resources" | "game-downloads" | "messaging-history" | "activity-logs" | "database" | "about-our-story" | "link-file-management" | "app-installations" | "desktop-updates" | "telegram-backup";
 
 export type DashboardStats = Awaited<ReturnType<typeof api.admin.stats>>;
 
@@ -63,6 +64,7 @@ export const SUPER_ADMIN_SECTIONS: { id: Section; label: string; Icon: typeof Da
   { id: "link-file-management", label: "Link File Management", Icon: LinkIcon },
   { id: "app-installations", label: "Application Installations", Icon: InstallDesktopIcon },
   { id: "desktop-updates", label: "Desktop App Updates", Icon: SystemUpdateAltIcon },
+  { id: "telegram-backup", label: "Telegram Backup Management", Icon: BackupIcon },
 ];
 
 export const SECTIONS: { id: Section; label: string; Icon: typeof DashboardIcon }[] = [

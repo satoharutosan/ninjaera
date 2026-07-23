@@ -60,6 +60,7 @@ import ForgotPasswordPage from "@/features/auth/ForgotPasswordPage";
 import ResetPasswordPage from "@/features/auth/ResetPasswordPage";
 import AboutPage from "@/features/landing/AboutPage";
 import ResourcesPage from "@/features/resources/ResourcesPage";
+import { PublicUploadPage } from "@/features/uploads/PublicUploadPage";
 import TeamworkPage from "@/features/teamwork/TeamworkPage";
 import ContactPage from "@/features/landing/ContactPage";
 import AlarmsPage from "@/features/notifications/AlarmsPage";
@@ -644,7 +645,7 @@ export default function App() {
   const loggedIn = !!user;
   const theme = isDark ? DARK_C : LIGHT_C;
   const noNav: Page[] = ["oauth-callback", "verify-email", "forgot-password", "reset-password"];
-  const noFoot: Page[] = ["messages","login","signup","oauth-callback","admin","forgot-password","reset-password","verify-email"];
+  const noFoot: Page[] = ["messages","login","signup","oauth-callback","admin","forgot-password","reset-password","verify-email","public_upload"];
   const go = setPage;
 
   useEffect(() => {
@@ -1164,6 +1165,7 @@ export default function App() {
         {page==="home"      && <HomePage setPage={go} onGoToDownload={goToDownload} />}
         {page==="about"     && <AboutPage setPage={go} />}
         {page==="resources" && <ResourcesPage isTeamMember={user?.isTeamMember} isAdmin={user?.isAdmin} />}
+        {page==="public_upload" && <PublicUploadPage />}
         {page==="teamwork"  && <TeamworkPage loggedIn={loggedIn} setPage={go} onAddDM={addDM} />}
         {page==="contact"   && <ContactPage />}
         {page==="alarms"    && <AlarmsPage setPage={go} onConversationsRefresh={refreshConversations} onNotificationsRefresh={refreshNotifications} />}

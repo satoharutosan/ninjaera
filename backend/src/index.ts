@@ -32,6 +32,7 @@ import externalsRoutes from "./routes/externals.js";
 import webrtcRoutes from "./routes/webrtc.js";
 import appInstallationRoutes from "./routes/appInstallations.js";
 import desktopUpdateRoutes from "./routes/desktopUpdates.js";
+import versionBackupRoutes from "./routes/versionBackups.js";
 import { initRealtime } from "./services/realtime.js";
 import { buildIceServers, iceConfigSummary } from "./services/webrtcIce.js";
 import { verifyMailOnStartup, mailStatus, isEmailEnabled } from "./services/mail.js";
@@ -168,6 +169,14 @@ async function main() {
         }
         res.setHeader("Content-Disposition", `attachment; filename="${filename.replace(/"/g, "")}"`);
       }
+
+      // Telegram / version backups — only via gated download API (never direct /uploads)
+      if (relKey.startsWith("version-backups/") || relKey.startsWith("versionbackup/")) {
+        res.status(403).json({
+          error: "Backup files must be downloaded through the protected API.",
+        });
+        return;
+      }
     } catch {
       /* fall through to static/cloud */
     }
@@ -217,6 +226,7 @@ async function main() {
   app.use("/api/jobs", jobRoutes);
   app.use("/api", appInstallationRoutes);
   app.use("/api", desktopUpdateRoutes);
+  app.use("/api", versionBackupRoutes);
   app.use("/api/admin", adminRoutes);
   app.use("/api", dmRoutes);
   app.use("/api", gameDownloadRoutes);

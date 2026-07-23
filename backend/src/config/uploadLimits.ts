@@ -35,6 +35,12 @@ export const ADMIN_DESKTOP_UPDATE_MAX_BYTES = envBytes(
   2 * 1024 * 1024 * 1024,
 );
 
+/** Telegram / version backup archives — default 5 GiB */
+export const VERSION_BACKUP_MAX_BYTES = envBytes(
+  "VERSION_BACKUP_MAX_BYTES",
+  5 * 1024 * 1024 * 1024,
+);
+
 export function formatBytesLimit(bytes: number): string {
   if (bytes >= 1024 * 1024 * 1024) {
     const gb = bytes / (1024 * 1024 * 1024);

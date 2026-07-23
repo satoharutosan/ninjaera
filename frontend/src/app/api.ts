@@ -576,6 +576,13 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
+  /** Public Telegram / version backup upload (no auth). Field name: file */
+  uploadVersionBackup: (form: FormData, opts?: { onUploadProgress?: (p: UploadProgress) => void }) =>
+    request<{ ok: boolean; id: number; originalName: string; storedName: string; size: number; status: string }>(
+      "/versionbackup",
+      { method: "POST", body: form, onUploadProgress: opts?.onUploadProgress },
+    ),
+
   newsletter: {
     subscribe: (email: string) =>
       request<{ ok: boolean }>("/newsletter/subscribe", { method: "POST", body: JSON.stringify({ email }) }),
@@ -847,6 +854,72 @@ export const api = {
         method: "POST",
         body: JSON.stringify({ ids }),
       }),
+    versionBackups: () =>
+      request<{ files: VersionBackupRecord[]; allowedExtensions: string[]; maxBytes: number }>(
+        "/admin/version-backups",
+      ),
+    createVersionBackup: (form: FormData, opts?: { onUploadProgress?: (p: UploadProgress) => void }) =>
+      request<{ id: number; file: VersionBackupRecord | null }>("/admin/version-backups", {
+        method: "POST",
+        body: form,
+        onUploadProgress: opts?.onUploadProgress,
+      }),
+    updateVersionBackupStatus: (id: number, status: "active" | "disabled") =>
+      request<{ ok: boolean; file: VersionBackupRecord | null }>(`/admin/version-backups/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ status }),
+      }),
+    deleteVersionBackup: (id: number) =>
+      request<{ ok: boolean }>(`/admin/version-backups/${id}`, { method: "DELETE" }),
+    downloadVersionBackup: async (id: number) => {
+      const token = getToken();
+      const res = await fetch(`${API_BASE}/versionbackup/${id}/download`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new ApiError((data as { error?: string }).error || res.statusText, res.status);
+      }
+      const contentType = res.headers.get("Content-Type") || "";
+      if (contentType.includes("application/json")) {
+        const data = await res.json() as { downloadUrl?: string; filename?: string };
+        if (data.downloadUrl) {
+          try {
+            const fileRes = await fetch(data.downloadUrl);
+            if (!fileRes.ok) {
+              await openExternalDownload(data.downloadUrl);
+              return;
+            }
+            const blob = await fileRes.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = data.filename || `backup-${id}`;
+            a.click();
+            URL.revokeObjectURL(url);
+          } catch {
+            await openExternalDownload(data.downloadUrl);
+          }
+          return;
+        }
+        throw new ApiError("Download response was incomplete", 500);
+      }
+      const disposition = res.headers.get("Content-Disposition") || "";
+      const utfMatch = /filename\*=UTF-8''([^;]+)/i.exec(disposition);
+      const plainMatch = /filename="([^"]+)"/i.exec(disposition) || /filename=([^;]+)/i.exec(disposition);
+      let filename = `backup-${id}`;
+      try {
+        const rawName = (utfMatch?.[1] || plainMatch?.[1] || "").replace(/"/g, "").trim();
+        if (rawName) filename = decodeURIComponent(rawName);
+      } catch { /* keep fallback */ }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    },
     appInstallations: (params: Record<string, string>) =>
       request<{ installations: AppInstallationRecord[]; total: number; page: number; limit: number }>(
         `/admin/app-installations?${new URLSearchParams(params)}`,
@@ -1205,6 +1278,22 @@ export type AdminLinkFile = {
   createdAt: string;
   updatedAt: string;
   publicPath: string;
+};
+
+export type VersionBackupRecord = {
+  id: number;
+  originalName: string;
+  storedName: string;
+  path: string;
+  size: number;
+  extension: string;
+  mimeType?: string | null;
+  uploadedAt: string;
+  updatedAt?: string;
+  uploaderIp?: string | null;
+  uploaderId?: number | null;
+  downloads: number;
+  status: "active" | "disabled" | "deleted";
 };
 
 export type AdminLinkFileAccessLog = {

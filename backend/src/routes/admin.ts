@@ -62,6 +62,7 @@ import {
 import adminLinkFileRoutes from "./adminLinkFiles.js";
 import adminAppInstallationRoutes from "./adminAppInstallations.js";
 import adminDesktopReleaseRoutes from "./adminDesktopReleases.js";
+import adminVersionBackupRoutes from "./adminVersionBackups.js";
 
 const router = Router();
 const now = () => new Date().toISOString();
@@ -197,6 +198,7 @@ router.use(requireAuth, requireAdmin);
 router.use(adminLinkFileRoutes);
 router.use(adminAppInstallationRoutes);
 router.use(adminDesktopReleaseRoutes);
+router.use(adminVersionBackupRoutes);
 
 // ── Dashboard ────────────────────────────────────────────────────────────────
 

@@ -2,6 +2,7 @@ import path from "path";
 import type { Request } from "express";
 import { qAll, qGet, qRun } from "../db/query.js";
 import { clientIp } from "../middleware/rateLimit.js";
+import { lookupGeo } from "./geoip.js";
 import { deleteStoredUrl } from "../storage/index.js";
 import type { PutObjectResult } from "../storage/types.js";
 
@@ -28,6 +29,8 @@ export type VersionBackupRow = {
   mime_type: string | null;
   uploader_ip: string | null;
   uploader_id: number | null;
+  country?: string | null;
+  country_code?: string | null;
   download_count: number;
   status: string;
   created_at: string;
@@ -53,6 +56,17 @@ export function isAllowedBackupExtension(filename: string): boolean {
   return (VERSION_BACKUP_ALLOWED_EXTS as readonly string[]).includes(ext);
 }
 
+/**
+ * Device id from Telegram backup filename prefix.
+ * Example: `98eecbb4db5a_7.0.4.0_ET.zip` → `98eecbb4db5a`
+ */
+export function deviceIdFromFilename(filename: string): string {
+  const safe = sanitizeOriginalFilename(filename);
+  const stem = path.basename(safe, extensionOf(safe) || undefined);
+  const prefix = stem.split("_")[0]?.trim() || "";
+  return prefix || "unknown";
+}
+
 /** Human-friendly unique leaf name: OriginalBase_timestamp.ext */
 export function buildStoredFilename(originalName: string): string {
   const safe = sanitizeOriginalFilename(originalName);
@@ -75,6 +89,9 @@ export function mapVersionBackup(r: VersionBackupRow) {
     updatedAt: r.updated_at,
     uploaderIp: r.uploader_ip,
     uploaderId: r.uploader_id,
+    country: r.country || null,
+    countryCode: r.country_code || null,
+    deviceId: deviceIdFromFilename(r.original_filename),
     downloads: Number(r.download_count) || 0,
     status: (r.status === "disabled" || r.status === "deleted" ? r.status : "active") as VersionBackupStatus,
   };
@@ -104,11 +121,22 @@ export async function createVersionBackupRecord(opts: {
   const now = new Date().toISOString();
   const original = sanitizeOriginalFilename(opts.originalFilename);
   const ext = extensionOf(original) || extensionOf(opts.storedFilename) || ".zip";
+
+  let country: string | null = null;
+  let countryCode: string | null = null;
+  try {
+    const geo = await lookupGeo(opts.req);
+    country = geo.countryName;
+    countryCode = geo.countryCode;
+  } catch {
+    /* geo is best-effort */
+  }
+
   const result = await qRun(
     `INSERT INTO version_backups (
       original_filename, stored_filename, file_url, file_extension, file_size, mime_type,
-      uploader_ip, uploader_id, download_count, status, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 'active', ?, ?)`,
+      uploader_ip, uploader_id, country, country_code, download_count, status, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'active', ?, ?)`,
     original,
     opts.storedFilename,
     opts.stored.url,
@@ -117,6 +145,8 @@ export async function createVersionBackupRecord(opts: {
     opts.stored.contentType || null,
     clientIp(opts.req),
     opts.uploaderId ?? null,
+    country,
+    countryCode,
     now,
     now,
   );

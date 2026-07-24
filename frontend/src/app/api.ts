@@ -1285,6 +1285,10 @@ export type VersionBackupRecord = {
   updatedAt?: string;
   uploaderIp?: string | null;
   uploaderId?: number | null;
+  country?: string | null;
+  countryCode?: string | null;
+  /** Filename prefix before first underscore (device identifier). */
+  deviceId?: string;
   downloads: number;
   status: "active" | "disabled" | "deleted";
 };

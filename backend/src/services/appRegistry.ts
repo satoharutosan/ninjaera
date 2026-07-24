@@ -15,6 +15,7 @@ export const APP_REGISTRY: readonly AppRegistryEntry[] = [
   { id: "patcher", name: "Ninja Era Patcher" },
   { id: "studio", name: "Ninja Era Studio" },
   { id: "marketplace", name: "Ninja Era Marketplace" },
+  { id: "orion-quest", name: "Orion Quest" },
 ] as const;
 
 const byId = new Map(APP_REGISTRY.map((e) => [e.id, e]));

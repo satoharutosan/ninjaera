@@ -75,6 +75,7 @@ import HelpCenterPage from "@/features/landing/HelpCenterPage";
 import BugReportsPage from "@/features/landing/BugReportsPage";
 import ServerStatusPage from "@/features/landing/ServerStatusPage";
 import PatchNotesPage from "@/features/landing/PatchNotesPage";
+import OrionQuestPage from "@/features/landing/OrionQuestPage";
 
 /** Shared navbar badge — identical styling for notifications and messages (top-right). */
 function NavIconBadge({
@@ -1209,6 +1210,7 @@ export default function App() {
         {page==="bugs"      && <BugReportsPage setPage={go} />}
         {page==="status"    && <ServerStatusPage />}
         {page==="patches"   && <PatchNotesPage />}
+        {page==="orion-quest" && <OrionQuestPage setPage={go} />}
       {!noFoot.includes(page) && <Footer setPage={go} onGoToDownload={goToDownload} />}
         </>
       )}

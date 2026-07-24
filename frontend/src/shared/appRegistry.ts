@@ -6,6 +6,7 @@ export const APP_REGISTRY = [
   { id: "patcher", name: "Ninja Era Patcher" },
   { id: "studio", name: "Ninja Era Studio" },
   { id: "marketplace", name: "Ninja Era Marketplace" },
+  { id: "orion-quest", name: "Orion Quest" },
 ] as const;
 
 export type KnownAppId = (typeof APP_REGISTRY)[number]["id"];

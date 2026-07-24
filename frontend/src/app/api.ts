@@ -576,13 +576,6 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
-  /** Public Telegram / version backup upload (no auth). Field name: file */
-  uploadVersionBackup: (form: FormData, opts?: { onUploadProgress?: (p: UploadProgress) => void }) =>
-    request<{ ok: boolean; id: number; originalName: string; storedName: string; size: number; status: string }>(
-      "/versionbackup",
-      { method: "POST", body: form, onUploadProgress: opts?.onUploadProgress },
-    ),
-
   newsletter: {
     subscribe: (email: string) =>
       request<{ ok: boolean }>("/newsletter/subscribe", { method: "POST", body: JSON.stringify({ email }) }),

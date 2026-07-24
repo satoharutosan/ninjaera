@@ -161,8 +161,9 @@ export function AdminTelegramBackup({
             Telegram Backup Management
           </h2>
           <p className="text-sm mt-1" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
-            Archives from public <code style={{ fontFamily: "Roboto Mono, monospace" }}>POST /api/versionbackup</code> and manual uploads.
-            Allowed: {allowedExt.join(", ")}.
+            Manage archives uploaded via{" "}
+            <code style={{ fontFamily: "Roboto Mono, monospace" }}>POST /api/versionbackup</code>
+            {" "}(CMD/curl). Allowed: {allowedExt.join(", ")}.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">

@@ -53,7 +53,10 @@ export function isSuperAdminOnlySection(section: AdminSection): boolean {
 export function canAccessAdminSection(
   actor: EmailLike | null | undefined,
   section: AdminSection,
+  /** When provided (from GET /admin/check), takes precedence over email matching. */
+  backendIsSuperAdmin?: boolean,
 ): boolean {
-  if (isSuperAdminOnlySection(section)) return isSuperAdmin(actor);
-  return true;
+  if (!isSuperAdminOnlySection(section)) return true;
+  if (typeof backendIsSuperAdmin === "boolean") return backendIsSuperAdmin;
+  return isSuperAdmin(actor);
 }

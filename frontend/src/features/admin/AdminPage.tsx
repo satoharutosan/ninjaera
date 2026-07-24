@@ -66,7 +66,6 @@ import {
   type GameFileSizeUnit,
 } from "@/shared/gameFileSize";
 import {
-  canAccessAdminSection,
   canManageTargetUser,
   canSelectTargetUser,
   isProtectedAccount,
@@ -74,6 +73,7 @@ import {
   PROTECTED_ACCOUNT_TOOLTIP,
   type AdminSection,
 } from "@/shared/adminPermissions";
+import { hashQueryParams, setPageInLocationWithQuery } from "@/shared/routing";
 
 function AdminAccessDenied({ message }: { message: string }) {
   const C = useC();
@@ -117,7 +117,17 @@ function UserMgmtBtn({
 
 function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
   const C = useC();
-  const [section, setSection] = useState<Section>("dashboard");
+  const initialSection = useMemo((): Section => {
+    const raw = (hashQueryParams().get("section") || "").trim();
+    if (raw && SECTIONS.some((s) => s.id === raw)) return raw as Section;
+    return "dashboard";
+  }, []);
+  const [section, setSectionState] = useState<Section>(initialSection);
+  const setSection = useCallback((id: Section) => {
+    setSectionState(id);
+    // Deep-link so refresh keeps the Super Admin tool open: #/admin?section=telegram-backup
+    setPageInLocationWithQuery("admin", id === "dashboard" ? {} : { section: id });
+  }, []);
   const [loading, setLoading] = useState(true);
   const [authorized, setAuthorized] = useState<boolean | null>(null);
   const [adminActor, setAdminActor] = useState<{ email?: string } | null>(null);
@@ -212,8 +222,12 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
   }, [setPage]);
 
   const visibleSections = useMemo(
-    () => SECTIONS.filter((s) => canAccessAdminSection(adminActor, s.id as AdminSection)),
-    [adminActor],
+    () => SECTIONS.filter((s) => {
+      // Prefer backend /admin/check isSuperAdmin — authoritative even when SUPER_ADMIN_EMAIL env differs.
+      if (isSuperAdminOnlySection(s.id as AdminSection)) return isSuperAdminUser;
+      return true;
+    }),
+    [isSuperAdminUser],
   );
   const standardSections = useMemo(
     () => visibleSections.filter((s) => !isSuperAdminOnlySection(s.id as AdminSection)),
@@ -282,11 +296,11 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
 
   useEffect(() => {
     if (!authorized) return;
-    if (!canAccessAdminSection(adminActor, section as AdminSection)) {
+    if (isSuperAdminOnlySection(section as AdminSection) && !isSuperAdminUser) {
       setSection("dashboard");
       toast.error("Super Administrator access required");
     }
-  }, [authorized, adminActor, section]);
+  }, [authorized, isSuperAdminUser, section, setSection]);
 
   // Keep sidebar badge counts fresh regardless of active section.
   useEffect(() => {

@@ -327,7 +327,13 @@ function Navbar({ page, setPage, isDark, setIsDark, loggedIn, user, userAvatar, 
             <div className="flex items-center gap-2 ml-1">
               {showLabels ? (
                 <>
-                  <OutlinedBtn onClick={() => go("login")}><LoginIcon style={{ fontSize:16 }} />Login</OutlinedBtn>
+                  <OutlinedBtn
+                    onClick={() => go("login")}
+                    cls={translucent ? "hover:!bg-white/15" : ""}
+                    style={translucent ? { borderColor: "rgba(255,255,255,0.55)", color: "#FFFFFF", textShadow } : undefined}
+                  >
+                    <LoginIcon style={{ fontSize:16 }} />Login
+                  </OutlinedBtn>
                   <FilledBtn onClick={() => go("signup")}><PersonAddIcon style={{ fontSize:16 }} />Sign Up</FilledBtn>
                 </>
               ) : (

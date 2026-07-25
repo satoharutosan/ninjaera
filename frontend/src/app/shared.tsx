@@ -1,4 +1,4 @@
-import { useState, useEffect, createContext, useContext } from "react";
+import { useState, useEffect, createContext, useContext, type CSSProperties } from "react";
 
 export type Page = "home" | "about" | "resources" | "teamwork" | "contact" | "login" | "signup" | "oauth-callback" | "verify-email" | "forgot-password" | "reset-password" | "messages" | "profile" | "alarms" | "admin" | "terms" | "privacy" | "messenger" | "help" | "bugs" | "status" | "patches" | "orion-quest";
 export type AppSettings = { emailNotif:boolean; pushNotif:boolean; twoFA:boolean; publicProfile:boolean };
@@ -188,11 +188,11 @@ function FilledBtn({ children, onClick, cls="", disabled }: { children:React.Rea
       style={{ background:C.primary, fontFamily:"Roboto" }}>{children}</button>
   );
 }
-function OutlinedBtn({ children, onClick, cls="", disabled }: { children:React.ReactNode; onClick?:()=>void; cls?:string; disabled?: boolean }) {
+function OutlinedBtn({ children, onClick, cls="", disabled, style }: { children:React.ReactNode; onClick?:()=>void; cls?:string; disabled?: boolean; style?: CSSProperties }) {
   const C = useC();
   return (
     <button type="button" disabled={disabled} onClick={onClick} className={`inline-flex items-center gap-2 px-6 py-2.5 rounded-full text-sm font-medium border transition-all hover:bg-[#6750A4]/8 active:scale-95 disabled:opacity-50 disabled:pointer-events-none ${cls}`}
-      style={{ borderColor:C.outline, color:C.primary, fontFamily:"Roboto" }}>{children}</button>
+      style={{ borderColor:C.outline, color:C.primary, fontFamily:"Roboto", ...style }}>{children}</button>
   );
 }
 function TonalBtn({ children, onClick, cls="", disabled }: { children:React.ReactNode; onClick?:()=>void; cls?:string; disabled?: boolean }) {

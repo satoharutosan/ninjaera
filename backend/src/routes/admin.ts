@@ -11,7 +11,7 @@ import { createNativeBackup } from "../db/backup/native.js";
 import { requireAuth, publicUser, timeAgo, formatTime, bumpTokenVersion } from "../middleware/auth.js";
 import { requireAdmin, requireSuperAdmin } from "../middleware/admin.js";
 import { clientIp } from "../middleware/rateLimit.js";
-import { canManageTargetUser, canSelectTargetUser, isSuperAdmin } from "../services/adminPermissions.js";
+import { canManageTargetUser, canSelectTargetUser, isSuperAdmin, resolveSuperAdminEmail } from "../services/adminPermissions.js";
 import { normalizeEmail } from "../services/emailVerification.js";
 import { assertTrustedRegistrationEmail } from "../config/trustedEmailProviders.js";
 import {
@@ -26,7 +26,7 @@ import {
   logActivitySync,
   formatPlatformLabel,
   isVersionBackupActivityEvent,
-  HIDE_VERSION_BACKUP_ACTIVITY_SQL,
+  activityLogVisibilityFor,
 } from "../services/activityLog.js";
 import { emitToAdmins, emitToUser, broadcast, scheduleAdminStatsRefresh, emitConversationUpdate } from "../services/realtime.js";
 import { getAdminStatsCache, setAdminStatsCache, invalidateAdminStatsCache } from "../services/adminStatsCache.js";
@@ -71,6 +71,15 @@ import adminVersionBackupRoutes from "./adminVersionBackups.js";
 
 const router = Router();
 const now = () => new Date().toISOString();
+
+async function getSuperAdminUserId(): Promise<number | null> {
+  const row = await qGet<{ id: number }>(
+    "SELECT id FROM users WHERE LOWER(TRIM(email)) = ? LIMIT 1",
+    resolveSuperAdminEmail(),
+  );
+  return row?.id ?? null;
+}
+
 
 function logAdminUpload(event: {
   ok: boolean;
@@ -282,19 +291,21 @@ router.get("/stats", async (req, res) => {
   try {
     const cached = getAdminStatsCache();
     if (cached) {
-      // Always recompute unique online users ù presence changes faster than the general stats cache.
+      // Always recompute unique online users ? presence changes faster than the general stats cache.
       const onlineUsers = asInt(countOnlineUsers(), 0);
       const body = { ...cached.body, onlineUsers };
       if (!isSuperAdmin(req.user!) && Array.isArray(body.recentActivity)) {
-        body.recentActivity = (body.recentActivity as { eventType?: string }[]).filter(
-          (a) => !isVersionBackupActivityEvent(a.eventType),
+        const saId = await getSuperAdminUserId();
+        body.recentActivity = (body.recentActivity as { eventType?: string; userId?: number | null }[]).filter(
+          (a) => !isVersionBackupActivityEvent(a.eventType)
+            && (saId == null || a.userId !== saId),
         );
       }
       res.json(body);
       return;
     }
 
-    // Portable cutoff: never use SQLite-only date('now', '-13 days') ù it fails on PostgreSQL.
+    // Portable cutoff: never use SQLite-only date('now', '-13 days') ? it fails on PostgreSQL.
     const sinceIso = daysAgoIso(13);
     const dayKeys = dayKeysLastN(14);
 
@@ -320,7 +331,7 @@ router.get("/stats", async (req, res) => {
       safeCount("totalUsers", TOTAL_USERS_SQL),
       safeQueryOne<{ admin_count: unknown; member_count: unknown }>(
         "roleCounts",
-        // Snake_case aliases only ù Postgres lowercases unquoted camelCase (adminCount ? admincount).
+        // Snake_case aliases only ? Postgres lowercases unquoted camelCase (adminCount ? admincount).
         `SELECT
           COALESCE(SUM(CASE WHEN is_admin = 1 THEN 1 ELSE 0 END), 0) as admin_count,
           COALESCE(SUM(CASE WHEN is_admin = 0 OR is_admin IS NULL THEN 1 ELSE 0 END), 0) as member_count
@@ -328,7 +339,7 @@ router.get("/stats", async (req, res) => {
       ),
       // Same filter as Teamwork Applications management (pending status only).
       safeCount("pendingJobApplications", PENDING_JOB_APPLICATIONS_SQL),
-      // Tracked separately ù never mixed into pendingApplications (DM ? teamwork).
+      // Tracked separately ? never mixed into pendingApplications (DM ? teamwork).
       safeCount("pendingDmRequests", PENDING_DM_REQUESTS_SQL),
       // Same universe as Notifications management list (all rows).
       safeCount("notifications", TOTAL_NOTIFICATIONS_SQL),
@@ -408,11 +419,11 @@ router.get("/stats", async (req, res) => {
          ORDER BY created_at DESC LIMIT 5`,
       ),
       safeQueryAll<{
-        id: number; timestamp: string; username: string | null; event_type: string;
+        id: number; timestamp: string; user_id: number | null; username: string | null; event_type: string;
         event_category: string; description: string; user_role: string | null; result: string;
       }>(
         "recentActivity",
-        `SELECT id, timestamp, username, event_type, event_category,
+        `SELECT id, timestamp, user_id, username, event_type, event_category,
                 description, user_role, result
          FROM activity_logs
          ORDER BY timestamp DESC LIMIT 8`,
@@ -530,6 +541,7 @@ router.get("/stats", async (req, res) => {
       recentActivity: recentActivity.map((a) => ({
         id: a.id,
         timestamp: a.timestamp,
+        userId: a.user_id,
         username: a.username,
         eventType: a.event_type,
         eventCategory: a.event_category,
@@ -542,14 +554,16 @@ router.get("/stats", async (req, res) => {
 
     setAdminStatsCache(body);
     if (!isSuperAdmin(req.user!)) {
+      const saId = await getSuperAdminUserId();
       body.recentActivity = body.recentActivity.filter(
-        (a) => !isVersionBackupActivityEvent(a.eventType),
+        (a) => !isVersionBackupActivityEvent(a.eventType)
+          && (saId == null || a.userId !== saId),
       );
     }
     res.json(body);
   } catch (err) {
     logAdminStatsError(req, err);
-    // Last-resort empty dashboard ù never leave the admin UI on a hard 500 for stats.
+    // Last-resort empty dashboard ? never leave the admin UI on a hard 500 for stats.
     invalidateAdminStatsCache();
     res.status(200).json({
       totalUsers: 0,
@@ -799,7 +813,7 @@ router.patch("/users/:id", async (req, res) => {
       await qRun(`
         INSERT INTO team_members (name, role, department, country, city, status_label, status_color, sort_order, user_id)
         VALUES (?, 'Team Member', ?, ?, ?, 'Active', '#386A20', ?, ?)
-      `, u.username, department, u.country || "Unknown", u.city || "ù", maxOrder + 1, id);
+      `, u.username, department, u.country || "Unknown", u.city || "?", maxOrder + 1, id);
     }
     broadcast("team:updated", {});
   } else if (isTeamMember === false) {
@@ -1450,7 +1464,7 @@ router.post("/applications/:id/approve", async (req, res) => {
   const roleTitle = job?.title || "Team Member";
   const department = job?.department || "General";
   const country = app.country || user.country || "Unknown";
-  const city = app.city || user.city || "ù";
+  const city = app.city || user.city || "?";
   if (!existing) {
     const maxOrder = (await qGet<{ m: number | null }>("SELECT MAX(sort_order) as m FROM team_members"))!.m || 0;
     await qRun(`
@@ -1968,13 +1982,13 @@ router.delete("/game-downloads/:id", async (req, res) => {
 
 // ?? Activity Logs ??????????????????????????????????????????????????????????????
 router.get("/activity-logs/meta", async (req, res) => {
-  // LOWER(...) is portable ù COLLATE NOCASE is SQLite-only and fails on PostgreSQL.
-  const visibilitySql = isSuperAdmin(req.user!) ? "" : ` AND ${HIDE_VERSION_BACKUP_ACTIVITY_SQL}`;
+  // LOWER(...) is portable ? COLLATE NOCASE is SQLite-only and fails on PostgreSQL.
+  const visibility = activityLogVisibilityFor(req.user!);
   const eventTypes = (await qAll<{ v: string }>(`
     SELECT DISTINCT event_type as v FROM activity_logs
-    WHERE event_type IS NOT NULL AND event_type != ''${visibilitySql}
+    WHERE event_type IS NOT NULL AND event_type != ''${visibility.sql}
     ORDER BY LOWER(event_type)
-  `)).map((r) => r.v);
+  `, ...visibility.params)).map((r) => r.v);
   const eventCategories = (await qAll<{ v: string }>(`
     SELECT DISTINCT event_category as v FROM activity_logs
     WHERE event_category IS NOT NULL AND event_category != ''
@@ -1993,8 +2007,10 @@ router.get("/activity-logs", async (req, res) => {
   let sql = "SELECT * FROM activity_logs WHERE 1=1";
   const params: unknown[] = [];
 
-  if (!isSuperAdmin(req.user!)) {
-    sql += ` AND ${HIDE_VERSION_BACKUP_ACTIVITY_SQL}`;
+  const visibility = activityLogVisibilityFor(req.user!);
+  if (visibility.sql) {
+    sql += visibility.sql;
+    params.push(...visibility.params);
   }
 
   const nowMs = Date.now();
@@ -2097,9 +2113,11 @@ router.get("/activity-logs", async (req, res) => {
 });
 
 router.get("/activity-logs/export", async (req, res) => {
-  const visibilitySql = isSuperAdmin(req.user!) ? "" : ` WHERE ${HIDE_VERSION_BACKUP_ACTIVITY_SQL}`;
+  const visibility = activityLogVisibilityFor(req.user!);
+  const whereSql = visibility.sql ? ` WHERE 1=1${visibility.sql}` : "";
   const logs = await qAll<Record<string, unknown>>(
-    `SELECT * FROM activity_logs${visibilitySql} ORDER BY timestamp DESC LIMIT 10000`,
+    `SELECT * FROM activity_logs${whereSql} ORDER BY timestamp DESC LIMIT 10000`,
+    ...visibility.params,
   );
   const header = "id,timestamp,username,user_role,event_type,event_category,description,platform,device_type,country,ip_address,result\n";
   const rows = logs.map(l => [
@@ -2127,10 +2145,11 @@ router.post("/activity-logs/bulk-delete", async (req, res) => {
   }
 
   const placeholders = ids.map(() => "?").join(",");
-  const visibilitySql = isSuperAdmin(req.user!) ? "" : ` AND ${HIDE_VERSION_BACKUP_ACTIVITY_SQL}`;
+  const visibility = activityLogVisibilityFor(req.user!);
   const result = await qRun(
-    `DELETE FROM activity_logs WHERE id IN (${placeholders})${visibilitySql}`,
+    `DELETE FROM activity_logs WHERE id IN (${placeholders})${visibility.sql}`,
     ...ids,
+    ...visibility.params,
   );
   const method = ids.length === 1 ? "single" : "bulk";
   const ts = now();
@@ -2162,8 +2181,12 @@ router.post("/activity-logs/bulk-delete", async (req, res) => {
 router.delete("/activity-logs", async (req, res) => {
   const { before } = req.body;
   if (!before) { res.status(400).json({ error: "before date is required" }); return; }
-  const visibilitySql = isSuperAdmin(req.user!) ? "" : ` AND ${HIDE_VERSION_BACKUP_ACTIVITY_SQL}`;
-  const result = await qRun(`DELETE FROM activity_logs WHERE timestamp < ?${visibilitySql}`, before);
+  const visibility = activityLogVisibilityFor(req.user!);
+  const result = await qRun(
+    `DELETE FROM activity_logs WHERE timestamp < ?${visibility.sql}`,
+    before,
+    ...visibility.params,
+  );
   const ts = now();
   await qRun(`
     INSERT INTO admin_action_audits (timestamp, admin_user_id, admin_username, action, method, item_count, details, created_at)
@@ -2308,7 +2331,7 @@ function detectRestoreFormat(filePath: string): RestoreFormat | null {
       return "portable"; // uncompressed JSON
     } catch { /* fall through */ }
   }
-  // Reject arbitrary SQL dumps ù never pipe untrusted files into psql.
+  // Reject arbitrary SQL dumps ? never pipe untrusted files into psql.
   return null;
 }
 
@@ -2375,7 +2398,7 @@ router.post("/database/restore", requireSuperAdmin, restoreUpload.single("file")
       safetyFile = `pre-restore-${Date.now()}.${ext}`;
       await createNativeBackup(dbAsync, path.join(backupDir, safetyFile));
     } catch {
-      // Native tooling unavailable (e.g. pg_dump missing) ù fall back to a portable safety snapshot.
+      // Native tooling unavailable (e.g. pg_dump missing) ? fall back to a portable safety snapshot.
       safetyFile = `pre-restore-${Date.now()}.json.gz`;
       const buf = await exportPortableBackup(dbAsync);
       fs.writeFileSync(path.join(backupDir, safetyFile), buf);
@@ -2615,7 +2638,7 @@ router.get("/conversations", requireSuperAdmin, async (req, res) => {
   const dateTo = String(req.query.dateTo || "").trim();
   const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 80));
 
-  // DMs only ù exclude conversations the viewing administrator participates in.
+  // DMs only ? exclude conversations the viewing administrator participates in.
   let sql = `
     SELECT c.id, c.type, c.name, c.bio, c.last_message_at, c.last_message_preview, c.visibility, c.created_at,
       (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) as message_count
@@ -2678,7 +2701,7 @@ router.get("/conversations", requireSuperAdmin, async (req, res) => {
       otherUserId: displayParts[0]?.id ?? null,
       participants: displayParts,
       preview: c.last_message_preview || "No messages yet",
-      time: c.last_message_at ? timeAgo(c.last_message_at) : "ù",
+      time: c.last_message_at ? timeAgo(c.last_message_at) : "?",
       lastMessageAt: c.last_message_at,
       messageCount: c.message_count,
       visibility: c.visibility,

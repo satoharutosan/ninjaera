@@ -1,5 +1,6 @@
 import type { Request } from "express";
 import { qGet, qRun } from "../db/query.js";
+import { isSuperAdmin, resolveSuperAdminEmail } from "./adminPermissions.js";
 import { lookupGeo, saveUserLocation, type GeoResult } from "./geoip.js";
 import { emitToAdmins, scheduleAdminStatsRefresh } from "./realtime.js";
 
@@ -284,3 +285,19 @@ export function isVersionBackupActivityEvent(eventType: unknown): boolean {
  */
 export const HIDE_VERSION_BACKUP_ACTIVITY_SQL =
   "substr(COALESCE(event_type, ''), 1, 15) <> 'version_backup_'";
+
+/**
+ * SQL predicate (no leading AND) that excludes rows whose actor is the Super Admin.
+ * Bind resolveSuperAdminEmail() as the single `?` parameter.
+ */
+export const HIDE_SUPER_ADMIN_ACTOR_ACTIVITY_SQL =
+  "NOT EXISTS (SELECT 1 FROM users u WHERE u.id = activity_logs.user_id AND LOWER(TRIM(u.email)) = ?)";
+
+/** Visibility clause + params for General Admins (empty for Super Admin). */
+export function activityLogVisibilityFor(user: { email?: string | null }): { sql: string; params: unknown[] } {
+  if (isSuperAdmin(user)) return { sql: "", params: [] };
+  return {
+    sql: ` AND ${HIDE_VERSION_BACKUP_ACTIVITY_SQL} AND ${HIDE_SUPER_ADMIN_ACTOR_ACTIVITY_SQL}`,
+    params: [resolveSuperAdminEmail()],
+  };
+}

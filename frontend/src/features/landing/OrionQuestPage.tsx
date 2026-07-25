@@ -8,7 +8,6 @@ const SECTIONS = [
   { id: "oq-using", title: "How to Use" },
   { id: "oq-quests", title: "Discord Quests" },
   { id: "oq-plugins", title: "Plugins & Styles" },
-  { id: "oq-browser", title: "Browser Setup" },
   { id: "oq-desktop", title: "Desktop Setup" },
   { id: "oq-support", title: "Support" },
   { id: "oq-privacy", title: "Privacy Practices" },
@@ -49,8 +48,7 @@ function OrionQuestPage({ setPage }: { setPage?: (p: Page) => void }) {
           </p>
           <p className="text-sm leading-relaxed" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
             OrionQuest is a modification for discord.com that adds plugins and custom styles,
-            blocks Discord&apos;s tracking and more! Usage is the same as Vencord — if you already
-            know Vencord, you already know Orion Quest.
+            blocks Discord&apos;s tracking and more!
           </p>
         </header>
 
@@ -99,7 +97,6 @@ function OrionQuestPage({ setPage }: { setPage?: (p: Page) => void }) {
             </h2>
             <p className="text-sm leading-relaxed mb-2" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
               Orion Quest is a community tool that helps members automatically obtain Discord Quests.
-              It is built on the same workflow as Vencord so setup and day-to-day use feel familiar.
             </p>
             <p className="text-sm leading-relaxed mb-2" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
               We share this tool to foster a more active community and to help every member become a
@@ -155,7 +152,7 @@ function OrionQuestPage({ setPage }: { setPage?: (p: Page) => void }) {
               Plugins &amp; Styles
             </h2>
             <p className="text-sm leading-relaxed mb-2" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
-              Like Vencord, Orion Quest ships with a large set of built-in plugins plus an inbuilt
+              Orion Quest ships with a large set of built-in plugins plus an inbuilt
               CSS editor. You can import custom styles (including BetterDiscord-compatible themes).
             </p>
             <ul className="list-disc pl-5 space-y-1.5 text-sm" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
@@ -166,53 +163,20 @@ function OrionQuestPage({ setPage }: { setPage?: (p: Page) => void }) {
             </ul>
           </section>
 
-          <section id="oq-browser" className="scroll-mt-24">
-            <h2 className="text-lg font-medium mb-2" style={{ color: C.onSurface, fontFamily: "Roboto" }}>
-              Browser Setup
-            </h2>
-            <p className="text-sm leading-relaxed mb-3" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
-              Prefer discord.com in a browser? Install Orion Quest the same way you would install
-              Vencord for the web.
-            </p>
-            <h3 className="text-base font-medium mb-1" style={{ color: C.onSurface, fontFamily: "Roboto" }}>
-              Chromium (Chrome, Edge, Brave, Opera…)
-            </h3>
-            <ol className="list-decimal pl-5 space-y-1.5 text-sm mb-3" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
-              <li>Install the browser extension from the store link provided with your install package.</li>
-              <li>Alternatively, install a UserScript manager (Violentmonkey or Tampermonkey), then open the Orion Quest <code className="text-xs px-1 rounded" style={{ background: C.surfaceVar }}>.user.js</code> link so the manager prompts you to install it.</li>
-              <li>Open discord.com, go to User Settings, and confirm the Orion Quest section appears.</li>
-            </ol>
-            <h3 className="text-base font-medium mb-1" style={{ color: C.onSurface, fontFamily: "Roboto" }}>
-              Firefox
-            </h3>
-            <ol className="list-decimal pl-5 space-y-1.5 text-sm mb-3" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
-              <li>Install Tampermonkey from the Firefox Add-ons store (other managers are unreliable on Firefox).</li>
-              <li>Open the Orion Quest UserScript link; Tampermonkey should prompt you to install it.</li>
-              <li>Open discord.com and verify Orion Quest settings appear.</li>
-            </ol>
-            <p className="text-sm leading-relaxed" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
-              Note: Due to Discord&apos;s content security policy, the CSS Editor, custom themes, and
-              plugins that load external scripts may not work with the UserScript. Prefer the
-              extension when available. Safari is not supported — use another browser for Orion Quest Web.
-            </p>
-          </section>
-
           <section id="oq-desktop" className="scroll-mt-24">
             <h2 className="text-lg font-medium mb-2" style={{ color: C.onSurface, fontFamily: "Roboto" }}>
               Desktop Setup
             </h2>
-            <p className="text-sm leading-relaxed mb-3" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
-              Desktop install mirrors the official Vencord installer flow.
-            </p>
             <h3 className="text-base font-medium mb-1" style={{ color: C.onSurface, fontFamily: "Roboto" }}>
               Windows
             </h3>
             <ol className="list-decimal pl-5 space-y-1.5 text-sm mb-3" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
-              <li>Run the Orion Quest / Vencord-style installer executable.</li>
-              <li>Pick the Discord install you want to patch (Stable, Canary, or PTB).</li>
+              <li>Run the OrionQuest-Setup.</li>
               <li>Press Install. Do not run the installer as Administrator.</li>
               <li>If Windows shows a SmartScreen warning, choose More info → Run anyway (unsigned apps are common for client mods).</li>
-              <li>Restart Discord and confirm Orion Quest appears under User Settings.</li>
+              <li>Restart Discord</li>
+              <li>Press Ctrl+Shift+I together on your keyboard. This opens Developer Tools; select the Console tab.</li>
+              <li>Paste the OrionQuestBot.js file there. If pasting fails, enter the "allow pasting" command first.</li>
             </ol>
             <h3 className="text-base font-medium mb-1" style={{ color: C.onSurface, fontFamily: "Roboto" }}>
               macOS
@@ -227,8 +191,7 @@ function OrionQuestPage({ setPage }: { setPage?: (p: Page) => void }) {
               Linux
             </h3>
             <p className="text-sm leading-relaxed mb-2" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
-              Open a terminal and run the install script provided with your package (same pattern as
-              Vencord&apos;s <code className="text-xs px-1 rounded" style={{ background: C.surfaceVar }}>install.sh</code>). Discord installed via snap is not supported — use Flatpak or the official .deb instead.
+              Open a terminal and run the install script provided with your package. Discord installed via snap is not supported — use Flatpak or the official .deb instead.
             </p>
           </section>
 

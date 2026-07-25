@@ -293,7 +293,7 @@ router.get("/stats", async (req, res) => {
     if (cached) {
       // Always recompute unique online users ? presence changes faster than the general stats cache.
       const onlineUsers = asInt(countOnlineUsers(), 0);
-      const body = { ...cached.body, onlineUsers };
+      const body: Record<string, unknown> = { ...cached.body, onlineUsers };
       if (!isSuperAdmin(req.user!) && Array.isArray(body.recentActivity)) {
         const saId = await getSuperAdminUserId();
         body.recentActivity = (body.recentActivity as { eventType?: string; userId?: number | null }[]).filter(

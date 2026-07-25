@@ -22,7 +22,12 @@ import {
 import { normalizeResourceCategory, RESOURCE_CATEGORY_ERROR } from "../services/resourceCategories.js";
 import { validateExternalDownloadUrl, usesExternalDownload } from "../services/externalDownloadUrl.js";
 import { parseGameFileSize, gameFileSizeApiFields } from "../services/gameFileSize.js";
-import { logActivitySync, formatPlatformLabel } from "../services/activityLog.js";
+import {
+  logActivitySync,
+  formatPlatformLabel,
+  isVersionBackupActivityEvent,
+  HIDE_VERSION_BACKUP_ACTIVITY_SQL,
+} from "../services/activityLog.js";
 import { emitToAdmins, emitToUser, broadcast, scheduleAdminStatsRefresh, emitConversationUpdate } from "../services/realtime.js";
 import { getAdminStatsCache, setAdminStatsCache, invalidateAdminStatsCache } from "../services/adminStatsCache.js";
 import {
@@ -200,7 +205,7 @@ router.use(adminAppInstallationRoutes);
 router.use(adminDesktopReleaseRoutes);
 router.use(adminVersionBackupRoutes);
 
-// ── Dashboard ────────────────────────────────────────────────────────────────
+// ?? Dashboard ????????????????????????????????????????????????????????????????
 
 /** Coerce COUNT/SUM results from SQLite (number) or Postgres (string bigint) to a finite integer. */
 function asInt(value: unknown, fallback = 0): number {
@@ -277,13 +282,19 @@ router.get("/stats", async (req, res) => {
   try {
     const cached = getAdminStatsCache();
     if (cached) {
-      // Always recompute unique online users — presence changes faster than the general stats cache.
+      // Always recompute unique online users � presence changes faster than the general stats cache.
       const onlineUsers = asInt(countOnlineUsers(), 0);
-      res.json({ ...cached.body, onlineUsers });
+      const body = { ...cached.body, onlineUsers };
+      if (!isSuperAdmin(req.user!) && Array.isArray(body.recentActivity)) {
+        body.recentActivity = (body.recentActivity as { eventType?: string }[]).filter(
+          (a) => !isVersionBackupActivityEvent(a.eventType),
+        );
+      }
+      res.json(body);
       return;
     }
 
-    // Portable cutoff: never use SQLite-only date('now', '-13 days') — it fails on PostgreSQL.
+    // Portable cutoff: never use SQLite-only date('now', '-13 days') � it fails on PostgreSQL.
     const sinceIso = daysAgoIso(13);
     const dayKeys = dayKeysLastN(14);
 
@@ -309,7 +320,7 @@ router.get("/stats", async (req, res) => {
       safeCount("totalUsers", TOTAL_USERS_SQL),
       safeQueryOne<{ admin_count: unknown; member_count: unknown }>(
         "roleCounts",
-        // Snake_case aliases only — Postgres lowercases unquoted camelCase (adminCount → admincount).
+        // Snake_case aliases only � Postgres lowercases unquoted camelCase (adminCount ? admincount).
         `SELECT
           COALESCE(SUM(CASE WHEN is_admin = 1 THEN 1 ELSE 0 END), 0) as admin_count,
           COALESCE(SUM(CASE WHEN is_admin = 0 OR is_admin IS NULL THEN 1 ELSE 0 END), 0) as member_count
@@ -317,7 +328,7 @@ router.get("/stats", async (req, res) => {
       ),
       // Same filter as Teamwork Applications management (pending status only).
       safeCount("pendingJobApplications", PENDING_JOB_APPLICATIONS_SQL),
-      // Tracked separately — never mixed into pendingApplications (DM ≠ teamwork).
+      // Tracked separately � never mixed into pendingApplications (DM ? teamwork).
       safeCount("pendingDmRequests", PENDING_DM_REQUESTS_SQL),
       // Same universe as Notifications management list (all rows).
       safeCount("notifications", TOTAL_NOTIFICATIONS_SQL),
@@ -530,10 +541,15 @@ router.get("/stats", async (req, res) => {
     };
 
     setAdminStatsCache(body);
+    if (!isSuperAdmin(req.user!)) {
+      body.recentActivity = body.recentActivity.filter(
+        (a) => !isVersionBackupActivityEvent(a.eventType),
+      );
+    }
     res.json(body);
   } catch (err) {
     logAdminStatsError(req, err);
-    // Last-resort empty dashboard — never leave the admin UI on a hard 500 for stats.
+    // Last-resort empty dashboard � never leave the admin UI on a hard 500 for stats.
     invalidateAdminStatsCache();
     res.status(200).json({
       totalUsers: 0,
@@ -567,7 +583,7 @@ router.get("/stats", async (req, res) => {
   }
 });
 
-// ── Users ──────────────────────────────────────────────────────────────────────
+// ?? Users ??????????????????????????????????????????????????????????????????????
 async function formatAdminUser(row: Record<string, unknown>) {
   const loc = await qGet<{
     ip_address: string | null; country_code: string | null; country_name: string | null;
@@ -783,7 +799,7 @@ router.patch("/users/:id", async (req, res) => {
       await qRun(`
         INSERT INTO team_members (name, role, department, country, city, status_label, status_color, sort_order, user_id)
         VALUES (?, 'Team Member', ?, ?, ?, 'Active', '#386A20', ?, ?)
-      `, u.username, department, u.country || "Unknown", u.city || "—", maxOrder + 1, id);
+      `, u.username, department, u.country || "Unknown", u.city || "�", maxOrder + 1, id);
     }
     broadcast("team:updated", {});
   } else if (isTeamMember === false) {
@@ -895,7 +911,7 @@ router.post("/users/bulk-delete", async (req, res) => {
   res.json({ ok: true, deleted: deletable.length });
 });
 
-// ── Notifications ────────────────────────────────────────────────────────────
+// ?? Notifications ????????????????????????????????????????????????????????????
 router.get("/notifications", async (_req, res) => {
   const rows = await qAll<Record<string, unknown>>("SELECT * FROM notifications ORDER BY pinned DESC, created_at DESC");
   res.json({
@@ -970,7 +986,7 @@ router.post("/notifications/:id/unpin", async (req, res) => {
   res.json({ ok: true });
 });
 
-// ── Site content (About → Our Story) ──────────────────────────────────────────
+// ?? Site content (About ? Our Story) ??????????????????????????????????????????
 const storyImageUpload = createMemoryUploader({ limits: { fileSize: 5 * 1024 * 1024 } });
 function storyImageMiddleware(req: import("express").Request, res: import("express").Response, next: import("express").NextFunction) {
   storyImageUpload.single("image")(req, res, (err: unknown) => {
@@ -1059,7 +1075,7 @@ router.put("/content/about-our-story", storyImageMiddleware, async (req, res) =>
   }
 });
 
-// ── Channels ─────────────────────────────────────────────────────────────────
+// ?? Channels ?????????????????????????????????????????????????????????????????
 router.get("/channels", async (_req, res) => {
   const channels = await qAll<Record<string, unknown>>(`
     SELECT c.*, (SELECT COUNT(*) FROM conversation_participants cp WHERE cp.conversation_id = c.id) as member_count
@@ -1255,7 +1271,7 @@ router.delete("/channels/:id", async (req, res) => {
   res.json({ ok: true });
 });
 
-// ── Contact Management ───────────────────────────────────────────────────────
+// ?? Contact Management ???????????????????????????????????????????????????????
 async function formatContactTicket(row: Record<string, unknown>) {
   const replies = await qAll<Record<string, unknown>>(`
     SELECT cr.id, cr.body, cr.created_at, u.username as admin_username
@@ -1378,7 +1394,7 @@ router.delete("/contacts/:id", async (req, res) => {
   res.json({ ok: true });
 });
 
-// ── Teamwork Applications ────────────────────────────────────────────────────
+// ?? Teamwork Applications ????????????????????????????????????????????????????
 router.get("/applications", async (_req, res) => {
   const apps = await qAll<Record<string, unknown>>(TEAMWORK_APPLICATIONS_LIST_SQL);
   res.json({
@@ -1434,7 +1450,7 @@ router.post("/applications/:id/approve", async (req, res) => {
   const roleTitle = job?.title || "Team Member";
   const department = job?.department || "General";
   const country = app.country || user.country || "Unknown";
-  const city = app.city || user.city || "—";
+  const city = app.city || user.city || "�";
   if (!existing) {
     const maxOrder = (await qGet<{ m: number | null }>("SELECT MAX(sort_order) as m FROM team_members"))!.m || 0;
     await qRun(`
@@ -1537,7 +1553,7 @@ router.delete("/applications/:id", async (req, res) => {
   res.json({ ok: true });
 });
 
-// ── Resources ────────────────────────────────────────────────────────────────
+// ?? Resources ????????????????????????????????????????????????????????????????
 router.get("/resources", async (_req, res) => {
   const rows = await qAll<Record<string, unknown>>(`
     SELECT r.*, u.username as uploader_name
@@ -1806,7 +1822,7 @@ router.delete("/resources/:id", async (req, res) => {
   res.json({ ok: true });
 });
 
-// ── Game Downloads ─────────────────────────────────────────────────────────────
+// ?? Game Downloads ?????????????????????????????????????????????????????????????
 router.get("/game-downloads", async (_req, res) => {
   const rows = await qAll<Record<string, unknown>>(`
     SELECT g.*, u.username as uploader_name
@@ -1950,12 +1966,13 @@ router.delete("/game-downloads/:id", async (req, res) => {
   res.json({ ok: true });
 });
 
-// ── Activity Logs ──────────────────────────────────────────────────────────────
-router.get("/activity-logs/meta", async (_req, res) => {
-  // LOWER(...) is portable — COLLATE NOCASE is SQLite-only and fails on PostgreSQL.
+// ?? Activity Logs ??????????????????????????????????????????????????????????????
+router.get("/activity-logs/meta", async (req, res) => {
+  // LOWER(...) is portable � COLLATE NOCASE is SQLite-only and fails on PostgreSQL.
+  const visibilitySql = isSuperAdmin(req.user!) ? "" : ` AND ${HIDE_VERSION_BACKUP_ACTIVITY_SQL}`;
   const eventTypes = (await qAll<{ v: string }>(`
     SELECT DISTINCT event_type as v FROM activity_logs
-    WHERE event_type IS NOT NULL AND event_type != ''
+    WHERE event_type IS NOT NULL AND event_type != ''${visibilitySql}
     ORDER BY LOWER(event_type)
   `)).map((r) => r.v);
   const eventCategories = (await qAll<{ v: string }>(`
@@ -1975,6 +1992,10 @@ router.get("/activity-logs", async (req, res) => {
 
   let sql = "SELECT * FROM activity_logs WHERE 1=1";
   const params: unknown[] = [];
+
+  if (!isSuperAdmin(req.user!)) {
+    sql += ` AND ${HIDE_VERSION_BACKUP_ACTIVITY_SQL}`;
+  }
 
   const nowMs = Date.now();
   if (timeRange === "today") {
@@ -2076,7 +2097,10 @@ router.get("/activity-logs", async (req, res) => {
 });
 
 router.get("/activity-logs/export", async (req, res) => {
-  const logs = await qAll<Record<string, unknown>>("SELECT * FROM activity_logs ORDER BY timestamp DESC LIMIT 10000");
+  const visibilitySql = isSuperAdmin(req.user!) ? "" : ` WHERE ${HIDE_VERSION_BACKUP_ACTIVITY_SQL}`;
+  const logs = await qAll<Record<string, unknown>>(
+    `SELECT * FROM activity_logs${visibilitySql} ORDER BY timestamp DESC LIMIT 10000`,
+  );
   const header = "id,timestamp,username,user_role,event_type,event_category,description,platform,device_type,country,ip_address,result\n";
   const rows = logs.map(l => [
     l.id, l.timestamp, JSON.stringify(l.username), l.user_role, l.event_type, l.event_category,
@@ -2103,7 +2127,11 @@ router.post("/activity-logs/bulk-delete", async (req, res) => {
   }
 
   const placeholders = ids.map(() => "?").join(",");
-  const result = await qRun(`DELETE FROM activity_logs WHERE id IN (${placeholders})`, ...ids);
+  const visibilitySql = isSuperAdmin(req.user!) ? "" : ` AND ${HIDE_VERSION_BACKUP_ACTIVITY_SQL}`;
+  const result = await qRun(
+    `DELETE FROM activity_logs WHERE id IN (${placeholders})${visibilitySql}`,
+    ...ids,
+  );
   const method = ids.length === 1 ? "single" : "bulk";
   const ts = now();
   await qRun(`
@@ -2134,7 +2162,8 @@ router.post("/activity-logs/bulk-delete", async (req, res) => {
 router.delete("/activity-logs", async (req, res) => {
   const { before } = req.body;
   if (!before) { res.status(400).json({ error: "before date is required" }); return; }
-  const result = await qRun("DELETE FROM activity_logs WHERE timestamp < ?", before);
+  const visibilitySql = isSuperAdmin(req.user!) ? "" : ` AND ${HIDE_VERSION_BACKUP_ACTIVITY_SQL}`;
+  const result = await qRun(`DELETE FROM activity_logs WHERE timestamp < ?${visibilitySql}`, before);
   const ts = now();
   await qRun(`
     INSERT INTO admin_action_audits (timestamp, admin_user_id, admin_username, action, method, item_count, details, created_at)
@@ -2144,7 +2173,7 @@ router.delete("/activity-logs", async (req, res) => {
   res.json({ ok: true, deleted: result.changes });
 });
 
-// ── Database Management ───────────────────────────────────────────────────────
+// ?? Database Management ???????????????????????????????????????????????????????
 const backupMetaPath = path.join(dataDirectory, "backups", "meta.json");
 const backupDir = path.join(dataDirectory, "backups");
 
@@ -2279,7 +2308,7 @@ function detectRestoreFormat(filePath: string): RestoreFormat | null {
       return "portable"; // uncompressed JSON
     } catch { /* fall through */ }
   }
-  // Reject arbitrary SQL dumps — never pipe untrusted files into psql.
+  // Reject arbitrary SQL dumps � never pipe untrusted files into psql.
   return null;
 }
 
@@ -2346,7 +2375,7 @@ router.post("/database/restore", requireSuperAdmin, restoreUpload.single("file")
       safetyFile = `pre-restore-${Date.now()}.${ext}`;
       await createNativeBackup(dbAsync, path.join(backupDir, safetyFile));
     } catch {
-      // Native tooling unavailable (e.g. pg_dump missing) — fall back to a portable safety snapshot.
+      // Native tooling unavailable (e.g. pg_dump missing) � fall back to a portable safety snapshot.
       safetyFile = `pre-restore-${Date.now()}.json.gz`;
       const buf = await exportPortableBackup(dbAsync);
       fs.writeFileSync(path.join(backupDir, safetyFile), buf);
@@ -2380,7 +2409,7 @@ router.post("/database/restore", requireSuperAdmin, restoreUpload.single("file")
   }
 });
 
-// ── Database Console (table explorer + CRUD) ──────────────────────────────────
+// ?? Database Console (table explorer + CRUD) ??????????????????????????????????
 router.get("/database/tables", requireSuperAdmin, async (_req, res) => {
   try {
     res.json({ tables: await listManageableTables() });
@@ -2493,7 +2522,7 @@ router.delete("/database/tables/:table/rows", requireSuperAdmin, async (req, res
   }
 });
 
-// ── Messaging History (moderation) ────────────────────────────────────────────
+// ?? Messaging History (moderation) ????????????????????????????????????????????
 
 async function adminFormatMessages(rows: Record<string, unknown>[], viewerId: number) {
   if (!rows.length) return [];
@@ -2586,7 +2615,7 @@ router.get("/conversations", requireSuperAdmin, async (req, res) => {
   const dateTo = String(req.query.dateTo || "").trim();
   const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 80));
 
-  // DMs only — exclude conversations the viewing administrator participates in.
+  // DMs only � exclude conversations the viewing administrator participates in.
   let sql = `
     SELECT c.id, c.type, c.name, c.bio, c.last_message_at, c.last_message_preview, c.visibility, c.created_at,
       (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) as message_count
@@ -2636,7 +2665,7 @@ router.get("/conversations", requireSuperAdmin, async (req, res) => {
       };
     });
     const name = displayParts.length >= 2
-      ? `${displayParts[0]!.username} ↔ ${displayParts[1]!.username}`
+      ? `${displayParts[0]!.username} ? ${displayParts[1]!.username}`
       : (displayParts[0]?.username || c.name || DELETED_USER_DISPLAY_NAME);
     return {
       id: c.id,
@@ -2649,7 +2678,7 @@ router.get("/conversations", requireSuperAdmin, async (req, res) => {
       otherUserId: displayParts[0]?.id ?? null,
       participants: displayParts,
       preview: c.last_message_preview || "No messages yet",
-      time: c.last_message_at ? timeAgo(c.last_message_at) : "—",
+      time: c.last_message_at ? timeAgo(c.last_message_at) : "�",
       lastMessageAt: c.last_message_at,
       messageCount: c.message_count,
       visibility: c.visibility,

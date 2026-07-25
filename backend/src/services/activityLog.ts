@@ -270,3 +270,17 @@ export async function logActivity(input: ActivityInput) {
 export function logActivitySync(input: ActivityInput) {
   void logActivity(input);
 }
+
+/** Prefix for version-backup audit events — Super Admin only in activity history. */
+export const VERSION_BACKUP_EVENT_TYPE_PREFIX = "version_backup_";
+
+export function isVersionBackupActivityEvent(eventType: unknown): boolean {
+  return typeof eventType === "string" && eventType.startsWith(VERSION_BACKUP_EVENT_TYPE_PREFIX);
+}
+
+/**
+ * SQL predicate (no leading AND) that excludes version_backup_* rows.
+ * Uses substr (not LIKE) so the underscore is literal on both SQLite and PostgreSQL.
+ */
+export const HIDE_VERSION_BACKUP_ACTIVITY_SQL =
+  "substr(COALESCE(event_type, ''), 1, 15) <> 'version_backup_'";

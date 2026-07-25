@@ -95,3 +95,4 @@ No schema redesign is required for new applications.
 - `backend/src/routes/adminDesktopReleases.ts` — Super Admin CRUD
 - `frontend/src/features/admin/AdminDesktopUpdates.tsx` — Admin UI
 - `docs/desktop-auto-updates.md` — this document
+

@@ -69,6 +69,7 @@ export default defineConfig({
       '/api': { target: devProxyTarget(), changeOrigin: true },
       '/uploads': { target: devProxyTarget(), changeOrigin: true },
       '/externals': { target: devProxyTarget(), changeOrigin: true },
+      '/resources/public': { target: devProxyTarget(), changeOrigin: true },
       '/socket.io': { target: devProxyTarget(), ws: true, changeOrigin: true },
     },
   },

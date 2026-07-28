@@ -29,6 +29,7 @@ import dmRoutes from "./routes/dm.js";
 import gameDownloadRoutes from "./routes/gameDownloads.js";
 import contentRoutes from "./routes/content.js";
 import externalsRoutes from "./routes/externals.js";
+import publicResourceRoutes from "./routes/publicResources.js";
 import webrtcRoutes from "./routes/webrtc.js";
 import appInstallationRoutes from "./routes/appInstallations.js";
 import desktopUpdateRoutes from "./routes/desktopUpdates.js";
@@ -233,6 +234,7 @@ async function main() {
   app.use("/api", contentRoutes);
   app.use("/api/webrtc", webrtcRoutes);
   app.use("/externals", externalsRoutes);
+  app.use("/resources/public", publicResourceRoutes);
 
   app.get("/api/health", async (_req, res) => {
     const mail = mailStatus();
@@ -269,6 +271,7 @@ async function main() {
         req.path.startsWith("/api")
         || req.path.startsWith("/uploads")
         || req.path.startsWith("/externals")
+        || req.path.startsWith("/resources/public")
         || req.path.startsWith("/socket.io")
       ) {
         next();

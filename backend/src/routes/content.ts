@@ -91,30 +91,37 @@ router.get("/resources", optionalAuth, async (req, res) => {
   if (category) {
     rows = await qAll(`
       SELECT id, title, category, description, published_at,
-             file_size, version, enabled, visibility
+             file_size, version, enabled, visibility, public_slug, public_slug_display
       FROM resources WHERE category = ? AND enabled = 1 ORDER BY sort_order, published_at DESC
     `, category);
   } else {
     rows = await qAll(`
       SELECT id, title, category, description, published_at,
-             file_size, version, enabled, visibility
+             file_size, version, enabled, visibility, public_slug, public_slug_display
       FROM resources WHERE enabled = 1 ORDER BY sort_order, published_at DESC
     `);
   }
   // Never expose contentUrl on the public list — downloads must go through the gated endpoint.
+  // publicSlug is only returned for PUBLIC resources (direct link feature).
   res.json({
-    resources: (rows as Record<string, unknown>[]).map((r) => ({
-      id: r.id,
-      title: r.title,
-      category: r.category,
-      description: r.description,
-      publishedAt: r.published_at,
-      fileSize: r.file_size,
-      version: r.version,
-      enabled: r.enabled,
-      visibility: normalizeResourceVisibility(r.visibility),
-      contentUrl: null,
-    })),
+    resources: (rows as Record<string, unknown>[]).map((r) => {
+      const visibility = normalizeResourceVisibility(r.visibility);
+      const slugDisplay = String(r.public_slug_display || r.public_slug || "").trim();
+      return {
+        id: r.id,
+        title: r.title,
+        category: r.category,
+        description: r.description,
+        publishedAt: r.published_at,
+        fileSize: r.file_size,
+        version: r.version,
+        enabled: r.enabled,
+        visibility,
+        contentUrl: null,
+        publicSlug: visibility === "PUBLIC" && slugDisplay ? slugDisplay : null,
+        publicPath: visibility === "PUBLIC" && slugDisplay ? `/resources/public/${encodeURIComponent(slugDisplay)}` : null,
+      };
+    }),
   });
 });
 

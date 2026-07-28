@@ -32,6 +32,8 @@ import { toast } from "sonner";
 import ForumIcon from "@mui/icons-material/Forum";
 import PublicIcon from "@mui/icons-material/Public";
 import LockIcon from "@mui/icons-material/Lock";
+import ContentCopyIcon from "@mui/icons-material/ContentCopy";
+import LinkIcon from "@mui/icons-material/Link";
 import {
   Page, useC, SH1, SH2, FilledBtn, OutlinedBtn, TonalBtn, Field, Chip, FlagImg,
   BADGE_BG, ChatAvatar,
@@ -570,6 +572,11 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
       }
       form.append("enabled", String(editResource.enabled !== false));
       form.append("visibility", editResource.visibility === "PRIVATE" ? "PRIVATE" : "PUBLIC");
+      if (editResource.id) {
+        form.append("publicSlug", String(editResource.publicSlug || "").trim());
+      } else if (editResource.publicSlug != null && String(editResource.publicSlug).trim() !== "") {
+        form.append("publicSlug", String(editResource.publicSlug).trim());
+      }
       if (useExternal) {
         form.append("externalUrl", (editResource.externalUrl || "").trim());
       } else if (resourceFile) {
@@ -1435,7 +1442,7 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                 <div className="flex items-center justify-between mb-6">
                   <h1 className="text-2xl font-medium" style={{ color: C.onSurface, fontFamily: "Roboto" }}>Resources</h1>
                   <FilledBtn onClick={() => {
-                    setEditResource({ title: "", category: "App", description: "", enabled: true, visibility: "PUBLIC", externalUrl: "" });
+                    setEditResource({ title: "", category: "App", description: "", enabled: true, visibility: "PUBLIC", externalUrl: "", publicSlug: "" });
                     setResourceFile(null);
                     setResourceSourceMode("file");
                     setResourceUploadProgress(null);
@@ -1511,9 +1518,27 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                           {r.category === "App" && r.externalUrl ? " · External URL" : r.fileSize ? ` · ${(r.fileSize / 1048576).toFixed(1)} MB` : ""}
                           {r.originalFilename ? ` · ${r.originalFilename}` : ""}
                           {r.sortOrder != null ? ` · Order ${r.sortOrder}` : ""}
+                          {r.visibility !== "PRIVATE" && r.publicPath ? ` · ${r.publicPath}` : ""}
                         </p>
                       </div>
                       <div className="flex gap-1">
+                        {r.visibility !== "PRIVATE" && r.publicPath && (
+                          <button
+                            type="button"
+                            title="Copy public download link"
+                            onClick={() => {
+                              const url = `${window.location.origin}${r.publicPath}`;
+                              void navigator.clipboard.writeText(url).then(
+                                () => toast.success("Public download link copied"),
+                                () => toast.error("Could not copy link"),
+                              );
+                            }}
+                            className="p-1.5 rounded-full hover:bg-black/5"
+                            style={{ color: C.primary }}
+                          >
+                            <LinkIcon style={{ fontSize: 16 }} />
+                          </button>
+                        )}
                         <button onClick={() => {
                           setEditResource(r);
                           setResourceFile(null);
@@ -1877,6 +1902,40 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                   <option value="PRIVATE">Private — team members &amp; admins only</option>
                 </select>
                 <span className="absolute left-3 -top-2 px-1 text-xs" style={{ color: C.primary, background: C.surface }}>Visibility</span>
+              </div>
+              <div>
+                <Field
+                  label="Public download ID"
+                  value={editResource.publicSlug ?? ""}
+                  onChange={v => setEditResource({ ...editResource, publicSlug: v.replace(/\s+/g, "") })}
+                  placeholder={editResource.id ? String(editResource.id) : "Auto (resource id)"}
+                />
+                <p className="text-[11px] mt-1" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
+                  Direct link: /resources/public/{(editResource.publicSlug || (editResource.id != null ? String(editResource.id) : "…")).trim() || "…"}
+                  {editResource.visibility === "PRIVATE" ? " (works only while Public)" : ""}
+                </p>
+                {(editResource.publicPath || editResource.publicSlug || editResource.id != null) && editResource.visibility !== "PRIVATE" && (
+                  <button
+                    type="button"
+                    disabled={resourceUploading}
+                    onClick={() => {
+                      const slug = (editResource.publicSlug || (editResource.id != null ? String(editResource.id) : "")).trim();
+                      if (!slug) {
+                        toast.error("Save the resource first to get a public ID");
+                        return;
+                      }
+                      const url = `${window.location.origin}/resources/public/${encodeURIComponent(slug)}`;
+                      void navigator.clipboard.writeText(url).then(
+                        () => toast.success("Public download link copied"),
+                        () => toast.error("Could not copy link"),
+                      );
+                    }}
+                    className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium hover:opacity-80"
+                    style={{ color: C.primary, fontFamily: "Roboto" }}
+                  >
+                    <ContentCopyIcon style={{ fontSize: 14 }} /> Copy public download link
+                  </button>
+                )}
               </div>
               {(editResource.category || "App") === "App" && (
                 <div className="flex gap-2" role="group" aria-label="App resource source">

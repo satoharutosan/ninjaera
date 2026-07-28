@@ -20,7 +20,8 @@ import { migration019 } from "./019_resource_original_filename.js";
 import { migration020 } from "./020_app_installations_unique_installation_id.js";
 import { migration021 } from "./021_version_backups.js";
 import { migration022 } from "./022_version_backups_country.js";
+import { migration023 } from "./023_resource_public_slug.js";
 
-export const allMigrations = [migration001, migration002, migration003, migration004, migration005, migration006, migration007, migration008, migration009, migration010, migration011, migration012, migration013, migration014, migration015, migration016, migration017, migration018, migration019, migration020, migration021, migration022];
+export const allMigrations = [migration001, migration002, migration003, migration004, migration005, migration006, migration007, migration008, migration009, migration010, migration011, migration012, migration013, migration014, migration015, migration016, migration017, migration018, migration019, migration020, migration021, migration022, migration023];
 
 export { runVersionedMigrations } from "./runner.js";

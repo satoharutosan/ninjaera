@@ -8,6 +8,8 @@ import CollectionsIcon from "@mui/icons-material/Collections";
 import CodeIcon from "@mui/icons-material/Code";
 import PublicIcon from "@mui/icons-material/Public";
 import LockIcon from "@mui/icons-material/Lock";
+import ContentCopyIcon from "@mui/icons-material/ContentCopy";
+import LinkIcon from "@mui/icons-material/Link";
 import imgGarden from "@/imports/262b44b3-ebff-4dc2-a225-62e4b0d5eb8c.webp";
 import { useC, SH1 } from "@/app/shared";
 import { api, ApiError } from "@/app/api";
@@ -33,6 +35,8 @@ type ResourceCard = {
   version?: string;
   publishedAt?: string;
   visibility?: ResourceVisibility;
+  publicSlug?: string | null;
+  publicPath?: string | null;
 };
 
 function formatSize(bytes?: number) {
@@ -89,6 +93,22 @@ function ResourcesPage({
     }
   };
 
+  const copyPublicLink = async (resource: ResourceCard) => {
+    const path = resource.publicPath
+      || (resource.publicSlug ? `/resources/public/${encodeURIComponent(resource.publicSlug)}` : "");
+    if (!path) {
+      toast.error("No public download link for this resource");
+      return;
+    }
+    const url = `${window.location.origin}${path}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      toast.success("Direct download link copied");
+    } catch {
+      toast.error("Could not copy link");
+    }
+  };
+
   return (
     <div style={{ background: C.bg }}>
       <div data-nav-hero className="relative h-[50vh] min-h-[280px] overflow-hidden">
@@ -123,6 +143,7 @@ function ResourcesPage({
               const visibility: ResourceVisibility = c.visibility === "PRIVATE" ? "PRIVATE" : "PUBLIC";
               const isPrivate = visibility === "PRIVATE";
               const meta = [c.category, c.version ? `v${c.version}` : null, c.fileSize ? formatSize(c.fileSize) : null].filter(Boolean).join(" · ");
+              const hasPublicLink = !isPrivate && !!(c.publicPath || c.publicSlug);
               return (
                 <div key={c.id} className="rounded-3xl p-5 hover:scale-[1.02] transition-all" style={{ background: C.surface, boxShadow: SH1 }}>
                   <div className="flex items-start justify-between gap-2 mb-4">
@@ -143,14 +164,40 @@ function ResourcesPage({
                   <h3 className="font-medium mb-1" style={{ color: C.onSurface, fontFamily: "Roboto" }}>{c.title}</h3>
                   <p className="text-xs mb-2" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>{meta}</p>
                   <p className="text-sm mb-4 line-clamp-3" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>{c.description}</p>
-                  <button
-                    type="button"
-                    onClick={() => handleDownload(c)}
-                    className="w-full py-2 rounded-full text-sm font-medium text-white"
-                    style={{ background: C.primary, fontFamily: "Roboto" }}
-                  >
-                    Download
-                  </button>
+                  <div className="space-y-2">
+                    <button
+                      type="button"
+                      onClick={() => handleDownload(c)}
+                      className="w-full py-2 rounded-full text-sm font-medium text-white"
+                      style={{ background: C.primary, fontFamily: "Roboto" }}
+                    >
+                      Download
+                    </button>
+                    {hasPublicLink && (
+                      <div className="flex gap-2">
+                        <a
+                          href={c.publicPath || `/resources/public/${encodeURIComponent(c.publicSlug!)}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="flex-1 inline-flex items-center justify-center gap-1.5 py-2 rounded-full text-xs font-medium border no-underline hover:opacity-80"
+                          style={{ borderColor: C.outline, color: C.primary, fontFamily: "Roboto" }}
+                          title="Open direct download link"
+                        >
+                          <LinkIcon style={{ fontSize: 14 }} /> Direct link
+                        </a>
+                        <button
+                          type="button"
+                          onClick={() => void copyPublicLink(c)}
+                          className="inline-flex items-center justify-center px-3 py-2 rounded-full border hover:opacity-80"
+                          style={{ borderColor: C.outline, color: C.primary }}
+                          title="Copy direct download link"
+                          aria-label="Copy direct download link"
+                        >
+                          <ContentCopyIcon style={{ fontSize: 14 }} />
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
               );
             })}

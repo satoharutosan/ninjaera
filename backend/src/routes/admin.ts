@@ -21,6 +21,7 @@ import {
 } from "../services/username.js";
 import { normalizeResourceCategory, RESOURCE_CATEGORY_ERROR } from "../services/resourceCategories.js";
 import { validateExternalDownloadUrl, allowsExternalDownload } from "../services/externalDownloadUrl.js";
+import { resolveResourcePublicSlug, resourcePublicPath } from "../services/resourcePublicSlug.js";
 import { parseGameFileSize, gameFileSizeApiFields } from "../services/gameFileSize.js";
 import {
   logActivitySync,
@@ -1590,6 +1591,8 @@ router.get("/resources", async (_req, res) => {
       version: r.version,
       sortOrder: r.sort_order,
       originalFilename: r.original_filename || null,
+      publicSlug: r.public_slug_display || r.public_slug || String(r.id),
+      publicPath: resourcePublicPath(String(r.public_slug_display || r.public_slug || r.id)),
       visibility: String(r.visibility || "PUBLIC").toUpperCase() === "PRIVATE" ? "PRIVATE" : "PUBLIC",
     })),
   });
@@ -1617,7 +1620,7 @@ router.put("/resources/reorder", async (req, res) => {
 
 router.post("/resources", extendUploadSocketTimeouts, resourceFileUpload, async (req, res) => {
   const started = Date.now();
-  const { title, category, description, version, sortOrder, enabled, visibility, externalUrl } = req.body;
+  const { title, category, description, version, sortOrder, enabled, visibility, externalUrl, publicSlug } = req.body;
   if (!title || !category) {
     cleanupTempFile(req.file);
     res.status(400).json({ error: "Title and category are required" });
@@ -1677,6 +1680,25 @@ router.post("/resources", extendUploadSocketTimeouts, resourceFileUpload, async 
       INSERT INTO resources (title, category, description, content_url, external_url, published_at, enabled, uploader_id, file_size, version, sort_order, visibility, original_filename)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, title, normalizedCategory, description || "", fileUrl, external, ts, enabled === "false" ? 0 : 1, req.user!.id, fileSize, version || null, order, vis, originalFilename);
+    const newId = Number(result.lastInsertRowid);
+    const slugResolved = await resolveResourcePublicSlug({
+      raw: publicSlug,
+      defaultId: newId,
+      excludeId: newId,
+    });
+    if (!slugResolved.ok) {
+      cleanupTempFile(req.file);
+      await rollbackStoredFile(stored);
+      await qRun("DELETE FROM resources WHERE id = ?", newId);
+      res.status(400).json({ error: slugResolved.error });
+      return;
+    }
+    await qRun(
+      "UPDATE resources SET public_slug = ?, public_slug_display = ? WHERE id = ?",
+      slugResolved.slug,
+      slugResolved.display,
+      newId,
+    );
     if (!isExternal) {
       logAdminUpload({
         ok: true,
@@ -1686,7 +1708,7 @@ router.post("/resources", extendUploadSocketTimeouts, resourceFileUpload, async 
         filename: req.file?.originalname ?? null,
         fileSize,
         durationMs: Date.now() - started,
-        resourceId: Number(result.lastInsertRowid),
+        resourceId: newId,
         ipAddress: clientIp(req),
       });
     }
@@ -1698,10 +1720,10 @@ router.post("/resources", extendUploadSocketTimeouts, resourceFileUpload, async 
       description: isExternal
         ? `Registered external download for resource "${title}"`
         : `Uploaded resource "${title}"`,
-      affectedObject: `resource:${result.lastInsertRowid}`,
+      affectedObject: `resource:${newId}`,
     });
     scheduleAdminStatsRefresh();
-    res.status(201).json({ id: result.lastInsertRowid });
+    res.status(201).json({ id: newId, publicSlug: slugResolved.display, publicPath: resourcePublicPath(slugResolved.display) });
   } catch (err) {
     cleanupTempFile(req.file);
     await rollbackStoredFile(stored);
@@ -1735,7 +1757,7 @@ router.patch("/resources/:id", extendUploadSocketTimeouts, resourceFileUpload, a
     return;
   }
 
-  const { title, category, description, version, sortOrder, enabled, visibility, externalUrl } = req.body;
+  const { title, category, description, version, sortOrder, enabled, visibility, externalUrl, publicSlug } = req.body;
   const fields: string[] = [];
   const vals: unknown[] = [];
   if (title !== undefined) { fields.push("title = ?"); vals.push(title); }
@@ -1766,6 +1788,20 @@ router.patch("/resources/:id", extendUploadSocketTimeouts, resourceFileUpload, a
   if (visibility !== undefined) {
     fields.push("visibility = ?");
     vals.push(String(visibility).toUpperCase() === "PRIVATE" ? "PRIVATE" : "PUBLIC");
+  }
+  if (publicSlug !== undefined) {
+    const slugResolved = await resolveResourcePublicSlug({
+      raw: publicSlug,
+      defaultId: id,
+      excludeId: id,
+    });
+    if (!slugResolved.ok) {
+      cleanupTempFile(req.file);
+      res.status(400).json({ error: slugResolved.error });
+      return;
+    }
+    fields.push("public_slug = ?"); vals.push(slugResolved.slug);
+    fields.push("public_slug_display = ?"); vals.push(slugResolved.display);
   }
 
   const allowsExternal = allowsExternalDownload(nextCategory);

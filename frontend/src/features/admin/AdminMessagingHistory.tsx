@@ -52,6 +52,7 @@ function AdminBubble({ msg, C }: { msg: ChatMsg; C: ReturnType<typeof useC> }) {
     return (
       <VoiceMessagePlayer
         src={msg.mediaUrl!}
+        messageId={msg.id}
         fileName={msg.fileName}
         durationMs={msg.durationMs}
         waveform={msg.waveform}
@@ -61,11 +62,20 @@ function AdminBubble({ msg, C }: { msg: ChatMsg; C: ReturnType<typeof useC> }) {
   }
   if (msg.mediaType === "file") {
     return (
-      <a href={msg.mediaUrl} download={msg.fileName} className="flex items-center gap-3 px-4 py-3 rounded-2xl no-underline max-w-[260px]" style={{ background: C.surface, boxShadow: SH1, color: C.onSurface }}>
+      <button
+        type="button"
+        onClick={() => {
+          void api.messages.downloadAttachment(msg.id).catch((err) => {
+            toast.error(err instanceof ApiError ? err.message : "Download failed");
+          });
+        }}
+        className="flex items-center gap-3 px-4 py-3 rounded-2xl max-w-[260px] text-left"
+        style={{ background: C.surface, boxShadow: SH1, color: C.onSurface }}
+      >
         <FileIcon style={{ fontSize: 22, color: C.primary }} />
         <span className="text-sm truncate">{msg.fileName || "file"}</span>
         <DownloadIcon style={{ fontSize: 16, color: C.onSurfaceVar }} />
-      </a>
+      </button>
     );
   }
   if (msg.msg) {

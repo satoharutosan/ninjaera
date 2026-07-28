@@ -20,7 +20,7 @@ import {
   USERNAME_TAKEN_ERROR,
 } from "../services/username.js";
 import { normalizeResourceCategory, RESOURCE_CATEGORY_ERROR } from "../services/resourceCategories.js";
-import { validateExternalDownloadUrl, usesExternalDownload } from "../services/externalDownloadUrl.js";
+import { validateExternalDownloadUrl, allowsExternalDownload } from "../services/externalDownloadUrl.js";
 import { parseGameFileSize, gameFileSizeApiFields } from "../services/gameFileSize.js";
 import {
   logActivitySync,
@@ -1630,16 +1630,34 @@ router.post("/resources", extendUploadSocketTimeouts, resourceFileUpload, async 
     return;
   }
 
-  const isExternal = usesExternalDownload(normalizedCategory);
+  const allowsExternal = allowsExternalDownload(normalizedCategory);
+  const hasExternalUrl = externalUrl != null && String(externalUrl).trim() !== "";
+  const hasFile = !!req.file;
+
+  let isExternal = false;
   let external: string | null = null;
-  if (isExternal) {
-    cleanupTempFile(req.file);
-    const checked = validateExternalDownloadUrl(externalUrl);
-    if (!checked.ok) {
-      res.status(400).json({ error: checked.error });
+
+  if (allowsExternal) {
+    if (hasExternalUrl && hasFile) {
+      cleanupTempFile(req.file);
+      res.status(400).json({ error: "Choose either a file upload or an external URL, not both" });
       return;
     }
-    external = checked.url;
+    if (hasExternalUrl) {
+      cleanupTempFile(req.file);
+      const checked = validateExternalDownloadUrl(externalUrl);
+      if (!checked.ok) {
+        res.status(400).json({ error: checked.error });
+        return;
+      }
+      external = checked.url;
+      isExternal = true;
+    } else if (!hasFile) {
+      res.status(400).json({ error: "Provide a file upload or an external download URL for App resources" });
+      return;
+    }
+  } else if (hasExternalUrl) {
+    // Non-App categories are file-only — ignore stray external URLs.
   }
 
   let stored: PutObjectResult | null = null;
@@ -1750,40 +1768,52 @@ router.patch("/resources/:id", extendUploadSocketTimeouts, resourceFileUpload, a
     vals.push(String(visibility).toUpperCase() === "PRIVATE" ? "PRIVATE" : "PUBLIC");
   }
 
-  const isExternal = usesExternalDownload(nextCategory);
+  const allowsExternal = allowsExternalDownload(nextCategory);
+  const hasExternalUrl = externalUrl !== undefined && String(externalUrl).trim() !== "";
+  const hasFile = !!req.file;
   const started = Date.now();
   let stored: PutObjectResult | null = null;
   let replacedFile: string | null = null;
+  let isExternal = false;
 
   try {
-    if (isExternal) {
+    if (allowsExternal && hasExternalUrl && hasFile) {
       cleanupTempFile(req.file);
-      if (externalUrl !== undefined && String(externalUrl).trim() !== "") {
-        const checked = validateExternalDownloadUrl(externalUrl);
-        if (!checked.ok) {
-          res.status(400).json({ error: checked.error });
-          return;
-        }
-        fields.push("external_url = ?"); vals.push(checked.url);
-        fields.push("content_url = ?"); vals.push(null);
-        fields.push("file_size = ?"); vals.push(null);
-        fields.push("original_filename = ?"); vals.push(null);
-        replacedFile = existing.content_url;
-      } else if (!existing.external_url) {
-        res.status(400).json({ error: "External download URL is required for App resources" });
+      res.status(400).json({ error: "Choose either a file upload or an external URL, not both" });
+      return;
+    }
+
+    if (allowsExternal && hasExternalUrl) {
+      cleanupTempFile(req.file);
+      const checked = validateExternalDownloadUrl(externalUrl);
+      if (!checked.ok) {
+        res.status(400).json({ error: checked.error });
         return;
       }
-    } else {
-      if (usesExternalDownload(existing.category)) {
-        fields.push("external_url = ?"); vals.push(null);
+      isExternal = true;
+      fields.push("external_url = ?"); vals.push(checked.url);
+      fields.push("content_url = ?"); vals.push(null);
+      fields.push("file_size = ?"); vals.push(null);
+      fields.push("original_filename = ?"); vals.push(null);
+      replacedFile = existing.content_url;
+    } else if (req.file) {
+      stored = await persistMulterFile(req.file, "resource");
+      fields.push("content_url = ?"); vals.push(stored.url);
+      fields.push("file_size = ?"); vals.push(stored.size);
+      fields.push("external_url = ?"); vals.push(null);
+      fields.push("original_filename = ?"); vals.push(req.file.originalname?.trim() || null);
+      replacedFile = existing.content_url;
+    } else if (allowsExternal) {
+      // Keep existing source; require at least one.
+      if (!existing.external_url && !existing.content_url) {
+        res.status(400).json({ error: "Provide a file upload or an external download URL for App resources" });
+        return;
       }
-      if (req.file) {
-        stored = await persistMulterFile(req.file, "resource");
-        fields.push("content_url = ?"); vals.push(stored.url);
-        fields.push("file_size = ?"); vals.push(stored.size);
+      isExternal = !!existing.external_url;
+    } else {
+      // Leaving App / non-App update: drop any external URL.
+      if (existing.external_url) {
         fields.push("external_url = ?"); vals.push(null);
-        fields.push("original_filename = ?"); vals.push(req.file.originalname?.trim() || null);
-        replacedFile = existing.content_url;
       }
     }
 

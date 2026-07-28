@@ -4,12 +4,15 @@ import PauseIcon from "@mui/icons-material/Pause";
 import DownloadIcon from "@mui/icons-material/Download";
 import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline";
 import { useC, SH1 } from "@/app/shared";
+import { api } from "@/app/api";
 import { desktopDarkSelfBubble } from "@/shared/desktopMessageTheme";
 import { formatVoiceDuration } from "./voiceAudio";
 
 type Props = {
   src: string;
   self?: boolean;
+  /** When set, download uses the original upload filename via the messages API. */
+  messageId?: number;
   fileName?: string;
   durationMs?: number;
   waveform?: number[];
@@ -25,6 +28,7 @@ type Props = {
 export function VoiceMessagePlayer({
   src,
   self,
+  messageId,
   fileName,
   durationMs = 0,
   waveform,
@@ -316,6 +320,19 @@ export function VoiceMessagePlayer({
       </div>
 
       {showDownload && (
+      messageId && messageId > 0 ? (
+      <button
+        type="button"
+        aria-label="Download voice message"
+        className="w-8 h-8 rounded-full flex items-center justify-center shrink-0 opacity-80 hover:opacity-100 focus-visible:outline-none focus-visible:ring-2"
+        style={{ color: fg }}
+        onClick={() => {
+          void api.messages.downloadAttachment(messageId).catch(() => {});
+        }}
+      >
+        <DownloadIcon style={{ fontSize: 18 }} />
+      </button>
+      ) : (
       <a
         href={src}
         download={fileName || "voice-message"}
@@ -326,6 +343,7 @@ export function VoiceMessagePlayer({
       >
         <DownloadIcon style={{ fontSize: 18 }} />
       </a>
+      )
       )}
     </div>
   );

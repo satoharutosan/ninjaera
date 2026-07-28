@@ -515,6 +515,59 @@ export const api = {
     edit: (id: number, msg: string) =>
       request<{ message: ApiMessage }>(`/messages/${id}`, { method: "PATCH", body: JSON.stringify({ msg }) }),
     delete: (id: number) => request<{ ok: boolean }>(`/messages/${id}`, { method: "DELETE" }),
+    downloadAttachment: async (id: number) => {
+      const token = getToken();
+      const res = await fetch(`${API_BASE}/messages/${id}/download`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new ApiError((data as { error?: string }).error || res.statusText, res.status);
+      }
+      const contentType = res.headers.get("Content-Type") || "";
+      if (contentType.includes("application/json")) {
+        const data = await res.json() as { downloadUrl?: string; filename?: string };
+        if (data.downloadUrl) {
+          const filename = data.filename || `message-${id}`;
+          try {
+            const fileRes = await fetch(data.downloadUrl);
+            if (!fileRes.ok) {
+              await openExternalDownload(data.downloadUrl);
+              return;
+            }
+            const blob = await fileRes.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = filename;
+            a.click();
+            URL.revokeObjectURL(url);
+          } catch {
+            await openExternalDownload(data.downloadUrl);
+          }
+          return;
+        }
+        throw new ApiError("Download response was incomplete", 500);
+      }
+      const disposition = res.headers.get("Content-Disposition") || "";
+      const utfMatch = /filename\*=UTF-8''([^;]+)/i.exec(disposition);
+      const plainMatch = /filename="([^"]+)"/i.exec(disposition)
+        || /filename=([^;]+)/i.exec(disposition);
+      let filename = `message-${id}`;
+      try {
+        const rawName = (utfMatch?.[1] || plainMatch?.[1] || "").replace(/"/g, "").trim();
+        if (rawName) filename = decodeURIComponent(rawName);
+      } catch {
+        /* keep fallback name */
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    },
     react: (id: number, emoji: string) =>
       request<{ reactions: Record<string, string[]> }>(`/messages/${id}/reactions`, {
         method: "POST",

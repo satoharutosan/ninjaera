@@ -136,6 +136,7 @@ export function MediaBubble({ msg, self, C, onScrollTo, onLightbox }: { msg: Cha
         <VoiceMessagePlayer
           src={msg.mediaUrl!}
           self={self}
+          messageId={msg.id}
           fileName={msg.fileName}
           durationMs={msg.durationMs}
           waveform={msg.waveform}

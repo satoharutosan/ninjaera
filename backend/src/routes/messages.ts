@@ -1,5 +1,7 @@
 import { Router } from "express";
 import multer from "multer";
+import path from "path";
+import fs from "fs";
 import { qGet, qAll, qRun } from "../db/query.js";
 import { requireAuth, timeAgo, formatTime } from "../middleware/auth.js";
 import { rateLimit } from "../middleware/rateLimit.js";
@@ -16,6 +18,8 @@ import { createAdminSystemNotification } from "../services/adminNotifications.js
 import { MESSAGE_MAX_FILE_BYTES, MESSAGE_MAX_FILE_ERROR } from "../services/messageUpload.js";
 import { tombstoneSenderFields, DELETED_USER_DISPLAY_NAME, isDeletedUser } from "../services/deletedUser.js";
 import { createMemoryUploader, persistMulterFile } from "../storage/multerUpload.js";
+import { getStorage } from "../storage/index.js";
+import { contentDispositionAttachment, sanitizeDownloadFilename } from "../services/downloadFilename.js";
 import {
   assertCanAccessConversation,
   assertNotBlockedInConversation,
@@ -900,6 +904,70 @@ router.post("/messages/media", requireAuth, rateLimit({
   scheduleAdminStatsRefresh();
 
   res.status(201).json({ message: formatted });
+});
+
+router.get("/messages/:id/download", requireAuth, async (req, res) => {
+  const msgId = Number(req.params.id);
+  if (!Number.isFinite(msgId) || msgId <= 0) {
+    res.status(400).json({ error: "Invalid message id" });
+    return;
+  }
+
+  const row = await qGet<{
+    id: number;
+    conversation_id: number;
+    media_url: string | null;
+    file_name: string | null;
+    media_type: string | null;
+  }>(
+    "SELECT id, conversation_id, media_url, file_name, media_type FROM messages WHERE id = ?",
+    msgId,
+  );
+
+  if (!row?.media_url) {
+    res.status(404).json({ error: "Attachment not found" });
+    return;
+  }
+
+  // Participants may download; administrators may download from Messaging History.
+  if (!isAdmin(req.user!)) {
+    const ok = await requireConversationAccess(req, res, row.conversation_id);
+    if (!ok) return;
+  }
+
+  const storageBase = path.basename(String(row.media_url).split("?")[0].replace(/\\/g, "/"));
+  const downloadName = sanitizeDownloadFilename(row.file_name?.trim() || storageBase || `message-${msgId}`);
+
+  const storage = getStorage();
+  if (storage.provider === "local") {
+    const key = row.media_url.replace(/^\/uploads\//, "").replace(/^[/\\]+/, "").replace(/\.\./g, "");
+    const filePath = path.resolve(storage.localRoot!, key);
+    const relative = path.relative(storage.localRoot!, filePath);
+    if (relative.startsWith("..") || path.isAbsolute(relative) || !fs.existsSync(filePath)) {
+      res.status(404).json({ error: "File not found" });
+      return;
+    }
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Content-Disposition", contentDispositionAttachment(downloadName));
+    res.sendFile(filePath, (err) => {
+      if (err && !res.headersSent) {
+        res.status(500).json({ error: "Unable to send file" });
+      }
+    });
+    return;
+  }
+
+  if (!storage.getSignedDownloadUrl) {
+    res.status(503).json({ error: "Signed downloads are not configured for this storage provider" });
+    return;
+  }
+
+  try {
+    const downloadUrl = await storage.getSignedDownloadUrl(row.media_url, 120);
+    res.json({ downloadUrl, filename: downloadName });
+  } catch {
+    res.status(404).json({ error: "File not found" });
+  }
 });
 
 router.patch("/messages/:id", requireAuth, async (req, res) => {

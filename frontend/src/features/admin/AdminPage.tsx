@@ -165,6 +165,8 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
   const [resourceCategoryFilter, setResourceCategoryFilter] = useState<"All" | (typeof RESOURCE_CATEGORIES)[number]>("All");
   const [editResource, setEditResource] = useState<Partial<AdminResource> | null>(null);
   const [resourceFile, setResourceFile] = useState<File | null>(null);
+  /** App resources: upload a file or reference an external URL. */
+  const [resourceSourceMode, setResourceSourceMode] = useState<"file" | "external">("file");
   const [resourceUploading, setResourceUploading] = useState(false);
   const [resourceUploadProgress, setResourceUploadProgress] = useState<AdminUploadProgressState | null>(null);
   const [resourceUploadBytes, setResourceUploadBytes] = useState<{ loaded: number; total: number } | null>(null);
@@ -517,11 +519,12 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
       return;
     }
     const category = editResource.category || "App";
-    const isAppExternal = category === "App";
-    if (isAppExternal) {
+    const isApp = category === "App";
+    const useExternal = isApp && resourceSourceMode === "external";
+    if (useExternal) {
       const url = (editResource.externalUrl || "").trim();
       if (!url) {
-        toast.error("External download URL is required for App resources");
+        toast.error("External download URL is required");
         return;
       }
       try {
@@ -534,11 +537,20 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
         toast.error("Please enter a valid URL (for example https://github.com/...)");
         return;
       }
+    } else if (isApp && !useExternal) {
+      if (!resourceFile && !editResource.id) {
+        toast.error("Please choose a file to upload");
+        return;
+      }
+      if (!resourceFile && editResource.id && !editResource.contentUrl) {
+        toast.error("Please choose a file to upload");
+        return;
+      }
     }
     const filename = resourceFile?.name || (editResource.id ? "resource" : "file");
     setResourceUploading(true);
     setResourceUploadBytes(null);
-    if (!isAppExternal) {
+    if (!useExternal) {
       setResourceUploadProgress(
         resourceFile
           ? { filename, percent: 0, phase: "uploading" }
@@ -558,12 +570,12 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
       }
       form.append("enabled", String(editResource.enabled !== false));
       form.append("visibility", editResource.visibility === "PRIVATE" ? "PRIVATE" : "PUBLIC");
-      if (isAppExternal) {
+      if (useExternal) {
         form.append("externalUrl", (editResource.externalUrl || "").trim());
       } else if (resourceFile) {
         form.append("file", resourceFile);
       }
-      const onUploadProgress = isAppExternal
+      const onUploadProgress = useExternal
         ? undefined
         : trackUploadProgress(filename, setResourceUploadProgress, setResourceUploadBytes);
       if (editResource.id) {
@@ -571,7 +583,7 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
       } else {
         await api.admin.createResource(form, { onUploadProgress });
       }
-      if (!isAppExternal) setResourceUploadProgress({ filename, percent: 100, phase: "complete" });
+      if (!useExternal) setResourceUploadProgress({ filename, percent: 100, phase: "complete" });
       toast.success(editResource.id ? "Updated" : "Saved");
       setEditResource(null);
       setResourceFile(null);
@@ -1425,6 +1437,7 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                   <FilledBtn onClick={() => {
                     setEditResource({ title: "", category: "App", description: "", enabled: true, visibility: "PUBLIC", externalUrl: "" });
                     setResourceFile(null);
+                    setResourceSourceMode("file");
                     setResourceUploadProgress(null);
                     setResourceUploadBytes(null);
                   }}>Add Resource</FilledBtn>
@@ -1501,7 +1514,13 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                         </p>
                       </div>
                       <div className="flex gap-1">
-                        <button onClick={() => { setEditResource(r); setResourceFile(null); }} className="p-1.5 rounded-full hover:bg-black/5" style={{ color: C.primary }}><EditIcon style={{ fontSize: 16 }} /></button>
+                        <button onClick={() => {
+                          setEditResource(r);
+                          setResourceFile(null);
+                          setResourceSourceMode(r.externalUrl ? "external" : "file");
+                          setResourceUploadProgress(null);
+                          setResourceUploadBytes(null);
+                        }} className="p-1.5 rounded-full hover:bg-black/5" style={{ color: C.primary }}><EditIcon style={{ fontSize: 16 }} /></button>
                         <button onClick={() => setConfirm({ title: "Delete Resource", body: `Delete ${r.title}?`, onOk: () => handleUserAction(() => api.admin.deleteResource(r.id), "Resource deleted") })} className="p-1.5 rounded-full hover:bg-black/5" style={{ color: C.error }}><DeleteIcon style={{ fontSize: 16 }} /></button>
                       </div>
                     </div>
@@ -1819,7 +1838,11 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                   onChange={e => {
                     const next = e.target.value;
                     setEditResource({ ...editResource, category: next });
-                    if (next === "App") setResourceFile(null);
+                    if (next === "App") {
+                      setResourceSourceMode(editResource.externalUrl ? "external" : "file");
+                    } else {
+                      setResourceSourceMode("file");
+                    }
                   }}
                   disabled={resourceUploading}
                   className="w-full px-4 py-3.5 rounded-[4px] border text-sm"
@@ -1855,7 +1878,34 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                 </select>
                 <span className="absolute left-3 -top-2 px-1 text-xs" style={{ color: C.primary, background: C.surface }}>Visibility</span>
               </div>
-              {(editResource.category || "App") === "App" ? (
+              {(editResource.category || "App") === "App" && (
+                <div className="flex gap-2" role="group" aria-label="App resource source">
+                  {([
+                    { id: "file" as const, label: "Upload file" },
+                    { id: "external" as const, label: "External URL" },
+                  ]).map((opt) => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      disabled={resourceUploading}
+                      onClick={() => {
+                        setResourceSourceMode(opt.id);
+                        if (opt.id === "external") setResourceFile(null);
+                        else setEditResource({ ...editResource, externalUrl: editResource.externalUrl || "" });
+                      }}
+                      className="flex-1 px-3 py-2 rounded-full text-xs font-medium transition-all disabled:opacity-50"
+                      style={{
+                        background: resourceSourceMode === opt.id ? C.primary : C.surfaceVar,
+                        color: resourceSourceMode === opt.id ? "white" : C.onSurfaceVar,
+                        fontFamily: "Roboto",
+                      }}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {(editResource.category || "App") === "App" && resourceSourceMode === "external" ? (
                 <div>
                   <Field
                     label="External Download URL"
@@ -1896,7 +1946,7 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
                   onChange={e => setEditResource({ ...editResource, enabled: e.target.checked })}
                 /> Enabled
               </label>
-              {resourceUploadProgress && (editResource.category || "App") !== "App" && (
+              {resourceUploadProgress && !((editResource.category || "App") === "App" && resourceSourceMode === "external") && (
                 <AdminUploadProgress
                   state={resourceUploadProgress}
                   loaded={resourceUploadBytes?.loaded}

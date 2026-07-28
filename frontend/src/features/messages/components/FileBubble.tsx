@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useState, type MouseEvent } from "react";
 import DownloadIcon from "@mui/icons-material/Download";
 import { ColorTheme, SH1 } from "@/app/shared";
+import { api, ApiError } from "@/app/api";
 import { desktopDarkSelfBubble } from "@/shared/desktopMessageTheme";
 import { fileTypeIcon } from "../mediaIcons";
 import { formatBytes } from "../utils/formatBytes";
@@ -8,6 +9,7 @@ import type { ChatMsg } from "../types";
 
 export function FileBubble({ msg, self, C }: { msg: ChatMsg; self: boolean; C: ColorTheme }) {
   const [open, setOpen] = useState(false);
+  const [downloading, setDownloading] = useState(false);
   const desktopSelf = self ? desktopDarkSelfBubble(C) : null;
   const bg = self ? (desktopSelf?.bg ?? C.primary) : C.surface;
   const fg = self ? (desktopSelf?.fg ?? "white") : C.onSurface;
@@ -21,6 +23,21 @@ export function FileBubble({ msg, self, C }: { msg: ChatMsg; self: boolean; C: C
     ? (desktopSelf ? "rgba(28,27,31,.08)" : "rgba(255,255,255,.18)")
     : C.primaryCont;
   const iconChipFg = self ? (desktopSelf ? desktopSelf.fg : "#fff") : C.primary;
+
+  const handleDownload = async (e: MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (downloading || msg.id <= 0) return;
+    setDownloading(true);
+    try {
+      await api.messages.downloadAttachment(msg.id);
+    } catch (err) {
+      console.error(err instanceof ApiError ? err.message : err);
+    } finally {
+      setDownloading(false);
+    }
+  };
+
   return (
     <div className="max-w-[min(260px,100%)] min-w-0">
       <button onClick={() => setOpen(o=>!o)} className="w-full flex items-center gap-3 px-4 py-3 rounded-2xl text-left transition-all hover:opacity-90" style={{ background:bg, boxShadow:SH1 }}>
@@ -35,9 +52,15 @@ export function FileBubble({ msg, self, C }: { msg: ChatMsg; self: boolean; C: C
       </button>
       {open && (
         <div className="rounded-b-2xl border-t px-4 py-3 flex items-center gap-3" style={{ background: desktopSelf ? "rgba(28,27,31,.06)" : (self?"rgba(0,0,0,.15)":C.surfaceVar), borderColor: desktopSelf ? "rgba(28,27,31,.12)" : (self?"rgba(255,255,255,.2)":C.outlineVar) }}>
-          <a href={msg.mediaUrl} download={name} className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium no-underline hover:opacity-80 transition-opacity" style={{ background: desktopSelf ? C.primaryCont : (self?"rgba(255,255,255,.2)":C.primaryCont), color: desktopSelf ? C.primary : (self?"white":C.primary), fontFamily:"Roboto" }}>
-            <DownloadIcon style={{ fontSize:14 }} /> Download
-          </a>
+          <button
+            type="button"
+            onClick={(e) => void handleDownload(e)}
+            disabled={downloading || msg.id <= 0}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium hover:opacity-80 transition-opacity disabled:opacity-50"
+            style={{ background: desktopSelf ? C.primaryCont : (self?"rgba(255,255,255,.2)":C.primaryCont), color: desktopSelf ? C.primary : (self?"white":C.primary), fontFamily:"Roboto" }}
+          >
+            <DownloadIcon style={{ fontSize:14 }} /> {downloading ? "Downloading…" : "Download"}
+          </button>
           <span className="text-[11px]" style={{ color:fgSub, fontFamily:"Roboto" }}>{name.split(".").pop()?.toUpperCase()} file</span>
         </div>
       )}

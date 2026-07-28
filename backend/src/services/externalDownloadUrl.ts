@@ -55,7 +55,12 @@ export function validateExternalDownloadUrl(raw: unknown): ExternalUrlResult {
   return { ok: true, url: parsed.toString() };
 }
 
-/** True when this resource category uses an external download URL instead of file upload. */
-export function usesExternalDownload(category: string | null | undefined): boolean {
+/** True when this resource category may use an external download URL (App). */
+export function allowsExternalDownload(category: string | null | undefined): boolean {
   return String(category || "").trim().toLowerCase() === "app";
+}
+
+/** @deprecated Prefer allowsExternalDownload — App resources may also use file upload. */
+export function usesExternalDownload(category: string | null | undefined): boolean {
+  return allowsExternalDownload(category);
 }

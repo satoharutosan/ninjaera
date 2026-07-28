@@ -643,7 +643,7 @@ export const api = {
   content: {
     team: () => request<{ team: { name: string; role: string; department: string; country: string; city: string; statusLabel?: string; statusColor?: string; userId?: number; username?: string; avatarUrl?: string | null }[] }>("/team"),
     resources: (category?: string) =>
-      request<{ resources: { id: number; title: string; category: string; description: string; contentUrl?: string | null; publishedAt?: string; fileSize?: number; version?: string; visibility?: "PUBLIC" | "PRIVATE"; publicSlug?: string | null; publicPath?: string | null }[] }>(
+      request<{ resources: { id: number; title: string; category: string; description: string; contentUrl?: string | null; publishedAt?: string; fileSize?: number; version?: string; visibility?: "PUBLIC" | "PRIVATE" }[] }>(
         category ? `/resources?category=${encodeURIComponent(category)}` : "/resources"
       ),
     downloadResource: async (id: number) => {

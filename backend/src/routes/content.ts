@@ -91,22 +91,21 @@ router.get("/resources", optionalAuth, async (req, res) => {
   if (category) {
     rows = await qAll(`
       SELECT id, title, category, description, published_at,
-             file_size, version, enabled, visibility, public_slug, public_slug_display
+             file_size, version, enabled, visibility
       FROM resources WHERE category = ? AND enabled = 1 ORDER BY sort_order, published_at DESC
     `, category);
   } else {
     rows = await qAll(`
       SELECT id, title, category, description, published_at,
-             file_size, version, enabled, visibility, public_slug, public_slug_display
+             file_size, version, enabled, visibility
       FROM resources WHERE enabled = 1 ORDER BY sort_order, published_at DESC
     `);
   }
-  // Never expose contentUrl on the public list — downloads must go through the gated endpoint.
-  // publicSlug is only returned for PUBLIC resources (direct link feature).
+  // Never expose contentUrl or public download IDs on the public list —
+  // downloads go through the gated endpoint; public links are admin-managed only.
   res.json({
     resources: (rows as Record<string, unknown>[]).map((r) => {
       const visibility = normalizeResourceVisibility(r.visibility);
-      const slugDisplay = String(r.public_slug_display || r.public_slug || "").trim();
       return {
         id: r.id,
         title: r.title,
@@ -118,8 +117,6 @@ router.get("/resources", optionalAuth, async (req, res) => {
         enabled: r.enabled,
         visibility,
         contentUrl: null,
-        publicSlug: visibility === "PUBLIC" && slugDisplay ? slugDisplay : null,
-        publicPath: visibility === "PUBLIC" && slugDisplay ? `/resources/public/${encodeURIComponent(slugDisplay)}` : null,
       };
     }),
   });

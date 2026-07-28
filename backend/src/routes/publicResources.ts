@@ -1,6 +1,7 @@
 import { Router } from "express";
 import path from "path";
 import fs from "fs";
+import { Readable } from "stream";
 import { qGet } from "../db/query.js";
 import { optionalAuth } from "../middleware/auth.js";
 import { logActivitySync } from "../services/activityLog.js";
@@ -9,6 +10,7 @@ import { validateExternalDownloadUrl } from "../services/externalDownloadUrl.js"
 import {
   contentDispositionAttachment,
   resolveResourceDownloadFilename,
+  sanitizeDownloadFilename,
 } from "../services/downloadFilename.js";
 import { normalizeResourcePublicSlug, RESOURCE_PUBLIC_SLUG_RE } from "../services/resourcePublicSlug.js";
 
@@ -18,9 +20,31 @@ function isPublicVisibility(raw: unknown): boolean {
   return String(raw ?? "PUBLIC").trim().toUpperCase() !== "PRIVATE";
 }
 
+async function resolvePublicDownloadFilename(resource: {
+  id: number;
+  title: string;
+  original_filename: string | null;
+  content_url: string | null;
+}): Promise<string> {
+  const fromResource = resolveResourceDownloadFilename(resource);
+  if (resource.original_filename?.trim()) return fromResource;
+
+  // Legacy rows: recover original name from the upload registry when present.
+  if (resource.content_url) {
+    const asset = await qGet<{ original_filename: string | null }>(
+      "SELECT original_filename FROM uploaded_assets WHERE url = ?",
+      resource.content_url,
+    );
+    const recovered = asset?.original_filename?.trim();
+    if (recovered) return sanitizeDownloadFilename(recovered);
+  }
+  return fromResource;
+}
+
 /**
  * Direct public download: GET /resources/public/:slug
- * PUBLIC + enabled resources only. Streams or 302-redirects — no SPA/JSON hop.
+ * PUBLIC + enabled resources only. Always attaches the original upload filename
+ * (including extension) via Content-Disposition when serving stored files.
  */
 router.get("/:slug", optionalAuth, async (req, res) => {
   const raw = String(req.params.slug || "");
@@ -77,7 +101,7 @@ router.get("/:slug", optionalAuth, async (req, res) => {
     return;
   }
 
-  const downloadName = resolveResourceDownloadFilename({
+  const downloadName = await resolvePublicDownloadFilename({
     id: resource.id,
     title: resource.title,
     original_filename: resource.original_filename,
@@ -102,7 +126,7 @@ router.get("/:slug", optionalAuth, async (req, res) => {
       description: `Downloaded resource (public link): ${resource.title}`,
       affectedObject: `resource:${resource.id}`,
       result: "success",
-      metadata: { source: "public_link" },
+      metadata: { source: "public_link", filename: downloadName },
     });
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Content-Disposition", contentDispositionAttachment(downloadName));
@@ -119,8 +143,16 @@ router.get("/:slug", optionalAuth, async (req, res) => {
     return;
   }
 
+  // Cloud: proxy through this server so we can set Content-Disposition to the
+  // original filename. A bare 302 to a signed URL would save the storage key name.
   try {
     const downloadUrl = await storage.getSignedDownloadUrl(resource.content_url!, 120);
+    const upstream = await fetch(downloadUrl);
+    if (!upstream.ok || !upstream.body) {
+      res.status(404).type("text/plain").send("Not found");
+      return;
+    }
+
     logActivitySync({
       req,
       userId: req.user?.id ?? null,
@@ -130,11 +162,27 @@ router.get("/:slug", optionalAuth, async (req, res) => {
       description: `Downloaded resource (public link): ${resource.title}`,
       affectedObject: `resource:${resource.id}`,
       result: "success",
-      metadata: { source: "public_link" },
+      metadata: { source: "public_link", filename: downloadName },
     });
-    res.redirect(302, downloadUrl);
+
+    res.status(200);
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Content-Disposition", contentDispositionAttachment(downloadName));
+    const contentType = upstream.headers.get("content-type");
+    if (contentType) res.setHeader("Content-Type", contentType);
+    else res.setHeader("Content-Type", "application/octet-stream");
+    const contentLength = upstream.headers.get("content-length");
+    if (contentLength) res.setHeader("Content-Length", contentLength);
+    res.setHeader("Cache-Control", "private, no-store");
+
+    const nodeStream = Readable.fromWeb(upstream.body as import("stream/web").ReadableStream);
+    nodeStream.on("error", () => {
+      if (!res.headersSent) res.status(500).type("text/plain").send("Unable to send file");
+      else res.destroy();
+    });
+    nodeStream.pipe(res);
   } catch {
-    res.status(404).type("text/plain").send("Not found");
+    if (!res.headersSent) res.status(404).type("text/plain").send("Not found");
   }
 });
 

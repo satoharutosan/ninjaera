@@ -539,12 +539,18 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
         toast.error("Please enter a valid URL (for example https://github.com/...)");
         return;
       }
-    } else if (isApp && !useExternal) {
+    } else {
+      // File mode: App "Upload file" or any non-App category.
       if (!resourceFile && !editResource.id) {
         toast.error("Please choose a file to upload");
         return;
       }
-      if (!resourceFile && editResource.id && !editResource.contentUrl) {
+      if (
+        !resourceFile
+        && editResource.id
+        && !editResource.contentUrl
+        && !(isApp && (editResource.externalUrl || "").trim())
+      ) {
         toast.error("Please choose a file to upload");
         return;
       }

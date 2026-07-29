@@ -49,6 +49,15 @@ export function mapClientUploadError(err: unknown): { status: number; error: str
     return { status: 500, error: "Upload failed because the storage write operation was unsuccessful." };
   }
   if (
+    lower.includes("public_slug")
+    && (lower.includes("no such column") || lower.includes("does not exist"))
+  ) {
+    return {
+      status: 503,
+      error: "Upload failed: database schema is out of date. Restart the server to apply pending migrations.",
+    };
+  }
+  if (
     lower.includes("unique constraint")
     || lower.includes("not null")
     || lower.includes("foreign key")

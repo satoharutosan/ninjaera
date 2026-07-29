@@ -21,7 +21,11 @@ import {
 } from "../services/username.js";
 import { normalizeResourceCategory, RESOURCE_CATEGORY_ERROR } from "../services/resourceCategories.js";
 import { validateExternalDownloadUrl, allowsExternalDownload } from "../services/externalDownloadUrl.js";
-import { resolveResourcePublicSlug, resourcePublicPath } from "../services/resourcePublicSlug.js";
+import {
+  generateResourcePublicSlug,
+  resolveResourcePublicSlug,
+  resourcePublicPath,
+} from "../services/resourcePublicSlug.js";
 import { parseGameFileSize, gameFileSizeApiFields } from "../services/gameFileSize.js";
 import {
   logActivitySync,
@@ -1663,6 +1667,11 @@ router.post("/resources", extendUploadSocketTimeouts, resourceFileUpload, async 
     // Non-App categories are file-only — ignore stray external URLs.
   }
 
+  if (!isExternal && !hasFile) {
+    res.status(400).json({ error: "File upload is required" });
+    return;
+  }
+
   let stored: PutObjectResult | null = null;
   try {
     const ts = now();
@@ -1676,29 +1685,48 @@ router.post("/resources", extendUploadSocketTimeouts, resourceFileUpload, async 
       const maxRow = await qGet<{ m: number | null }>("SELECT COALESCE(MAX(sort_order), 0) as m FROM resources");
       order = Number(maxRow?.m ?? 0) + 1;
     }
-    const result = await qRun(`
-      INSERT INTO resources (title, category, description, content_url, external_url, published_at, enabled, uploader_id, file_size, version, sort_order, visibility, original_filename)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, title, normalizedCategory, description || "", fileUrl, external, ts, enabled === "false" ? 0 : 1, req.user!.id, fileSize, version || null, order, vis, originalFilename);
-    const newId = Number(result.lastInsertRowid);
-    const slugResolved = await resolveResourcePublicSlug({
-      raw: publicSlug,
-      defaultId: newId,
-      excludeId: newId,
-    });
-    if (!slugResolved.ok) {
-      cleanupTempFile(req.file);
-      await rollbackStoredFile(stored);
-      await qRun("DELETE FROM resources WHERE id = ?", newId);
-      res.status(400).json({ error: slugResolved.error });
-      return;
+
+    // Resolve / allocate public_slug before INSERT so create does not depend on a
+    // follow-up UPDATE (and fails clearly if migration 023 is missing).
+    const hasCustomSlug = publicSlug != null && String(publicSlug).trim() !== "";
+    let finalSlug: { slug: string; display: string };
+    if (hasCustomSlug) {
+      const custom = await resolveResourcePublicSlug({ raw: publicSlug });
+      if (!custom.ok) {
+        cleanupTempFile(req.file);
+        await rollbackStoredFile(stored);
+        res.status(400).json({ error: custom.error });
+        return;
+      }
+      finalSlug = custom;
+    } else {
+      const provisional = generateResourcePublicSlug();
+      finalSlug = { slug: provisional, display: provisional };
     }
-    await qRun(
-      "UPDATE resources SET public_slug = ?, public_slug_display = ? WHERE id = ?",
-      slugResolved.slug,
-      slugResolved.display,
-      newId,
-    );
+
+    const result = await qRun(`
+      INSERT INTO resources (title, category, description, content_url, external_url, published_at, enabled, uploader_id, file_size, version, sort_order, visibility, original_filename, public_slug, public_slug_display)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, title, normalizedCategory, description || "", fileUrl, external, ts, enabled === "false" ? 0 : 1, req.user!.id, fileSize, version || null, order, vis, originalFilename, finalSlug.slug, finalSlug.display);
+    const newId = Number(result.lastInsertRowid);
+
+    // Prefer the numeric id as the public download ID when the admin did not set one.
+    if (!hasCustomSlug) {
+      const preferred = await resolveResourcePublicSlug({
+        raw: undefined,
+        defaultId: newId,
+        excludeId: newId,
+      });
+      if (preferred.ok) {
+        await qRun(
+          "UPDATE resources SET public_slug = ?, public_slug_display = ? WHERE id = ?",
+          preferred.slug,
+          preferred.display,
+          newId,
+        );
+        finalSlug = preferred;
+      }
+    }
     if (!isExternal) {
       logAdminUpload({
         ok: true,
@@ -1723,7 +1751,7 @@ router.post("/resources", extendUploadSocketTimeouts, resourceFileUpload, async 
       affectedObject: `resource:${newId}`,
     });
     scheduleAdminStatsRefresh();
-    res.status(201).json({ id: newId, publicSlug: slugResolved.display, publicPath: resourcePublicPath(slugResolved.display) });
+    res.status(201).json({ id: newId, publicSlug: finalSlug.display, publicPath: resourcePublicPath(finalSlug.display) });
   } catch (err) {
     cleanupTempFile(req.file);
     await rollbackStoredFile(stored);

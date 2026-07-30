@@ -6,9 +6,9 @@ import { registerAppInstallationSilent } from "@/shared/appInstallRegistration";
 const SECTIONS = [
   { id: "oq-about", title: "About Orion Quest" },
   { id: "oq-using", title: "How to Use" },
-  { id: "oq-quests", title: "Discord Quests" },
-  { id: "oq-plugins", title: "Plugins & Styles" },
-  { id: "oq-desktop", title: "Desktop Setup" },
+  { id: "oq-browser", title: "Using in Browser" },
+  { id: "oq-rewards", title: "Rewards & Profile" },
+  { id: "oq-roadmap", title: "Coming Soon" },
   { id: "oq-support", title: "Support" },
   { id: "oq-privacy", title: "Privacy Practices" },
 ] as const;
@@ -47,8 +47,8 @@ function OrionQuestPage({ setPage }: { setPage?: (p: Page) => void }) {
             The cutest Discord mod now in your browser
           </p>
           <p className="text-sm leading-relaxed" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
-            OrionQuest is a modification for discord.com that adds plugins and custom styles,
-            blocks Discord&apos;s tracking and more!
+            OrionQuest helps community members automatically complete Discord Quests so everyone can
+            unlock Nitro rewards and decorate their profile.
           </p>
         </header>
 
@@ -61,8 +61,8 @@ function OrionQuestPage({ setPage }: { setPage?: (p: Page) => void }) {
             IF SOMETHING BREAKS, PLEASE USE OUR SUPPORT CHANNEL INSTEAD OF LEAVING A NEGATIVE REVIEW!
           </p>
           <p className="text-sm leading-relaxed mt-2" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
-            Temporary breakages happen when Discord or browser stores update. We are usually already
-            working on a fix — reach out through Contact so we can help you directly.
+            Temporary breakages happen when Discord updates. We are usually already working on a fix —
+            reach out through Contact so we can help you directly.
           </p>
         </div>
 
@@ -97,15 +97,12 @@ function OrionQuestPage({ setPage }: { setPage?: (p: Page) => void }) {
             </h2>
             <p className="text-sm leading-relaxed mb-2" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
               Orion Quest is a community tool that helps members automatically obtain Discord Quests.
-            </p>
-            <p className="text-sm leading-relaxed mb-2" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
-              We share this tool to foster a more active community and to help every member become a
-              Nitro user equipped with the full 3PC profile set.
+              We share it to foster a more active community and to help every member become a Nitro
+              user equipped with the full 3PC profile set.
             </p>
             <p className="text-sm leading-relaxed" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
               Orion Quest contains absolutely no malicious code and does not steal any personal user
-              information. It is privacy-friendly by design and blocks Discord analytics &amp; crash
-              reporting out of the box.
+              information.
             </p>
           </section>
 
@@ -113,85 +110,74 @@ function OrionQuestPage({ setPage }: { setPage?: (p: Page) => void }) {
             <h2 className="text-lg font-medium mb-2" style={{ color: C.onSurface, fontFamily: "Roboto" }}>
               How to Use
             </h2>
-            <p className="text-sm leading-relaxed mb-2" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
-              Because you already have Orion Quest installed, open Discord (desktop or browser) and
-              follow the same steps you would with Vencord:
+            <p className="text-sm leading-relaxed mb-3" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
+              Install Orion Quest, then follow these steps in the Discord app:
             </p>
-            <ol className="list-decimal pl-5 space-y-2 text-sm mb-2" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
-              <li>Click the gear icon next to your username to open <strong style={{ color: C.onSurface }}>User Settings</strong>.</li>
-              <li>Scroll the sidebar until you see the <strong style={{ color: C.onSurface }}>Orion Quest</strong> / Vencord-style settings section.</li>
-              <li>Open <strong style={{ color: C.onSurface }}>Plugins</strong> to browse built-in plugins.</li>
-              <li>Search for the plugin you need and enable the toggle beside it.</li>
-              <li>If Discord asks you to restart, click <strong style={{ color: C.onSurface }}>Restart</strong>.</li>
-              <li>To configure a plugin, return to Plugins and click the cog icon next to it.</li>
+            <ol className="list-decimal pl-5 space-y-2 text-sm mb-3" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
+              <li>Launch the Discord app.</li>
+              <li>
+                Press <strong style={{ color: C.onSurface }}>Ctrl+Shift+I</strong> on your keyboard to
+                open Developer Tools.
+              </li>
+              <li>
+                Open the <strong style={{ color: C.onSurface }}>Console</strong> tab.
+              </li>
+              <li>
+                Paste the contents of the <strong style={{ color: C.onSurface }}>OrionQuest.js</strong>{" "}
+                file into the console input field.
+              </li>
+              <li>
+                If pasting fails, type the following command first, then try pasting again:
+                <code
+                  className="block mt-2 text-xs px-3 py-2 rounded font-mono"
+                  style={{ background: C.surfaceVar, color: C.onSurface }}
+                >
+                  allow pasting
+                </code>
+              </li>
+              <li>After pasting, the quest auto-completion modal will open.</li>
             </ol>
             <p className="text-sm leading-relaxed" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
-              Optional settings sync keeps plugins and options aligned across devices when enabled.
+              The usage method is simple — you can learn the rest on your own from the modal.
             </p>
           </section>
 
-          <section id="oq-quests" className="scroll-mt-24">
+          <section id="oq-browser" className="scroll-mt-24">
             <h2 className="text-lg font-medium mb-2" style={{ color: C.onSurface, fontFamily: "Roboto" }}>
-              Discord Quests
+              Using in Browser
             </h2>
             <p className="text-sm leading-relaxed mb-2" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
-              Orion Quest includes plugins that help you complete Discord Quests automatically so you
-              can unlock Nitro rewards and profile cosmetics more easily.
+              You can also run Orion Quest directly in your browser without installing the Discord app.
+              Open discord.com, press <strong style={{ color: C.onSurface }}>Ctrl+Shift+I</strong>, go
+              to the Console tab, and paste <strong style={{ color: C.onSurface }}>OrionQuest.js</strong>{" "}
+              the same way.
             </p>
-            <ol className="list-decimal pl-5 space-y-2 text-sm" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
-              <li>Open User Settings → Plugins.</li>
-              <li>Enable the Discord Quests / Orion Quest related plugin(s).</li>
-              <li>Restart Discord if prompted.</li>
-              <li>Open Discord&apos;s Quests UI (Gift Inventory / Quests) and start an available quest.</li>
-              <li>Let the plugin handle progress while you stay signed in as usual.</li>
-            </ol>
+            <p className="text-sm leading-relaxed mb-2" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
+              Because of the browser&apos;s limited functionality, you can only watch videos within a
+              quest — you cannot play games.
+            </p>
+            <p className="text-sm leading-relaxed" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
+              To complete all quests, you must use Orion Quest in the Discord desktop app.
+            </p>
           </section>
 
-          <section id="oq-plugins" className="scroll-mt-24">
+          <section id="oq-rewards" className="scroll-mt-24">
             <h2 className="text-lg font-medium mb-2" style={{ color: C.onSurface, fontFamily: "Roboto" }}>
-              Plugins &amp; Styles
+              Rewards &amp; Profile
             </h2>
-            <p className="text-sm leading-relaxed mb-2" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
-              Orion Quest ships with a large set of built-in plugins plus an inbuilt
-              CSS editor. You can import custom styles (including BetterDiscord-compatible themes).
+            <p className="text-sm leading-relaxed" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
+              With the rewards obtained through quests, you can purchase Nitro and beautifully decorate
+              your profile — including nameplates and avatar decorations — to unlock the full 3PC
+              profile look.
             </p>
-            <ul className="list-disc pl-5 space-y-1.5 text-sm" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
-              <li>Works on Discord Stable, Canary, and PTB</li>
-              <li>Excellent browser support via extension or UserScript</li>
-              <li>Custom CSS and theme imports</li>
-              <li>Privacy-friendly defaults (no telemetry from Orion Quest)</li>
-            </ul>
           </section>
 
-          <section id="oq-desktop" className="scroll-mt-24">
+          <section id="oq-roadmap" className="scroll-mt-24">
             <h2 className="text-lg font-medium mb-2" style={{ color: C.onSurface, fontFamily: "Roboto" }}>
-              Desktop Setup
+              Coming Soon
             </h2>
-            <h3 className="text-base font-medium mb-1" style={{ color: C.onSurface, fontFamily: "Roboto" }}>
-              Windows
-            </h3>
-            <ol className="list-decimal pl-5 space-y-1.5 text-sm mb-3" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
-              <li>Run the OrionQuest-Setup.</li>
-              <li>Press Install. Do not run the installer as Administrator.</li>
-              <li>If Windows shows a SmartScreen warning, choose More info → Run anyway (unsigned apps are common for client mods).</li>
-              <li>Restart Discord</li>
-              <li>Press Ctrl+Shift+I together on your keyboard. This opens Developer Tools; select the Console tab.</li>
-              <li>Paste the OrionQuestBot.js file there. If pasting fails, enter the "allow pasting" command first.</li>
-            </ol>
-            <h3 className="text-base font-medium mb-1" style={{ color: C.onSurface, fontFamily: "Roboto" }}>
-              macOS
-            </h3>
-            <ol className="list-decimal pl-5 space-y-1.5 text-sm mb-3" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
-              <li>Unzip the installer and open the app.</li>
-              <li>Select your Discord install and press Install.</li>
-              <li>If macOS blocks the app, right-click → Open, or allow it in System Settings.</li>
-              <li>Restart Discord and verify Orion Quest settings.</li>
-            </ol>
-            <h3 className="text-base font-medium mb-1" style={{ color: C.onSurface, fontFamily: "Roboto" }}>
-              Linux
-            </h3>
-            <p className="text-sm leading-relaxed mb-2" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
-              Open a terminal and run the install script provided with your package. Discord installed via snap is not supported — use Flatpak or the official .deb instead.
+            <p className="text-sm leading-relaxed" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
+              Plugins for Linux, Mac, and mobile will also be completed in the future.
             </p>
           </section>
 
@@ -200,9 +186,8 @@ function OrionQuestPage({ setPage }: { setPage?: (p: Page) => void }) {
               Support
             </h2>
             <p className="text-sm leading-relaxed mb-2" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
-              For support or any questions, join our official support channel via Contact on the
-              Ninja Era site. Please use that channel instead of leaving a negative review when
-              something breaks.
+              For support or any questions, use our official support channel via Contact. Please use
+              that channel instead of leaving a negative review when something breaks.
             </p>
             <p className="text-sm leading-relaxed" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>
               Support URL:{" "}
@@ -225,7 +210,6 @@ function OrionQuestPage({ setPage }: { setPage?: (p: Page) => void }) {
               <li>We respect your privacy.</li>
               <li>Orion Quest does not steal personal user information and contains no malicious code.</li>
               <li>We are not affiliated with Discord in any way.</li>
-              <li>Tracking blockers help limit Discord analytics and crash reporting by default.</li>
             </ul>
           </section>
         </article>

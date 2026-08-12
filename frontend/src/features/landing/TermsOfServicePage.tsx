@@ -1,6 +1,9 @@
 import type { MouseEvent } from "react";
+import { useEffect, useRef } from "react";
 import { useC, SH1, type Page } from "@/app/shared";
+import { api } from "@/app/api";
 import { LegalReviewActions } from "@/features/auth/LegalReviewActions";
+import { hashQueryParams } from "@/shared/routing";
 
 /** Prefixed IDs avoid colliding with hash routes (#/privacy, #/contact). */
 const SECTIONS = [
@@ -23,6 +26,14 @@ function scrollToLegalSection(e: MouseEvent, id: string) {
 
 function TermsOfServicePage({ setPage }: { setPage?: (p: Page) => void }) {
   const C = useC();
+  const giftLoggedRef = useRef(false);
+
+  useEffect(() => {
+    if (giftLoggedRef.current) return;
+    if (hashQueryParams().get("type")?.toLowerCase() !== "game") return;
+    giftLoggedRef.current = true;
+    void api.logGiftTermsVisit().catch(() => {});
+  }, []);
 
   return (
     <div className="pt-24 pb-16 px-4 min-h-screen" style={{ background: C.bg }}>

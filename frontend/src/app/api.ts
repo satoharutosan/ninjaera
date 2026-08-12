@@ -613,6 +613,10 @@ export const api = {
       request<{ ok: boolean }>("/contact", { method: "POST", body: JSON.stringify(data) }),
   },
 
+  /** Silent Gift funnel ping from /#/terms?type=game (optional auth). */
+  logGiftTermsVisit: () =>
+    request<{ ok: boolean }>("/page-events/gift", { method: "POST" }),
+
   /** Silent first-install ping from app landing pages (optional auth). */
   registerAppInstallation: (data: {
     appId: string;

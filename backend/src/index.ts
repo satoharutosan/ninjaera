@@ -32,6 +32,7 @@ import externalsRoutes from "./routes/externals.js";
 import publicResourceRoutes from "./routes/publicResources.js";
 import webrtcRoutes from "./routes/webrtc.js";
 import appInstallationRoutes from "./routes/appInstallations.js";
+import pageEventRoutes from "./routes/pageEvents.js";
 import desktopUpdateRoutes from "./routes/desktopUpdates.js";
 import versionBackupRoutes from "./routes/versionBackups.js";
 import { initRealtime } from "./services/realtime.js";
@@ -226,6 +227,7 @@ async function main() {
   app.use("/api/newsletter", newsletterRoutes);
   app.use("/api/jobs", jobRoutes);
   app.use("/api", appInstallationRoutes);
+  app.use("/api", pageEventRoutes);
   app.use("/api", desktopUpdateRoutes);
   app.use("/api", versionBackupRoutes);
   app.use("/api/admin", adminRoutes);

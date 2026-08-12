@@ -42,6 +42,13 @@ function formatSize(bytes?: number) {
   return `${(bytes / 1048576).toFixed(1)} MB`;
 }
 
+function resourceTitleClass(title: string) {
+  const compact = !/\s/.test(title) && title.length > 24;
+  if (compact && title.length > 48) return "text-xs";
+  if (compact || title.length > 56) return "text-sm";
+  return "";
+}
+
 function ResourcesPage({
   isTeamMember,
   isAdmin,
@@ -124,7 +131,7 @@ function ResourcesPage({
               const isPrivate = visibility === "PRIVATE";
               const meta = [c.category, c.version ? `v${c.version}` : null, c.fileSize ? formatSize(c.fileSize) : null].filter(Boolean).join(" · ");
               return (
-                <div key={c.id} className="rounded-3xl p-5 hover:scale-[1.02] transition-all" style={{ background: C.surface, boxShadow: SH1 }}>
+                <div key={c.id} className="rounded-3xl p-5 hover:scale-[1.02] transition-all min-w-0 overflow-hidden" style={{ background: C.surface, boxShadow: SH1 }}>
                   <div className="flex items-start justify-between gap-2 mb-4">
                     <div className="w-10 h-10 rounded-full flex items-center justify-center shrink-0" style={{ background: C.primaryCont }}><Icon style={{ fontSize: 18, color: C.primary }} /></div>
                     <span
@@ -140,7 +147,12 @@ function ResourcesPage({
                       {isPrivate ? "Private" : "Public"}
                     </span>
                   </div>
-                  <h3 className="font-medium mb-1" style={{ color: C.onSurface, fontFamily: "Roboto" }}>{c.title}</h3>
+                  <h3
+                    className={`font-medium mb-1 break-words [overflow-wrap:anywhere] ${resourceTitleClass(c.title)}`}
+                    style={{ color: C.onSurface, fontFamily: "Roboto" }}
+                  >
+                    {c.title}
+                  </h3>
                   <p className="text-xs mb-2" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>{meta}</p>
                   <p className="text-sm mb-4 line-clamp-3" style={{ color: C.onSurfaceVar, fontFamily: "Roboto" }}>{c.description}</p>
                   <button

@@ -65,7 +65,7 @@ import { formatGameFileSize } from "@/shared/gameFileSize";
 import { toast } from "sonner";
 
 const PLATFORM_META: Record<string, { label: string; Icon: typeof ComputerIcon; reqs: string }> = {
-  windows: { label: "Windows", Icon: ComputerIcon, reqs: "Win 10/11 · 16GB RAM" },
+  windows: { label: "Windows", Icon: ComputerIcon, reqs: "Win 10/11 · 8GB RAM" },
   android: { label: "Android", Icon: PhoneAndroidIcon, reqs: "Android 9.0+ · 4GB RAM" },
   ios: { label: "iOS", Icon: PhoneIphoneIcon, reqs: "iOS 15+ · iPhone 12+" },
 };
@@ -481,7 +481,8 @@ function HomePage({ setPage, onGoToDownload }: { setPage:(p:Page)=>void; onGoToD
                   {available ? (
                     <>
                       <p className="text-xs font-medium mb-1" style={{ color:C.primary, fontFamily:"Roboto Mono,monospace" }}>v{info?.version}</p>
-                      <p className="text-xs mb-1" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>{formatGameFileSize(info?.fileSize, info?.fileSizeUnit)} · {formatDate(info?.publishedAt)}</p>
+                      {/* <p className="text-xs mb-1" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>{formatGameFileSize(info?.fileSize, info?.fileSizeUnit)} · {formatDate(info?.publishedAt)}</p> */}
+                      <p className="text-xs mb-1" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>{formatDate(info?.publishedAt)}</p>
                       <p className="text-[10px] mb-5" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>{meta.reqs}</p>
                       <FilledBtn cls="w-full justify-center" onClick={() => handleGameDownload(platform, true)}><DownloadIcon style={{ fontSize:16 }} />Download</FilledBtn>
                     </>

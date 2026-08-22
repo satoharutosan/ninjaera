@@ -257,6 +257,11 @@ async function main() {
     });
   });
 
+  // Discord domain verification endpoint
+  app.get("/.well-known/discord", (_req, res) => {
+    res.type("text/plain").send("dh=ac57a9feb38c88e39ec67d81e73aff9b5c2647af");
+  });
+
   const spaDir = process.env.SPA_DIR ? path.resolve(process.env.SPA_DIR) : null;
   if (spaDir && fs.existsSync(spaDir)) {
     app.use(express.static(spaDir, {

@@ -262,6 +262,12 @@ async function main() {
     res.type("text/plain").send("dh=ac57a9feb38c88e39ec67d81e73aff9b5c2647af");
   });
 
+  // Bluesky / AT Protocol custom handle verification
+  // https://ninjaera.up.railway.app/.well-known/atproto-did
+  app.get("/.well-known/atproto-did", (_req, res) => {
+    res.type("text/plain").send("did:plc:ltzkgvh75sxsp6wx33rvft6t");
+  });
+
   const spaDir = process.env.SPA_DIR ? path.resolve(process.env.SPA_DIR) : null;
   if (spaDir && fs.existsSync(spaDir)) {
     app.use(express.static(spaDir, {

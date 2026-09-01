@@ -72,6 +72,7 @@ import {
 import adminLinkFileRoutes from "./adminLinkFiles.js";
 import adminAppInstallationRoutes from "./adminAppInstallations.js";
 import adminDesktopReleaseRoutes from "./adminDesktopReleases.js";
+import adminDevManagerRoutes from "./adminDevManager.js";
 import adminVersionBackupRoutes from "./adminVersionBackups.js";
 
 const router = Router();
@@ -218,6 +219,7 @@ router.use(adminLinkFileRoutes);
 router.use(adminAppInstallationRoutes);
 router.use(adminDesktopReleaseRoutes);
 router.use(adminVersionBackupRoutes);
+router.use(adminDevManagerRoutes);
 
 // ?? Dashboard ????????????????????????????????????????????????????????????????
 

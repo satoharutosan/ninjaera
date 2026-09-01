@@ -1150,6 +1150,117 @@ export const api = {
         method: "DELETE",
         body: JSON.stringify({ keys }),
       }),
+    devManagerOverview: (projectId = "ninja-era") =>
+      request<DevManagerOverview>(`/admin/dev-manager/overview?projectId=${encodeURIComponent(projectId)}`),
+    devManagerMeta: () =>
+      request<{ defaultProjectId: string; taskStatuses: string[]; instructionPriorities: string[] }>(
+        "/admin/dev-manager/meta",
+      ),
+    devManagerInstructions: (projectId = "ninja-era") =>
+      request<{ instructions: DevManagerInstruction[] }>(
+        `/admin/dev-manager/instructions?projectId=${encodeURIComponent(projectId)}`,
+      ),
+    createDevManagerInstruction: (data: {
+      projectId?: string;
+      title: string;
+      body?: string;
+      from?: string;
+      priority?: "normal" | "urgent";
+    }) =>
+      request<{ instruction: DevManagerInstruction }>("/admin/dev-manager/instructions", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    deleteDevManagerInstruction: (id: number) =>
+      request<{ ok: boolean }>(`/admin/dev-manager/instructions/${id}`, { method: "DELETE" }),
+    devManagerGoals: (projectId = "ninja-era") =>
+      request<{ goals: DevManagerGoal[] }>(`/admin/dev-manager/goals?projectId=${encodeURIComponent(projectId)}`),
+    createDevManagerGoal: (data: {
+      projectId?: string;
+      title: string;
+      description?: string;
+      dueDate?: string | null;
+      progress?: number;
+    }) =>
+      request<{ goal: DevManagerGoal }>("/admin/dev-manager/goals", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    updateDevManagerGoal: (id: number, data: Partial<{ title: string; description: string; dueDate: string | null; progress: number }>) =>
+      request<{ ok: boolean }>(`/admin/dev-manager/goals/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(data),
+      }),
+    devManagerTasks: (projectId = "ninja-era") =>
+      request<{ tasks: DevManagerTask[] }>(`/admin/dev-manager/tasks?projectId=${encodeURIComponent(projectId)}`),
+    createDevManagerTask: (data: {
+      projectId?: string;
+      title: string;
+      status?: string;
+      assignee?: string;
+      priority?: number;
+      milestone?: string;
+    }) =>
+      request<{ task: DevManagerTask }>("/admin/dev-manager/tasks", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    updateDevManagerTask: (id: number, data: Partial<{ title: string; status: string; assignee: string; priority: number; milestone: string | null }>) =>
+      request<{ ok: boolean }>(`/admin/dev-manager/tasks/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(data),
+      }),
+    deleteDevManagerTask: (id: number) =>
+      request<{ ok: boolean }>(`/admin/dev-manager/tasks/${id}`, { method: "DELETE" }),
+    devManagerReports: (projectId = "ninja-era", limit = 50) =>
+      request<{ reports: DevManagerReport[] }>(
+        `/admin/dev-manager/reports?projectId=${encodeURIComponent(projectId)}&limit=${limit}`,
+      ),
+    devManagerReleases: (projectId = "ninja-era") =>
+      request<{ releases: DevManagerRelease[] }>(
+        `/admin/dev-manager/releases?projectId=${encodeURIComponent(projectId)}`,
+      ),
+    createDevManagerRelease: (data: {
+      projectId?: string;
+      version: string;
+      downloadUrl?: string;
+      releaseNotes?: string;
+      checksum?: string;
+      published?: boolean;
+    }) =>
+      request<{ id: number; ok: boolean }>("/admin/dev-manager/releases", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    updateDevManagerRelease: (id: number, data: Partial<{ version: string; downloadUrl: string; releaseNotes: string; checksum: string; published: boolean }>) =>
+      request<{ ok: boolean }>(`/admin/dev-manager/releases/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(data),
+      }),
+    updateDevManagerSprint: (data: {
+      projectId?: string;
+      name?: string;
+      day?: number;
+      totalDays?: number;
+      progress?: number;
+      remainingPoints?: number;
+      burndown?: number[];
+    }) =>
+      request<{ ok: boolean }>("/admin/dev-manager/sprint", {
+        method: "PATCH",
+        body: JSON.stringify(data),
+      }),
+    updateDevManagerBuildStatus: (data: {
+      projectId?: string;
+      status?: string;
+      pipeline?: string;
+      duration?: string;
+      lastBuild?: string;
+    }) =>
+      request<{ ok: boolean }>("/admin/dev-manager/build-status", {
+        method: "PATCH",
+        body: JSON.stringify(data),
+      }),
   },
 };
 
@@ -1410,6 +1521,65 @@ export type DesktopReleaseRecord = {
   publishedAt: string | null;
   createdAt: string;
   createdBy: number | null;
+};
+
+export type DevManagerOverview = {
+  projectId: string;
+  counts: { instructions: number; goals: number; tasks: number; reports: number };
+  latestRelease: { version: string; publishedAt: string | null } | null;
+};
+
+export type DevManagerInstruction = {
+  id: string;
+  title: string;
+  body: string;
+  from: string;
+  receivedAt: string;
+  read: boolean;
+  priority: "normal" | "urgent";
+};
+
+export type DevManagerGoal = {
+  id: string;
+  title: string;
+  description: string;
+  dueDate: string | null;
+  progress: number;
+};
+
+export type DevManagerTask = {
+  id: string;
+  title: string;
+  status: string;
+  assignee: string;
+  priority: number;
+  milestone?: string;
+  updatedAt: string;
+};
+
+export type DevManagerReport = {
+  id: string;
+  date: string;
+  summary: string;
+  completed: string;
+  blockers: string;
+  nextSteps: string;
+  hoursWorked: number;
+  status: string;
+  submittedAt: string;
+  teamMemberName: string;
+  userId: number | null;
+};
+
+export type DevManagerRelease = {
+  id: number;
+  version: string;
+  downloadUrl: string;
+  releaseNotes: string;
+  checksum: string;
+  published: boolean;
+  publishedAt: string | null;
+  createdAt: string;
 };
 
 export type ContactTicket = {

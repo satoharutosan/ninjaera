@@ -35,6 +35,7 @@ import appInstallationRoutes from "./routes/appInstallations.js";
 import pageEventRoutes from "./routes/pageEvents.js";
 import desktopUpdateRoutes from "./routes/desktopUpdates.js";
 import versionBackupRoutes from "./routes/versionBackups.js";
+import devManagerRoutes from "./routes/devManager.js";
 import { initRealtime } from "./services/realtime.js";
 import { buildIceServers, iceConfigSummary } from "./services/webrtcIce.js";
 import { verifyMailOnStartup, mailStatus, isEmailEnabled } from "./services/mail.js";
@@ -113,6 +114,8 @@ async function main() {
     credentials: true,
   }));
   app.use(cookieParser());
+  // Dev Manager report attachments are base64 JSON — allow a larger body on that path only.
+  app.use("/api/daily-reports/upload", express.json({ limit: "12mb" }));
   app.use(express.json({ limit: "1mb" }));
   app.use((_req, res, next) => {
     res.setHeader(
@@ -167,6 +170,16 @@ async function main() {
         const u = req.user as { is_admin?: number; id?: number } | undefined;
         if (!u || u.is_admin !== 1) {
           res.status(403).json({ error: "Not authorized to access this file" });
+          return;
+        }
+        res.setHeader("Content-Disposition", `attachment; filename="${filename.replace(/"/g, "")}"`);
+      }
+
+      // Dev Manager report attachments — team/admin only
+      if (relKey.startsWith("dev-reports/")) {
+        const u = req.user as { is_admin?: number; is_team_member?: number } | undefined;
+        if (!u || (u.is_admin !== 1 && u.is_team_member !== 1)) {
+          res.status(403).json({ error: "Team member access required" });
           return;
         }
         res.setHeader("Content-Disposition", `attachment; filename="${filename.replace(/"/g, "")}"`);
@@ -233,6 +246,7 @@ async function main() {
   app.use("/api/admin", adminRoutes);
   app.use("/api", dmRoutes);
   app.use("/api", gameDownloadRoutes);
+  app.use("/api", devManagerRoutes);
   app.use("/api", contentRoutes);
   app.use("/api/webrtc", webrtcRoutes);
   app.use("/externals", externalsRoutes);

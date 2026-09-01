@@ -54,6 +54,20 @@ const REQUIRED_TABLES = [
   "admin_action_audits",
   "pending_registrations",
   "uploaded_assets",
+  "dev_projects",
+  "dev_instructions",
+  "dev_instruction_reads",
+  "dev_goals",
+  "dev_tasks",
+  "dev_daily_reports",
+  "dev_report_attachments",
+  "dev_sprints",
+  "dev_milestones",
+  "dev_environments",
+  "dev_risks",
+  "dev_build_status",
+  "dev_velocity",
+  "dev_releases",
 ];
 
 async function appliedMigrationIds(): Promise<Set<string>> {

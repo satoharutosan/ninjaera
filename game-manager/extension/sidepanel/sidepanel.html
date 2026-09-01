@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ninja Era — Dev Panel</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../popup/shared.css" />
+  <link rel="stylesheet" href="sidepanel.css" />
+</head>
+<body>
+  <div class="panel-app">
+    <header class="panel-header">
+      <div class="brand">
+        <div class="brand-icon">🥷</div>
+        <div>
+          <h1>Ninja Era Dev Panel</h1>
+          <p class="subtitle" id="panel-subtitle">Full development overview</p>
+        </div>
+      </div>
+    </header>
+
+    <div class="panel-layout">
+      <aside class="sidebar">
+        <nav>
+          <button class="nav-item active" data-view="overview">Overview</button>
+          <button class="nav-item" data-view="kanban">Task Board</button>
+          <button class="nav-item" data-view="sprint">Sprint</button>
+          <button class="nav-item" data-view="release">Release</button>
+          <button class="nav-item" data-view="activity">Activity</button>
+          <button class="nav-item" data-view="blockers">Blockers</button>
+        </nav>
+      </aside>
+
+      <main class="panel-main">
+        <section class="view active" id="view-overview">
+          <div class="overview-grid">
+            <div class="card wide">
+              <h2>Development Status</h2>
+              <div class="status-grid" id="status-grid"></div>
+            </div>
+            <div class="card">
+              <h2>Milestone Tracker</h2>
+              <div id="milestone-list"></div>
+            </div>
+            <div class="card">
+              <h2>Team Velocity</h2>
+              <div class="velocity-chart" id="velocity-chart"></div>
+            </div>
+            <div class="card">
+              <h2>Environment</h2>
+              <div id="env-status"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="view-kanban">
+          <div class="kanban" id="kanban-board"></div>
+        </section>
+
+        <section class="view" id="view-sprint">
+          <div class="card">
+            <h2 id="sprint-name">Current Sprint</h2>
+            <div class="sprint-info" id="sprint-info"></div>
+            <div class="burndown" id="burndown-chart"></div>
+          </div>
+        </section>
+
+        <section class="view" id="view-release">
+          <div class="card">
+            <h2>Release Management</h2>
+            <div class="release-details" id="release-details"></div>
+            <div class="release-actions">
+              <button class="btn primary" id="btn-check-release">Check Now</button>
+              <button class="btn secondary" id="btn-export-csv">Export CSV</button>
+            </div>
+            <div class="release-notes" id="release-notes"></div>
+          </div>
+        </section>
+
+        <section class="view" id="view-activity">
+          <div class="card">
+            <h2>Activity Log</h2>
+            <div class="activity-feed" id="activity-feed"></div>
+          </div>
+        </section>
+
+        <section class="view" id="view-blockers">
+          <div class="card">
+            <h2>Active Blockers & Risks</h2>
+            <div id="blocker-list"></div>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+  <script type="module" src="sidepanel.js"></script>
+</body>
+</html>

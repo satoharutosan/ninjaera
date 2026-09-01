@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ninja Era Dev Manager</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="shared.css" />
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="app" id="app">
+    <header class="header">
+      <div class="brand">
+        <div class="brand-icon">🥷</div>
+        <div>
+          <h1>Ninja Era</h1>
+          <p class="subtitle">Dev Manager</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button class="icon-btn" id="btn-sync" title="Sync now">↻</button>
+        <button class="icon-btn" id="btn-sidepanel" title="Open panel">⧉</button>
+      </div>
+    </header>
+
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-tab="dashboard" role="tab">Dashboard</button>
+      <button class="tab" data-tab="report" role="tab">Report</button>
+      <button class="tab" data-tab="instructions" role="tab">
+        Instructions <span class="badge" id="unread-badge" hidden>0</span>
+      </button>
+    </nav>
+
+    <main class="content">
+      <!-- Dashboard -->
+      <section class="panel active" id="panel-dashboard">
+        <div class="stats-grid">
+          <div class="stat-card">
+            <span class="stat-label">Sprint Progress</span>
+            <span class="stat-value" id="sprint-progress">—</span>
+            <div class="progress-bar"><div class="progress-fill" id="sprint-bar"></div></div>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Tasks Done</span>
+            <span class="stat-value" id="tasks-done">0/0</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Release</span>
+            <span class="stat-value" id="release-version">v0.0.0</span>
+            <span class="stat-meta" id="release-status">Checking…</span>
+          </div>
+          <div class="stat-card accent">
+            <span class="stat-label">Build</span>
+            <span class="stat-value" id="build-status">—</span>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-header">
+            <h2>Next-Stage Goals</h2>
+          </div>
+          <div class="goal-list" id="goal-list"></div>
+        </div>
+
+        <div class="section">
+          <div class="section-header">
+            <h2>Current Tasks</h2>
+            <button class="btn-text" id="btn-export">Export CSV</button>
+          </div>
+          <div class="task-list" id="task-list"></div>
+        </div>
+      </section>
+
+      <!-- Daily Report -->
+      <section class="panel" id="panel-report">
+        <form id="report-form" class="report-form">
+          <div class="form-group">
+            <label for="report-summary">Today's Summary</label>
+            <textarea id="report-summary" rows="3" placeholder="What did you accomplish today?" required></textarea>
+          </div>
+          <div class="form-group">
+            <label for="report-completed">Completed Items</label>
+            <textarea id="report-completed" rows="2" placeholder="List completed tasks, PRs, fixes…"></textarea>
+          </div>
+          <div class="form-group">
+            <label for="report-blockers">Blockers / Risks</label>
+            <textarea id="report-blockers" rows="2" placeholder="Anything blocking progress?"></textarea>
+          </div>
+          <div class="form-group">
+            <label for="report-next">Tomorrow's Plan</label>
+            <textarea id="report-next" rows="2" placeholder="What will you focus on next?" required></textarea>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="report-hours">Hours Worked</label>
+              <input type="number" id="report-hours" min="0" max="24" step="0.5" value="8" />
+            </div>
+            <div class="form-group">
+              <label for="report-file">Attach File</label>
+              <input type="file" id="report-file" accept=".txt,.md,.pdf,.doc,.docx,.zip" />
+            </div>
+          </div>
+          <div class="form-actions">
+            <button type="button" class="btn secondary" id="btn-save-draft">Save Draft</button>
+            <button type="submit" class="btn primary">Submit to PM</button>
+          </div>
+        </form>
+        <div class="toast" id="toast" hidden></div>
+      </section>
+
+      <!-- Instructions -->
+      <section class="panel" id="panel-instructions">
+        <div class="instruction-list" id="instruction-list"></div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span id="member-name">Not configured</span>
+      <a href="#" id="link-settings">Settings</a>
+    </footer>
+  </div>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

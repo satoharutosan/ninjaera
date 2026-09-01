@@ -41,7 +41,7 @@ export function canSelectTargetUser(
   return canManageTargetUser(actor, target);
 }
 
-export type AdminSection = "dashboard" | "users" | "notifications" | "contacts" | "channels" | "applications" | "resources" | "game-downloads" | "messaging-history" | "activity-logs" | "database" | "about-our-story" | "link-file-management" | "app-installations" | "desktop-updates" | "telegram-backup";
+export type AdminSection = "dashboard" | "users" | "notifications" | "contacts" | "channels" | "applications" | "resources" | "game-downloads" | "dev-manager" | "messaging-history" | "activity-logs" | "database" | "about-our-story" | "link-file-management" | "app-installations" | "desktop-updates" | "telegram-backup";
 
 /** Order matches Super Admin sidebar grouping (bottom of nav). */
 const SUPER_ADMIN_ONLY_SECTIONS: AdminSection[] = ["database", "messaging-history", "link-file-management", "app-installations", "desktop-updates", "telegram-backup"];

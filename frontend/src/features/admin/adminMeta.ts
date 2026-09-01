@@ -14,9 +14,10 @@ import LinkIcon from "@mui/icons-material/Link";
 import InstallDesktopIcon from "@mui/icons-material/InstallDesktop";
 import SystemUpdateAltIcon from "@mui/icons-material/SystemUpdateAlt";
 import BackupIcon from "@mui/icons-material/Backup";
+import EngineeringIcon from "@mui/icons-material/Engineering";
 import { api } from "@/app/api";
 
-export type Section = "dashboard" | "users" | "notifications" | "contacts" | "channels" | "applications" | "resources" | "game-downloads" | "messaging-history" | "activity-logs" | "database" | "about-our-story" | "link-file-management" | "app-installations" | "desktop-updates" | "telegram-backup";
+export type Section = "dashboard" | "users" | "notifications" | "contacts" | "channels" | "applications" | "resources" | "game-downloads" | "dev-manager" | "messaging-history" | "activity-logs" | "database" | "about-our-story" | "link-file-management" | "app-installations" | "desktop-updates" | "telegram-backup";
 
 export type DashboardStats = Awaited<ReturnType<typeof api.admin.stats>>;
 
@@ -54,6 +55,7 @@ export const STANDARD_SECTIONS: { id: Section; label: string; Icon: typeof Dashb
   { id: "applications", label: "Teamwork Applications", Icon: WorkIcon },
   { id: "resources", label: "Resources", Icon: MenuBookIcon },
   { id: "game-downloads", label: "Game Downloads", Icon: SportsEsportsIcon },
+  { id: "dev-manager", label: "Development Management", Icon: EngineeringIcon },
   { id: "activity-logs", label: "Activity Logs", Icon: HistoryIcon },
 ];
 

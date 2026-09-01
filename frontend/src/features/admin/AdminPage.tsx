@@ -53,6 +53,7 @@ import { AdminLinkFileManagement } from "@/features/admin/AdminLinkFileManagemen
 import { AdminAppInstallations } from "@/features/admin/AdminAppInstallations";
 import { AdminDesktopUpdates } from "@/features/admin/AdminDesktopUpdates";
 import { AdminTelegramBackup } from "@/features/admin/AdminTelegramBackup";
+import { AdminDevManager } from "@/features/admin/AdminDevManager";
 import { SECTIONS, CHART_COLORS, EMPTY_STATS, type Section, type DashboardStats } from "@/features/admin/adminMeta";
 import { UserAvatar, StatCard, DashSection, ChartCard, EmptyNote, LocationCell } from "@/features/admin/components/AdminChrome";
 import {
@@ -855,6 +856,8 @@ function AdminPage({ setPage }: { setPage: (p: Page) => void }) {
             )
         ) : section === "about-our-story" ? (
           <AdminOurStoryEditor />
+        ) : section === "dev-manager" ? (
+          <AdminDevManager onConfirm={setConfirm} />
         ) : section === "activity-logs" ? (
           <AdminActivityLogs onConfirm={setConfirm} onOpenDetail={setSelectedLog} />
         ) : loading ? (

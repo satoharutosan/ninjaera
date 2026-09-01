@@ -52,15 +52,16 @@ function teamMemberNameFrom(req: Request): string {
   return String(req.user?.username || "").slice(0, 120);
 }
 
-router.use(requireAuth, requireTeamOrAdmin);
+/** Per-route only — never router.use() on a router mounted at /api (would block /api/health and public routes). */
+const teamGate = [requireAuth, requireTeamOrAdmin];
 
-router.get("/instructions", async (req, res) => {
+router.get("/instructions", ...teamGate, async (req, res) => {
   const projectId = projectIdFrom(req);
   const instructions = await listInstructions(projectId, req.user!.id);
   res.json(instructions);
 });
 
-router.post("/instructions/:id/read", async (req, res) => {
+router.post("/instructions/:id/read", ...teamGate, async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id) || id <= 0) {
     res.status(400).json({ error: "Invalid instruction id" });
@@ -70,17 +71,17 @@ router.post("/instructions/:id/read", async (req, res) => {
   res.json({ ok: true });
 });
 
-router.get("/goals", async (req, res) => {
+router.get("/goals", ...teamGate, async (req, res) => {
   const goals = await listGoals(projectIdFrom(req));
   res.json(goals);
 });
 
-router.get("/tasks", async (req, res) => {
+router.get("/tasks", ...teamGate, async (req, res) => {
   const tasks = await listTasks(projectIdFrom(req));
   res.json(tasks);
 });
 
-router.patch("/tasks/:id", async (req, res) => {
+router.patch("/tasks/:id", ...teamGate, async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id) || id <= 0) {
     res.status(400).json({ error: "Invalid task id" });
@@ -99,27 +100,28 @@ router.patch("/tasks/:id", async (req, res) => {
   res.json(task);
 });
 
-router.get("/dev-status", async (req, res) => {
+router.get("/dev-status", ...teamGate, async (req, res) => {
   const status = await getDevStatus(projectIdFrom(req));
   res.json(status);
 });
 
-router.get("/releases/latest", async (req, res) => {
+router.get("/releases/latest", ...teamGate, async (req, res) => {
   const release = await getLatestRelease(projectIdFrom(req));
   res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
   res.json(release);
 });
 
-router.get("/sprint", async (req, res) => {
+router.get("/sprint", ...teamGate, async (req, res) => {
   res.json(await getSprintInfo(projectIdFrom(req)));
 });
 
-router.get("/build-status", async (req, res) => {
+router.get("/build-status", ...teamGate, async (req, res) => {
   res.json(await getBuildStatus(projectIdFrom(req)));
 });
 
 router.post(
   "/daily-reports",
+  ...teamGate,
   rateLimit({
     keyFn: (req) => `dev-report:${req.user!.id}`,
     max: 30,
@@ -175,6 +177,7 @@ router.post(
 
 router.post(
   "/daily-reports/upload",
+  ...teamGate,
   rateLimit({
     keyFn: (req) => `dev-report-upload:${req.user!.id}`,
     max: 20,

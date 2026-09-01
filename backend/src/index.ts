@@ -125,6 +125,25 @@ async function main() {
     next();
   });
 
+  // Public health check — register before /api routers so Railway probes never hit auth middleware.
+  app.get("/api/health", async (_req, res) => {
+    const mail = mailStatus();
+    res.json({
+      ok: true,
+      ts: Date.now(),
+      database: dbAsync.provider,
+      storage: storage.provider,
+      mail: {
+        enabled: isEmailEnabled(),
+        configured: mail.configured,
+        verified: mail.verified,
+        provider: mail.provider,
+        host: mail.host,
+        error: mail.verified === false ? mail.error : null,
+      },
+    });
+  });
+
   /**
    * Gate direct /uploads access for PRIVATE resource files and apply safe headers.
    * Local storage serves from disk; cloud storage uses signed URLs for gated assets.
@@ -251,25 +270,6 @@ async function main() {
   app.use("/api/webrtc", webrtcRoutes);
   app.use("/externals", externalsRoutes);
   app.use("/resources/public", publicResourceRoutes);
-
-  app.get("/api/health", async (_req, res) => {
-    const mail = mailStatus();
-    res.json({
-      ok: true,
-      ts: Date.now(),
-      database: dbAsync.provider,
-      storage: storage.provider,
-      mail: {
-        enabled: isEmailEnabled(),
-        configured: mail.configured,
-        verified: mail.verified,
-        provider: mail.provider,
-        host: mail.host,
-        // Never expose credentials; surface only whether outbound mail works.
-        error: mail.verified === false ? mail.error : null,
-      },
-    });
-  });
 
   // Discord domain verification endpoint
   app.get("/.well-known/discord", (_req, res) => {

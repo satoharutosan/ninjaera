@@ -58,8 +58,6 @@
  * @property {string} teamMemberName
  * @property {string} teamMemberRole
  * @property {string} projectId
- * @property {string} authToken
- * @property {string} authEmail
  * @property {boolean} enableNativeHost
  * @property {boolean} dailyReminderEnabled
  * @property {string} dailyReminderTime
@@ -72,8 +70,6 @@ const DEFAULT_SETTINGS = {
   teamMemberName: '',
   teamMemberRole: 'Developer',
   projectId: 'ninja-era',
-  authToken: '',
-  authEmail: '',
   enableNativeHost: true,
   dailyReminderEnabled: true,
   dailyReminderTime: '17:00',
@@ -144,6 +140,7 @@ export async function getReleaseState() {
     downloadProgress: 0,
     pendingInstall: false,
     installedVersion: '0.0.0',
+    lastDownloadedVersion: '',
   });
 }
 
@@ -164,4 +161,17 @@ export async function appendActivity(entry) {
     ...entry,
   });
   await setLocal('activityLog', log.slice(0, 200));
+}
+
+export async function getSyncStatus() {
+  return getLocal('syncStatus', {
+    lastSyncAt: null,
+    lastError: null,
+    online: false,
+  });
+}
+
+export async function saveSyncStatus(partial) {
+  const current = await getSyncStatus();
+  await setLocal('syncStatus', { ...current, ...partial });
 }

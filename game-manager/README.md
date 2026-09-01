@@ -110,9 +110,8 @@ The extension talks to the main Express API at **https://ninjaera.up.railway.app
 
 1. Start the main server: from repo root, `npm run dev` (or `cd backend && npm run start:dev`)
 2. Load the unpacked `game-manager/extension` folder in Chrome
-3. Open **Settings** → API Base URL defaults to `https://ninjaera.up.railway.app`
-4. Sign in with a **team member** or **admin** account
-5. Sync — the service worker uses JWT Bearer auth for all Dev Manager routes
+3. Open **Settings** → set **Your Name**, verify API Base URL (`https://ninjaera.up.railway.app` by default)
+4. Sync — the service worker connects automatically; no login required
 
 Daily reports use `/api/daily-reports` (not `/api/reports`, which is reserved for chat moderation).
 
@@ -229,10 +228,9 @@ HKCU\Software\Google\Chrome\NativeMessagingHosts\com.ninjaera.gamemanager
 1. Click the extension icon in Chrome
 2. Click **Settings** in the footer (or right-click the icon → Options)
 3. Fill in:
-   - **Your Name** and **Role**
-   - **API Base URL** (`http://localhost:3001` for local backend)
-   - **Account Email** / **Password** → Sign In (must be team member or admin)
-   - Verify the connection status shows green
+   - **Your Name** and **Role** (used to attribute reports and instruction read state)
+   - **API Base URL** (`http://localhost:3001` for local backend, or `https://ninjaera.up.railway.app` for production)
+4. Verify the connection status shows green
 
 ---
 
@@ -243,9 +241,7 @@ All settings are stored in `chrome.storage.sync` and managed via the Options pag
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `apiBaseUrl` | `https://ninjaera.up.railway.app` | Backend API base URL (production Ninja Era server) |
-| `authToken` | _(empty)_ | JWT from Sign In (`Authorization: Bearer`) |
-| `authEmail` | _(empty)_ | Account email used to sign in |
-| `teamMemberName` | _(empty)_ | Display name sent with reports |
+| `teamMemberName` | _(empty)_ | Display name sent as `X-Team-Member` header |
 | `teamMemberRole` | `Developer` | Role label shown in the side panel |
 | `projectId` | `ninja-era` | Sent as `X-Project-Id` header |
 | `enableNativeHost` | `true` | Use native host for release downloads |
@@ -309,16 +305,13 @@ The game is **never updated while running**.
 
 ## API Reference
 
-The extension expects a REST API on the main Ninja Era backend. All Dev Manager requests (except health/login) require a **team member or admin** JWT:
+The extension expects a REST API on the main Ninja Era backend. Dev Manager endpoints are **public** — no login required. Set your name in Settings; it is sent on every request:
 
 ```
 Content-Type: application/json
-Authorization: Bearer <token>
 X-Project-Id: ninja-era
 X-Team-Member: <configured name>
 ```
-
-Sign in via Settings (uses `POST /api/auth/login`).
 
 ### Endpoints
 

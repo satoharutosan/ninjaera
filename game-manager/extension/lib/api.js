@@ -1,23 +1,25 @@
 import { getSettings } from './storage.js';
 
-async function request(path, options = {}) {
-  const settings = await getSettings();
-  const url = `${settings.apiBaseUrl.replace(/\/$/, '')}${path}`;
+function apiOrigin(settings) {
+  return settings.apiBaseUrl.replace(/\/$/, '');
+}
 
-  const headers = {
+function buildHeaders(settings, extra = {}) {
+  return {
     'Content-Type': 'application/json',
     'X-Project-Id': settings.projectId,
     'X-Team-Member': settings.teamMemberName,
-    ...(options.headers || {}),
+    ...extra,
   };
+}
 
-  if (settings.authToken) {
-    headers.Authorization = `Bearer ${settings.authToken}`;
-  }
+async function request(path, options = {}) {
+  const settings = await getSettings();
+  const url = `${apiOrigin(settings)}${path}`;
 
   const response = await fetch(url, {
     ...options,
-    headers,
+    headers: buildHeaders(settings, options.headers || {}),
   });
 
   if (!response.ok) {
@@ -29,30 +31,34 @@ async function request(path, options = {}) {
     } catch {
       /* keep raw text */
     }
-    throw new Error(`API ${response.status}: ${message}`);
+    const err = new Error(message || `HTTP ${response.status}`);
+    err.status = response.status;
+    throw err;
   }
 
   if (response.status === 204) return null;
   return response.json();
 }
 
-export async function login(email, password) {
+/** Health probe used by sync and UI status indicators. */
+export async function getConnectionStatus() {
   const settings = await getSettings();
-  const url = `${settings.apiBaseUrl.replace(/\/$/, '')}/api/auth/login`;
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password }),
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(data.error || `Login failed (${response.status})`);
+  const base = apiOrigin(settings);
+
+  try {
+    const healthRes = await fetch(`${base}/api/health`);
+    if (!healthRes.ok) {
+      return { online: false, error: 'Server unreachable' };
+    }
+    return { online: true, error: null };
+  } catch {
+    return { online: false, error: 'Server unreachable' };
   }
-  return data;
 }
 
-export async function fetchMe() {
-  return request('/api/auth/me');
+export async function pingServer() {
+  const status = await getConnectionStatus();
+  return status.online;
 }
 
 export async function fetchDevStatus() {
@@ -82,6 +88,51 @@ export async function fetchLatestRelease() {
   return request('/api/releases/latest');
 }
 
+/**
+ * Resolve a release download URL to something fetchable.
+ * Handles relative paths, game-download API redirects, and external URLs.
+ */
+export async function resolveReleaseDownloadUrl(release) {
+  const settings = await getSettings();
+  const base = apiOrigin(settings);
+  let url = (release?.downloadUrl || '').trim();
+
+  if (!url) {
+    try {
+      const dl = await request('/api/game-downloads/windows/download');
+      if (dl?.externalUrl) return dl.externalUrl;
+    } catch {
+      /* fall through */
+    }
+    throw new Error('No download URL configured for this release');
+  }
+
+  if (url.startsWith('/')) {
+    url = `${base}${url}`;
+  }
+
+  // Authenticated API download endpoint — resolve to external URL or direct file URL.
+  if (url.includes('/api/game-downloads/') && url.includes('/download')) {
+    const response = await fetch(url, {
+      headers: buildHeaders(settings, {}),
+      redirect: 'follow',
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      throw new Error(text || `Download metadata failed (${response.status})`);
+    }
+    const contentType = response.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      const data = await response.json();
+      if (data.externalUrl) return data.externalUrl;
+      throw new Error('Game download returned no external URL');
+    }
+    return response.url;
+  }
+
+  return url;
+}
+
 export async function submitDailyReport(report) {
   return request('/api/daily-reports', {
     method: 'POST',
@@ -106,15 +157,4 @@ export async function fetchSprintInfo() {
 
 export async function fetchBuildStatus() {
   return request('/api/build-status');
-}
-
-export async function pingServer() {
-  try {
-    const settings = await getSettings();
-    const url = `${settings.apiBaseUrl.replace(/\/$/, '')}/api/health`;
-    const response = await fetch(url);
-    return response.ok;
-  } catch {
-    return false;
-  }
 }

@@ -68,6 +68,7 @@ const REQUIRED_TABLES = [
   "dev_build_status",
   "dev_velocity",
   "dev_releases",
+  "dev_instruction_reads_member",
 ];
 
 async function appliedMigrationIds(): Promise<Set<string>> {

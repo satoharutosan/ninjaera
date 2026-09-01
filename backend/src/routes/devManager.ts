@@ -1,7 +1,6 @@
-import { Router, type Request, type Response, type NextFunction } from "express";
-import { requireAuth } from "../middleware/auth.js";
-import { isAdmin, isTeamMember, isUserActive } from "../middleware/admin.js";
-import { rateLimit } from "../middleware/rateLimit.js";
+import { Router } from "express";
+import { optionalAuth } from "../middleware/auth.js";
+import { rateLimit, clientIp } from "../middleware/rateLimit.js";
 import { storeUploadedFile } from "../storage/index.js";
 import { logActivitySync } from "../services/activityLog.js";
 import {
@@ -17,71 +16,67 @@ import {
   listInstructions,
   listTasks,
   markInstructionRead,
+  normalizeMemberKey,
   resolveProjectId,
   updateTaskStatus,
 } from "../services/devManager.js";
 
 const router = Router();
 
-function requireTeamOrAdmin(req: Request, res: Response, next: NextFunction) {
-  if (!req.user) {
-    res.status(401).json({ error: "Authentication required" });
-    return;
-  }
-  if (!isUserActive(req.user)) {
-    res.status(403).json({ error: "Account is disabled" });
-    return;
-  }
-  if (!isAdmin(req.user) && !isTeamMember(req.user)) {
-    res.status(403).json({ error: "Team member access required" });
-    return;
-  }
-  next();
-}
-
-function projectIdFrom(req: Request): string {
+function projectIdFrom(req: import("express").Request): string {
   return resolveProjectId(
     (req.headers["x-project-id"] as string) ||
       (typeof req.query.projectId === "string" ? req.query.projectId : null),
   );
 }
 
-function teamMemberNameFrom(req: Request): string {
+function teamMemberNameFrom(req: import("express").Request): string {
   const header = String(req.headers["x-team-member"] || "").trim();
   if (header) return header.slice(0, 120);
   return String(req.user?.username || "").slice(0, 120);
 }
 
-/** Per-route only — never router.use() on a router mounted at /api (would block /api/health and public routes). */
-const teamGate = [requireAuth, requireTeamOrAdmin];
+function memberKeyFrom(req: import("express").Request): string {
+  return normalizeMemberKey(teamMemberNameFrom(req));
+}
 
-router.get("/instructions", ...teamGate, async (req, res) => {
+function readContext(req: import("express").Request) {
+  return req.user?.id
+    ? { userId: req.user.id, memberKey: memberKeyFrom(req) }
+    : { userId: null, memberKey: memberKeyFrom(req) };
+}
+
+/** Extension APIs are public; optionalAuth attaches a user when a token is sent. */
+router.use(optionalAuth);
+
+router.get("/instructions", async (req, res) => {
   const projectId = projectIdFrom(req);
-  const instructions = await listInstructions(projectId, req.user!.id);
+  const ctx = readContext(req);
+  const instructions = await listInstructions(projectId, ctx);
   res.json(instructions);
 });
 
-router.post("/instructions/:id/read", ...teamGate, async (req, res) => {
+router.post("/instructions/:id/read", async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id) || id <= 0) {
     res.status(400).json({ error: "Invalid instruction id" });
     return;
   }
-  await markInstructionRead(id, req.user!.id);
+  await markInstructionRead(id, readContext(req));
   res.json({ ok: true });
 });
 
-router.get("/goals", ...teamGate, async (req, res) => {
+router.get("/goals", async (req, res) => {
   const goals = await listGoals(projectIdFrom(req));
   res.json(goals);
 });
 
-router.get("/tasks", ...teamGate, async (req, res) => {
+router.get("/tasks", async (req, res) => {
   const tasks = await listTasks(projectIdFrom(req));
   res.json(tasks);
 });
 
-router.patch("/tasks/:id", ...teamGate, async (req, res) => {
+router.patch("/tasks/:id", async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id) || id <= 0) {
     res.status(400).json({ error: "Invalid task id" });
@@ -100,30 +95,29 @@ router.patch("/tasks/:id", ...teamGate, async (req, res) => {
   res.json(task);
 });
 
-router.get("/dev-status", ...teamGate, async (req, res) => {
+router.get("/dev-status", async (req, res) => {
   const status = await getDevStatus(projectIdFrom(req));
   res.json(status);
 });
 
-router.get("/releases/latest", ...teamGate, async (req, res) => {
+router.get("/releases/latest", async (req, res) => {
   const release = await getLatestRelease(projectIdFrom(req));
   res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
   res.json(release);
 });
 
-router.get("/sprint", ...teamGate, async (req, res) => {
+router.get("/sprint", async (req, res) => {
   res.json(await getSprintInfo(projectIdFrom(req)));
 });
 
-router.get("/build-status", ...teamGate, async (req, res) => {
+router.get("/build-status", async (req, res) => {
   res.json(await getBuildStatus(projectIdFrom(req)));
 });
 
 router.post(
   "/daily-reports",
-  ...teamGate,
   rateLimit({
-    keyFn: (req) => `dev-report:${req.user!.id}`,
+    keyFn: (req) => `dev-report:${clientIp(req)}:${memberKeyFrom(req)}`,
     max: 30,
     windowMs: 60 * 60 * 1000,
   }),
@@ -151,7 +145,7 @@ router.post(
 
     const report = await createDailyReport({
       projectId,
-      userId: req.user!.id,
+      userId: req.user?.id ?? null,
       teamMemberName,
       date,
       summary: summary.slice(0, 4000),
@@ -165,8 +159,8 @@ router.post(
     logActivitySync({
       eventCategory: "dev_manager",
       eventType: "daily_report_submitted",
-      userId: req.user!.id,
-      username: req.user!.username,
+      userId: req.user?.id ?? null,
+      username: req.user?.username ?? teamMemberName,
       description: `${teamMemberName}: ${summary.slice(0, 80)}`,
       affectedObject: `dev_daily_report:${report.id}`,
     });
@@ -177,9 +171,8 @@ router.post(
 
 router.post(
   "/daily-reports/upload",
-  ...teamGate,
   rateLimit({
-    keyFn: (req) => `dev-report-upload:${req.user!.id}`,
+    keyFn: (req) => `dev-report-upload:${clientIp(req)}:${memberKeyFrom(req)}`,
     max: 20,
     windowMs: 60 * 60 * 1000,
   }),
@@ -217,9 +210,11 @@ router.post(
     }
 
     const projectId = projectIdFrom(req);
+    const teamMemberName = teamMemberNameFrom(req);
     const reportId = await findReportIdForAttachment({
       reportIdRaw,
-      userId: req.user!.id,
+      userId: req.user?.id ?? null,
+      teamMemberName,
       projectId,
     });
     if (!reportId) {
@@ -239,8 +234,8 @@ router.post(
     logActivitySync({
       eventCategory: "dev_manager",
       eventType: "daily_report_attachment",
-      userId: req.user!.id,
-      username: req.user!.username,
+      userId: req.user?.id ?? null,
+      username: req.user?.username ?? teamMemberName,
       description: fileName,
       affectedObject: `dev_daily_report:${reportId}`,
     });

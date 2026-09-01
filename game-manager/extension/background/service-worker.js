@@ -10,6 +10,7 @@ import {
   getReleaseState,
   saveReleaseState,
   appendActivity,
+  saveSyncStatus,
 } from '../lib/storage.js';
 import {
   fetchInstructions,
@@ -17,7 +18,8 @@ import {
   fetchTasks,
   fetchLatestRelease,
   fetchDevStatus,
-  pingServer,
+  getConnectionStatus,
+  resolveReleaseDownloadUrl,
 } from '../lib/api.js';
 import { downloadReleaseToStartup, getNativeHostStatus } from '../lib/native-host.js';
 
@@ -42,6 +44,24 @@ chrome.runtime.onInstalled.addListener(async () => {
 chrome.runtime.onStartup.addListener(async () => {
   await setupAlarms();
   await syncAllData();
+});
+
+chrome.storage.onChanged.addListener(async (changes, area) => {
+  if (area === 'sync' && changes.settings) {
+    const prev = changes.settings.oldValue || {};
+    const next = changes.settings.newValue || {};
+    if (next.dailyReminderTime && next.dailyReminderTime !== prev.dailyReminderTime) {
+      scheduleDailyReminder(next.dailyReminderTime);
+    }
+    if (
+      next.teamMemberName !== prev.teamMemberName ||
+      next.apiBaseUrl !== prev.apiBaseUrl ||
+      next.projectId !== prev.projectId
+    ) {
+      await syncAllData();
+      await checkForNewRelease();
+    }
+  }
 });
 
 async function setupAlarms() {
@@ -72,21 +92,28 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name === ALARM_DAILY) await showDailyReminder();
 });
 
-chrome.storage.onChanged.addListener(async (changes, area) => {
-  if (area === 'sync' && changes.settings?.newValue?.dailyReminderTime) {
-    scheduleDailyReminder(changes.settings.newValue.dailyReminderTime);
+async function updateBadge(status) {
+  if (!status.online) {
+    await chrome.action.setBadgeBackgroundColor({ color: '#64748b' });
+    await chrome.action.setBadgeText({ text: '!' });
+    return;
   }
-});
+  await chrome.action.setBadgeBackgroundColor({ color: '#16a34a' });
+  await chrome.action.setBadgeText({ text: '' });
+}
 
 async function syncAllData() {
-  const online = await pingServer();
-  await chrome.action.setBadgeBackgroundColor({ color: online ? '#10b981' : '#6b7280' });
-  await chrome.action.setBadgeText({ text: online ? '' : '!' });
+  const status = await getConnectionStatus();
+  await updateBadge(status);
+  await saveSyncStatus({
+    online: status.online,
+    lastError: status.error,
+  });
 
-  if (!online) return;
+  if (!status.online) return;
 
   try {
-    const [instructions, goals, tasks, status] = await Promise.all([
+    const [instructions, goals, tasks, devStatus] = await Promise.all([
       fetchInstructions(),
       fetchGoals(),
       fetchTasks(),
@@ -100,13 +127,19 @@ async function syncAllData() {
     await saveGoals(goals);
     await saveTasks(tasks);
 
-    if (status) {
-      await chrome.storage.local.set({ devStatus: status });
+    if (devStatus) {
+      await chrome.storage.local.set({ devStatus });
     }
 
     for (const inst of newOnes) {
       await notifyInstruction(inst);
     }
+
+    await saveSyncStatus({
+      lastSyncAt: new Date().toISOString(),
+      lastError: null,
+      online: true,
+    });
 
     await appendActivity({
       type: 'sync',
@@ -114,6 +147,10 @@ async function syncAllData() {
     });
   } catch (err) {
     console.error('[Ninja Era] Sync failed:', err);
+    await saveSyncStatus({
+      lastError: err.message || 'Sync failed',
+    });
+    await updateBadge(await getConnectionStatus());
   }
 }
 
@@ -129,12 +166,11 @@ async function notifyInstruction(instruction) {
     type: 'basic',
     iconUrl,
     title: instruction.priority === 'urgent'
-      ? '🚨 Urgent PM Instruction'
-      : '📋 New PM Instruction',
+      ? 'Urgent PM Instruction'
+      : 'New PM Instruction',
     message: instruction.title,
     priority: instruction.priority === 'urgent' ? 2 : 1,
     requireInteraction: instruction.priority === 'urgent',
-    buttons: [{ title: 'View Details' }],
   });
 
   await appendActivity({
@@ -169,6 +205,9 @@ async function getCurrentWindowId() {
 }
 
 async function checkForNewRelease() {
+  const status = await getConnectionStatus();
+  if (!status.online) return;
+
   try {
     const release = await fetchLatestRelease();
     const state = await getReleaseState();
@@ -180,8 +219,15 @@ async function checkForNewRelease() {
     });
 
     const isNewer = compareVersions(release.version, state.installedVersion) > 0;
+    const alreadyDownloaded =
+      state.lastDownloadedVersion === release.version &&
+      state.downloadStatus === 'completed';
+    const canDownload =
+      isNewer &&
+      state.downloadStatus !== 'downloading' &&
+      !alreadyDownloaded;
 
-    if (isNewer && state.downloadStatus !== 'downloading') {
+    if (canDownload) {
       await appendActivity({
         type: 'release',
         message: `New release detected: v${release.version}`,
@@ -190,15 +236,21 @@ async function checkForNewRelease() {
       await chrome.notifications.create(`release-${release.version}`, {
         type: 'basic',
         iconUrl: chrome.runtime.getURL('assets/icons/icon128.png'),
-        title: '🎮 New Ninja Era Release',
-        message: `Version ${release.version} will install on next reboot.`,
+        title: 'New Ninja Era Release',
+        message: `Version ${release.version} — downloading update.`,
         priority: 1,
       });
 
       await startBackgroundDownload(release, settings);
+    } else if (isNewer && state.downloadStatus === 'error') {
+      await startBackgroundDownload(release, settings);
     }
   } catch (err) {
     console.error('[Ninja Era] Release check failed:', err);
+    await appendActivity({
+      type: 'error',
+      message: `Release check failed: ${err.message}`,
+    });
   }
 }
 
@@ -210,40 +262,93 @@ async function startBackgroundDownload(release, settings) {
   });
 
   try {
-    if (settings.enableNativeHost) {
-      const response = await downloadReleaseToStartup({
-        version: release.version,
-        downloadUrl: release.downloadUrl,
-        checksum: release.checksum,
-        startupPath: settings.startupInstallPath,
-        gameProcessName: settings.gameProcessName,
-      });
+    const downloadUrl = await resolveReleaseDownloadUrl(release);
+    if (!downloadUrl) {
+      throw new Error('Release has no download URL');
+    }
 
-      await saveReleaseState({
-        downloadStatus: 'completed',
-        downloadProgress: 100,
-        pendingInstall: true,
-        currentVersion: release.version,
-        downloadedPath: response?.installerPath,
-      });
+    const needsApiFetch = downloadUrl.includes('/api/');
 
-      await appendActivity({
-        type: 'release',
-        message: `Downloaded v${release.version} — scheduled for install on reboot`,
+    if (settings.enableNativeHost && !needsApiFetch) {
+      try {
+        const response = await downloadReleaseToStartup({
+          version: release.version,
+          downloadUrl,
+          checksum: release.checksum || '',
+          startupPath: settings.startupInstallPath,
+          gameProcessName: settings.gameProcessName,
+        });
+
+        await saveReleaseState({
+          downloadStatus: 'completed',
+          downloadProgress: 100,
+          pendingInstall: true,
+          currentVersion: release.version,
+          lastDownloadedVersion: release.version,
+          downloadedPath: response?.installerPath,
+        });
+
+        await appendActivity({
+          type: 'release',
+          message: `Downloaded v${release.version} — scheduled for install on reboot`,
+        });
+        return;
+      } catch (nativeErr) {
+        console.warn('[Ninja Era] Native host download failed, falling back:', nativeErr.message);
+      }
+    }
+
+    if (needsApiFetch) {
+      const response = await fetch(downloadUrl, {
+        headers: {
+          'X-Project-Id': settings.projectId,
+          'X-Team-Member': settings.teamMemberName,
+        },
+        redirect: 'follow',
       });
+      if (!response.ok) throw new Error(`Download failed (${response.status})`);
+      const contentType = response.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        const data = await response.json();
+        if (data.externalUrl) {
+          await chrome.downloads.download({
+            url: data.externalUrl,
+            filename: `NinjaEra-${release.version}-setup.exe`,
+            conflictAction: 'uniquify',
+          });
+        } else {
+          throw new Error('No downloadable file URL returned');
+        }
+      } else {
+        const blob = await response.blob();
+        const objectUrl = URL.createObjectURL(blob);
+        await chrome.downloads.download({
+          url: objectUrl,
+          filename: `NinjaEra-${release.version}-setup.exe`,
+          conflictAction: 'uniquify',
+        });
+        setTimeout(() => URL.revokeObjectURL(objectUrl), 120000);
+      }
     } else {
       await chrome.downloads.download({
-        url: release.downloadUrl,
+        url: downloadUrl,
         filename: `NinjaEra-${release.version}-setup.exe`,
         conflictAction: 'uniquify',
       });
-
-      await saveReleaseState({
-        downloadStatus: 'completed',
-        downloadProgress: 100,
-        pendingInstall: false,
-      });
     }
+
+    await saveReleaseState({
+      downloadStatus: 'completed',
+      downloadProgress: 100,
+      pendingInstall: false,
+      currentVersion: release.version,
+      lastDownloadedVersion: release.version,
+    });
+
+    await appendActivity({
+      type: 'release',
+      message: `Downloaded v${release.version} via browser`,
+    });
   } catch (err) {
     console.error('[Ninja Era] Download failed:', err);
     await saveReleaseState({ downloadStatus: 'error', downloadProgress: 0 });
@@ -255,8 +360,8 @@ async function startBackgroundDownload(release, settings) {
 }
 
 function compareVersions(a, b) {
-  const pa = a.replace(/^v/, '').split('.').map(Number);
-  const pb = b.replace(/^v/, '').split('.').map(Number);
+  const pa = a.replace(/^v/, '').split(/[.-]/).map((n) => parseInt(n, 10) || 0);
+  const pb = b.replace(/^v/, '').split(/[.-]/).map((n) => parseInt(n, 10) || 0);
   for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
     const diff = (pa[i] || 0) - (pb[i] || 0);
     if (diff !== 0) return diff;
@@ -268,7 +373,7 @@ async function showDailyReminder() {
   await chrome.notifications.create('daily-reminder', {
     type: 'basic',
     iconUrl: chrome.runtime.getURL('assets/icons/icon128.png'),
-    title: '📝 Daily Progress Report',
+    title: 'Daily Progress Report',
     message: 'Time to submit your Ninja Era development progress report.',
     priority: 1,
   });
@@ -286,7 +391,10 @@ async function handleMessage(message) {
     case 'SYNC_NOW':
       await syncAllData();
       await checkForNewRelease();
-      return { ok: true };
+      return { ok: true, syncStatus: await chrome.storage.local.get('syncStatus').then((r) => r.syncStatus) };
+
+    case 'GET_SYNC_STATUS':
+      return chrome.storage.local.get('syncStatus').then((r) => r.syncStatus);
 
     case 'CHECK_RELEASE':
       await checkForNewRelease();
@@ -320,12 +428,13 @@ async function handleMessage(message) {
 }
 
 async function getDashboardData() {
-  const [tasks, goals, instructions, releaseState, settings] = await Promise.all([
+  const [tasks, goals, instructions, releaseState, settings, syncStatus] = await Promise.all([
     getTasks(),
     getGoals(),
     getInstructions(),
     getReleaseState(),
     getSettings(),
+    chrome.storage.local.get('syncStatus').then((r) => r.syncStatus),
   ]);
 
   const { devStatus = {}, activityLog = [] } = await chrome.storage.local.get([
@@ -340,11 +449,16 @@ async function getDashboardData() {
     releaseState,
     settings,
     devStatus,
+    syncStatus,
     activityLog: activityLog.slice(0, 20),
   };
 }
 
 async function submitReport(report) {
+  const status = await getConnectionStatus();
+  if (!status.online) {
+    throw new Error(status.error || 'Server unreachable');
+  }
   const { submitDailyReport } = await import('../lib/api.js');
   const result = await submitDailyReport(report);
   await appendActivity({ type: 'report', message: 'Daily report submitted' });
@@ -404,8 +518,8 @@ async function updateTaskStatus(taskId, status) {
   try {
     const { updateTaskStatus: patchTask } = await import('../lib/api.js');
     await patchTask(taskId, status);
-  } catch {
-    /* offline ok — local board still updated */
+  } catch (err) {
+    throw new Error(err.message || 'Failed to sync task status');
   }
 
   return { ok: true };

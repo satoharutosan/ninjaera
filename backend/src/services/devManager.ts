@@ -30,6 +30,11 @@ export function resolveProjectId(headerOrQuery?: string | null): string {
   return id || DEFAULT_DEV_PROJECT_ID;
 }
 
+export function normalizeMemberKey(name?: string | null): string {
+  const key = String(name || "").trim().toLowerCase();
+  return key.slice(0, 120) || "anonymous";
+}
+
 export function isValidTaskStatus(status: unknown): status is TaskStatus {
   return typeof status === "string" && (TASK_STATUSES as readonly string[]).includes(status);
 }
@@ -255,39 +260,89 @@ export function mapInstruction(row: InstructionRow) {
   };
 }
 
-export async function listInstructions(projectId: string, userId: number) {
+export async function listInstructions(
+  projectId: string,
+  opts: { userId?: number | null; memberKey?: string | null } = {},
+) {
   await ensureDevProjectSeeded(projectId);
-  const rows = await qAll<InstructionRow>(
-    `SELECT i.id, i.title, i.body, i.from_name, i.created_at, i.priority, r.read_at
-     FROM dev_instructions i
-     LEFT JOIN dev_instruction_reads r ON r.instruction_id = i.id AND r.user_id = ?
-     WHERE i.project_id = ?
-     ORDER BY i.created_at DESC, i.id DESC`,
-    userId,
-    projectId,
-  );
+  const userId = opts.userId ?? null;
+  const memberKey = normalizeMemberKey(opts.memberKey);
+
+  let rows: InstructionRow[];
+  if (userId) {
+    rows = await qAll<InstructionRow>(
+      `SELECT i.id, i.title, i.body, i.from_name, i.created_at, i.priority, r.read_at
+       FROM dev_instructions i
+       LEFT JOIN dev_instruction_reads r ON r.instruction_id = i.id AND r.user_id = ?
+       WHERE i.project_id = ?
+       ORDER BY i.created_at DESC, i.id DESC`,
+      userId,
+      projectId,
+    );
+  } else {
+    rows = await qAll<InstructionRow>(
+      `SELECT i.id, i.title, i.body, i.from_name, i.created_at, i.priority, r.read_at
+       FROM dev_instructions i
+       LEFT JOIN dev_instruction_reads_member r
+         ON r.instruction_id = i.id AND r.team_member_key = ?
+       WHERE i.project_id = ?
+       ORDER BY i.created_at DESC, i.id DESC`,
+      memberKey,
+      projectId,
+    );
+  }
   return rows.map(mapInstruction);
 }
 
-export async function markInstructionRead(instructionId: number, userId: number) {
+export async function markInstructionRead(
+  instructionId: number,
+  opts: { userId?: number | null; memberKey?: string | null } = {},
+) {
   const ts = now();
-  const existing = await qGet<{ instruction_id: number }>(
-    "SELECT instruction_id FROM dev_instruction_reads WHERE instruction_id = ? AND user_id = ?",
-    instructionId,
-    userId,
-  );
-  if (existing) {
-    await qRun(
-      "UPDATE dev_instruction_reads SET read_at = ? WHERE instruction_id = ? AND user_id = ?",
-      ts,
+  const userId = opts.userId ?? null;
+  const memberKey = normalizeMemberKey(opts.memberKey);
+
+  if (userId) {
+    const existing = await qGet<{ instruction_id: number }>(
+      "SELECT instruction_id FROM dev_instruction_reads WHERE instruction_id = ? AND user_id = ?",
       instructionId,
       userId,
     );
+    if (existing) {
+      await qRun(
+        "UPDATE dev_instruction_reads SET read_at = ? WHERE instruction_id = ? AND user_id = ?",
+        ts,
+        instructionId,
+        userId,
+      );
+    } else {
+      await qRun(
+        "INSERT INTO dev_instruction_reads (instruction_id, user_id, read_at) VALUES (?, ?, ?)",
+        instructionId,
+        userId,
+        ts,
+      );
+    }
+    return;
+  }
+
+  const existingMember = await qGet<{ instruction_id: number }>(
+    "SELECT instruction_id FROM dev_instruction_reads_member WHERE instruction_id = ? AND team_member_key = ?",
+    instructionId,
+    memberKey,
+  );
+  if (existingMember) {
+    await qRun(
+      "UPDATE dev_instruction_reads_member SET read_at = ? WHERE instruction_id = ? AND team_member_key = ?",
+      ts,
+      instructionId,
+      memberKey,
+    );
   } else {
     await qRun(
-      "INSERT INTO dev_instruction_reads (instruction_id, user_id, read_at) VALUES (?, ?, ?)",
+      "INSERT INTO dev_instruction_reads_member (instruction_id, team_member_key, read_at) VALUES (?, ?, ?)",
       instructionId,
-      userId,
+      memberKey,
       ts,
     );
   }
@@ -397,13 +452,38 @@ export async function getLatestRelease(projectId: string) {
       checksum: "",
     };
   }
+
+  let downloadUrl = (row.download_url || "").trim();
+  if (!downloadUrl) {
+    downloadUrl = await resolveWindowsGameDownloadUrl();
+  }
+
   return {
     version: row.version,
-    downloadUrl: row.download_url || "",
+    downloadUrl,
     releaseNotes: row.release_notes || "",
     publishedAt: row.published_at || now(),
     checksum: row.checksum || "",
   };
+}
+
+/** Fallback when dev_releases.download_url is empty — use published Windows game build. */
+async function resolveWindowsGameDownloadUrl(): Promise<string> {
+  const build = await qGet<{
+    external_url: string | null;
+    file_url: string | null;
+  }>(`
+    SELECT external_url, file_url FROM game_downloads
+    WHERE platform = 'windows' AND published = 1
+    ORDER BY published_at DESC, id DESC LIMIT 1
+  `);
+  if (!build) return "";
+  const external = (build.external_url || "").trim();
+  if (external) return external;
+  const fileUrl = (build.file_url || "").trim();
+  if (!fileUrl) return "";
+  if (fileUrl.startsWith("http://") || fileUrl.startsWith("https://")) return fileUrl;
+  return fileUrl.startsWith("/") ? fileUrl : `/uploads/${fileUrl.replace(/^[/\\]+/, "")}`;
 }
 
 export async function getDevStatus(projectId: string) {
@@ -569,13 +649,13 @@ export async function createDailyReport(input: {
 
 export async function findReportIdForAttachment(opts: {
   reportIdRaw: string;
-  userId: number;
+  userId?: number | null;
+  teamMemberName?: string;
   projectId: string;
 }): Promise<number | null> {
   const raw = String(opts.reportIdRaw || "").trim();
   if (!raw) return null;
 
-  // Prefer explicit report-{numericId} or bare numeric id
   const numericMatch = raw.match(/^(?:report-)?(\d+)$/);
   if (numericMatch) {
     const id = Number(numericMatch[1]);
@@ -587,17 +667,30 @@ export async function findReportIdForAttachment(opts: {
     return row?.id ?? null;
   }
 
-  // Extension historically sent YYYY-MM-DD — attach to latest report that day by this user
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
-    const row = await qGet<{ id: number }>(
-      `SELECT id FROM dev_daily_reports
-       WHERE project_id = ? AND report_date = ? AND user_id = ?
-       ORDER BY id DESC LIMIT 1`,
-      opts.projectId,
-      raw,
-      opts.userId,
-    );
-    return row?.id ?? null;
+    if (opts.userId) {
+      const row = await qGet<{ id: number }>(
+        `SELECT id FROM dev_daily_reports
+         WHERE project_id = ? AND report_date = ? AND user_id = ?
+         ORDER BY id DESC LIMIT 1`,
+        opts.projectId,
+        raw,
+        opts.userId,
+      );
+      if (row?.id) return row.id;
+    }
+    const member = String(opts.teamMemberName || "").trim();
+    if (member) {
+      const row = await qGet<{ id: number }>(
+        `SELECT id FROM dev_daily_reports
+         WHERE project_id = ? AND report_date = ? AND team_member_name = ?
+         ORDER BY id DESC LIMIT 1`,
+        opts.projectId,
+        raw,
+        member,
+      );
+      return row?.id ?? null;
+    }
   }
 
   return null;

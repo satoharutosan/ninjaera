@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Ninja Era — Dev Manager",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Team development management for Ninja Era: progress reports, PM instructions, release tracking, and automated updates.",
   "permissions": [
     "alarms",

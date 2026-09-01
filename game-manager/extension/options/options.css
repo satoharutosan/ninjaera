@@ -6,12 +6,23 @@ body {
   max-width: 640px;
   margin: 0 auto;
   min-height: 100vh;
+  background: var(--bg);
 }
 
 .options-header {
   padding: 32px 24px;
-  background: linear-gradient(135deg, #1a1d27 0%, #12141c 100%);
-  border-bottom: 1px solid var(--border);
+  background: linear-gradient(135deg, #2563eb 0%, #1e40af 100%);
+  border-bottom: 1px solid #1d4ed8;
+  color: #fff;
+}
+
+.options-header h1,
+.options-header .subtitle {
+  color: #fff;
+}
+
+.options-header .subtitle {
+  opacity: 0.9;
 }
 
 .options-main {
@@ -24,13 +35,14 @@ body {
   border-radius: var(--radius);
   padding: 20px;
   margin-bottom: 16px;
+  box-shadow: 0 1px 3px rgba(37, 99, 235, 0.06);
 }
 
 .settings-section h2 {
   font-size: 14px;
   font-weight: 600;
   margin-bottom: 16px;
-  color: var(--text);
+  color: var(--primary);
 }
 
 .checkbox-group label {
@@ -60,14 +72,14 @@ body {
 
 .connection-status.ok,
 .native-status.ok {
-  background: rgba(16, 185, 129, 0.1);
-  color: var(--accent);
+  background: #dcfce7;
+  color: #166534;
 }
 
 .connection-status.error,
 .native-status.error {
-  background: rgba(239, 68, 68, 0.1);
-  color: var(--danger);
+  background: #fee2e2;
+  color: #991b1b;
 }
 
 .hint {
@@ -91,5 +103,5 @@ body {
 
 .save-status {
   font-size: 12px;
-  color: var(--accent);
+  color: var(--primary);
 }

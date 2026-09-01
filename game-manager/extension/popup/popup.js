@@ -92,7 +92,39 @@ function renderInstructions(instructions) {
   });
 }
 
+function renderStatusBanner(data) {
+  const banner = $('#status-banner');
+  const settings = data.settings || {};
+  const syncStatus = data.syncStatus || {};
+
+  if (!settings.teamMemberName) {
+    banner.hidden = false;
+    banner.className = 'auth-banner';
+    banner.innerHTML = 'Set your name in Settings so reports are attributed correctly. <a href="#" id="banner-settings">Open Settings</a>';
+    banner.querySelector('#banner-settings')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      chrome.runtime.openOptionsPage();
+    });
+    return;
+  }
+
+  if (syncStatus.lastError) {
+    banner.hidden = false;
+    banner.className = 'auth-banner error';
+    banner.textContent = syncStatus.lastError;
+    return;
+  }
+
+  banner.hidden = true;
+}
+
 function renderDashboard(data) {
+  if (!data) {
+    renderStatusBanner({ settings: {}, syncStatus: { lastError: 'Could not load dashboard' } });
+    return;
+  }
+
+  renderStatusBanner(data);
   const sprint = data.devStatus?.sprint;
   const build = data.devStatus?.build;
 
@@ -125,8 +157,21 @@ function escapeHtml(str) {
 }
 
 async function loadDashboard() {
-  const data = await send('GET_DASHBOARD');
-  renderDashboard(data);
+  try {
+    const data = await send('GET_DASHBOARD');
+    if (data?.error) throw new Error(data.error);
+    renderDashboard(data);
+  } catch (err) {
+    renderDashboard({
+      settings: {},
+      syncStatus: { lastError: err.message },
+      tasks: [],
+      goals: [],
+      instructions: [],
+      releaseState: { latestVersion: '0.0.0', downloadStatus: 'idle' },
+      devStatus: {},
+    });
+  }
 }
 
 async function fileToBase64(file) {

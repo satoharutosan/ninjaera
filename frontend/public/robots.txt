@@ -1,0 +1,16 @@
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /uploads/
+Disallow: /externals/
+Disallow: /resources/public/
+Disallow: /messages
+Disallow: /admin
+Disallow: /profile
+Disallow: /alarms
+Disallow: /oauth-callback
+Disallow: /verify-email
+Disallow: /forgot-password
+Disallow: /reset-password
+
+Sitemap: https://ninjaera.up.railway.app/sitemap.xml

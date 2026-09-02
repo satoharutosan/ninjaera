@@ -1,13 +1,7 @@
-import { useEffect } from "react";
 import { useC, SH1, FilledBtn, type Page } from "@/app/shared";
 
 function BugReportsPage({ setPage }: { setPage: (p: Page) => void }) {
   const C = useC();
-
-  useEffect(() => {
-    document.title = "Bug Reports · Ninja Era";
-    return () => { document.title = "Ninja Era"; };
-  }, []);
 
   return (
     <div className="pt-24 pb-16 px-4 min-h-screen" style={{ background: C.bg }}>

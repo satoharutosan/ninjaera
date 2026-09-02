@@ -1,4 +1,3 @@
-import { useEffect } from "react";
 import { useC, SH1 } from "@/app/shared";
 
 const SECTIONS = [
@@ -56,11 +55,6 @@ const FAQS = [
 
 function HelpCenterPage() {
   const C = useC();
-
-  useEffect(() => {
-    document.title = "Help Center · Ninja Era";
-    return () => { document.title = "Ninja Era"; };
-  }, []);
 
   return (
     <div className="pt-24 pb-16 px-4 min-h-screen" style={{ background: C.bg }}>

@@ -58,11 +58,8 @@
  * @property {string} teamMemberName
  * @property {string} teamMemberRole
  * @property {string} projectId
- * @property {boolean} enableNativeHost
  * @property {boolean} dailyReminderEnabled
  * @property {string} dailyReminderTime
- * @property {string} gameProcessName
- * @property {string} startupInstallPath
  */
 
 const DEFAULT_SETTINGS = {
@@ -70,12 +67,8 @@ const DEFAULT_SETTINGS = {
   teamMemberName: '',
   teamMemberRole: 'Developer',
   projectId: 'ninja-era',
-  enableNativeHost: true,
   dailyReminderEnabled: true,
   dailyReminderTime: '17:00',
-  gameProcessName: 'NinjaEra.exe',
-  startupInstallPath:
-    'C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\StartUp',
 };
 
 export async function getSettings() {

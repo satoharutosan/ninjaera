@@ -36,11 +36,6 @@ function ServerStatusPage() {
   const [checkedAt, setCheckedAt] = useState<string | null>(null);
 
   useEffect(() => {
-    document.title = "Server Status · Ninja Era";
-    return () => { document.title = "Ninja Era"; };
-  }, []);
-
-  useEffect(() => {
     let cancelled = false;
     const check = async () => {
       const next: ServiceRow[] = BASE_SERVICES.map(s => ({

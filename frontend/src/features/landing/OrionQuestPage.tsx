@@ -22,15 +22,11 @@ function OrionQuestPage({ setPage }: { setPage?: (p: Page) => void }) {
   const C = useC();
 
   useEffect(() => {
-    document.title = "Orion Quest · Ninja Era";
     void registerAppInstallationSilent({
       appId: "orion-quest",
       appName: "Orion Quest",
       defaultVersion: "1.0.0",
     });
-    return () => {
-      document.title = "Ninja Era";
-    };
   }, []);
 
   return (

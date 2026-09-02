@@ -1,6 +1,6 @@
 # Ninja Era — Dev Manager
 
-A team-specific Chrome extension for managing **Ninja Era** game development. It provides daily progress reporting, PM instruction delivery, sprint tracking, release monitoring, and automated game updates on system reboot.
+A team-specific Chrome extension for managing **Ninja Era** game development. It provides daily progress reporting, PM instruction delivery, sprint tracking, release monitoring, and automatic release downloads to Chrome's default Downloads folder.
 
 ---
 
@@ -14,7 +14,6 @@ A team-specific Chrome extension for managing **Ninja Era** game development. It
 - [Configuration](#configuration)
 - [Usage](#usage)
 - [API Reference](#api-reference)
-- [Native Messaging Host](#native-messaging-host)
 - [Project Structure](#project-structure)
 - [Development](#development)
 - [Troubleshooting](#troubleshooting)
@@ -34,8 +33,7 @@ A team-specific Chrome extension for managing **Ninja Era** game development. It
 | **Report file upload** | Attach files (`.txt`, `.md`, `.pdf`, `.doc`, `.zip`) when submitting reports |
 | **CSV export** | Download full development status as a CSV file |
 | **Release version check** | Polls for the latest game release every **1 minute** |
-| **Background download** | Downloads new releases silently in the background |
-| **Reboot install** | Schedules installation on next system reboot (never while the game is running) |
+| **Background download** | Downloads new releases to Chrome's default Downloads folder |
 | **Always-on background** | Service worker runs regardless of which website is open |
 | **Instant notifications** | Desktop alerts when new or urgent PM instructions arrive |
 
@@ -72,17 +70,6 @@ A team-specific Chrome extension for managing **Ninja Era** game development. It
 │  └──────┬───────┘  │ (config) │  │ (all URLs)          │  │
 │         │          └──────────┘  └─────────────────────┘  │
 └─────────┼───────────────────────────────────────────────────┘
-          │
-          │ Native Messaging (stdio)
-          ▼
-┌─────────────────────────────────────────────────────────────┐
-│              Windows Native Host (Node.js)                  │
-│                                                             │
-│  • Background file download                                 │
-│  • SHA-256 checksum verification                            │
-│  • Game process detection (tasklist)                        │
-│  • Startup-folder batch script for reboot install           │
-└─────────────────────────────────────────────────────────────┘
           │
           ▼
 ┌─────────────────────────────────────────────────────────────┐
@@ -123,10 +110,7 @@ The local `server/mock-server.js` remains available for offline UI work only (`n
 
 ## Prerequisites
 
-- **Google Chrome** (version 116+ recommended for side panel support)
-- **Node.js** 18+ ([https://nodejs.org](https://nodejs.org))
-- **Windows 10/11** (required for native host and reboot install)
-- **PowerShell** (for native host installation)
+- **Google Chrome** (version 116+ recommended for side panel)
 
 ---
 
@@ -144,12 +128,7 @@ npm run icons
 #    → chrome://extensions → Developer mode → Load unpacked
 #    → Select the `game-manager/extension/` folder
 
-# 4. Install the native host (replace with your Extension ID)
-cd native-host
-.\install.ps1 -ExtensionId YOUR_EXTENSION_ID
-
-# 5. Open extension Settings: API URL http://localhost:3001, then Sign In
-#    (use a team member or admin account)
+# 4. Set your name in Settings — new releases download automatically to your Downloads folder
 ```
 
 ---
@@ -190,47 +169,16 @@ npm run server
 # http://localhost:3847
 ```
 
-For production, point the extension at your deployed backend and sign in as a team member.
+For production, point the extension at your deployed backend. No sign-in is required.
 
-### Step 4 — Install the native messaging host
+Configure your name in Settings. New game releases download automatically to Chrome's default Downloads folder as `NinjaEra-setup.exe`.
 
-The native host is **required** for:
-- Writing installers to `%ProgramData%\NinjaEra\GameManager\`
-- Placing a reboot install script in the Windows Startup folder
-- Detecting whether the game process is currently running
-
-```powershell
-cd native-host
-.\install.ps1 -ExtensionId YOUR_EXTENSION_ID
-```
-
-Or from the project root:
-
-```powershell
-npm run install-native-host
-# Then re-run with -ExtensionId if not provided
-```
-
-The installer:
-1. Verifies Node.js is available
-2. Creates `%ProgramData%\NinjaEra\GameManager\`
-3. Registers the native messaging host in the Windows registry
-4. Writes the manifest with your extension ID
-
-Registry key:
-
-```
-HKCU\Software\Google\Chrome\NativeMessagingHosts\com.ninjaera.gamemanager
-```
-
-### Step 5 — Configure the extension
+### Step 4 — Configure the extension
 
 1. Click the extension icon in Chrome
 2. Click **Settings** in the footer (or right-click the icon → Options)
-3. Fill in:
-   - **Your Name** and **Role** (used to attribute reports and instruction read state)
-   - **API Base URL** (`http://localhost:3001` for local backend, or `https://ninjaera.up.railway.app` for production)
-4. Verify the connection status shows green
+3. Fill in **Your Name** and verify **API Base URL**
+4. Verify connection status shows green
 
 ---
 
@@ -244,11 +192,8 @@ All settings are stored in `chrome.storage.sync` and managed via the Options pag
 | `teamMemberName` | _(empty)_ | Display name sent as `X-Team-Member` header |
 | `teamMemberRole` | `Developer` | Role label shown in the side panel |
 | `projectId` | `ninja-era` | Sent as `X-Project-Id` header |
-| `enableNativeHost` | `true` | Use native host for release downloads |
 | `dailyReminderEnabled` | `true` | Enable end-of-day report reminder |
 | `dailyReminderTime` | `17:00` | Reminder time (24-hour format) |
-| `gameProcessName` | `NinjaEra.exe` | Process name checked before install |
-| `startupInstallPath` | `C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp` | Where reboot install script is placed |
 
 ---
 
@@ -283,23 +228,18 @@ The extension sends Chrome desktop notifications for:
 
 - **New PM instructions** — immediately on sync when a new instruction appears
 - **Urgent instructions** — persistent notification requiring interaction
-- **New game releases** — when a version newer than installed is detected
 - **Daily report reminder** — at the configured time each day
+
+Release updates download quietly in the background: Chrome's download UI is hidden during the transfer and the entry is removed from `chrome://downloads` when complete (the file remains in your Downloads folder).
 
 Clicking a notification opens the relevant tab in the side panel or popup.
 
 ### Release auto-update flow
 
-1. Every minute, the service worker calls `/api/releases/latest`
-2. If the version is newer than the installed version, a notification is shown
-3. The native host downloads the installer to `%ProgramData%\NinjaEra\GameManager\`
-4. A batch script (`NinjaEra-Update-On-Reboot.bat`) is written to the Startup folder
-5. On next reboot, the script:
-   - Waits until `NinjaEra.exe` is **not** running
-   - Runs the installer silently (`/S` flag)
-   - Deletes the installer and itself
-
-The game is **never updated while running**.
+1. On extension launch and every **1 minute**, the service worker calls `/api/releases/latest`
+2. If the version is not already downloaded, the extension fetches `NinjaEra-setup.exe` quietly (no download bubble; removed from `chrome://downloads` when done)
+3. The file is saved to Chrome's default Downloads folder and overwrites the previous installer
+4. Team members run the installer manually when ready
 
 ---
 
@@ -395,50 +335,6 @@ Mounted under `/api/admin/dev-manager/…` — overview, CRUD for instructions/g
 
 ---
 
-## Native Messaging Host
-
-### Location
-
-| Item | Path |
-|------|------|
-| Host script | `native-host/ninja-era-host.js` |
-| Launcher | `native-host/ninja-era-host.bat` |
-| Manifest | `native-host/com.ninjaera.gamemanager.installed.json` |
-| Download directory | `%ProgramData%\NinjaEra\GameManager\` |
-| Log file | `%ProgramData%\NinjaEra\GameManager\host.log` |
-| Pending install marker | `%ProgramData%\NinjaEra\GameManager\pending-install.json` |
-
-### Messages
-
-The extension sends JSON messages to the native host:
-
-| Action | Payload | Response |
-|--------|---------|----------|
-| `download_release` | `version`, `downloadUrl`, `checksum`, `startupPath`, `gameProcessName` | `{ ok, installerPath, scriptPath, version, gameRunning }` |
-| `check_process` | `processName` | `{ running: boolean }` |
-| `status` | — | `{ connected, version, dataDir, pendingInstall }` |
-| `cancel_pending_install` | — | `{ ok: true }` |
-
-### Reboot install script
-
-When a new release is downloaded, the host creates `NinjaEra-Update-On-Reboot.bat` in the Startup folder:
-
-```bat
-@echo off
-REM Waits for NinjaEra.exe to close, then runs the installer silently
-```
-
-The script self-deletes after successful installation.
-
-### Manual cancellation
-
-To cancel a pending reboot install, use the native host `cancel_pending_install` action, or manually delete:
-
-- `%ProgramData%\NinjaEra\GameManager\pending-install.json`
-- `NinjaEra-Update-On-Reboot.bat` from the Startup folder
-
----
-
 ## Project Structure
 
 ```
@@ -466,14 +362,9 @@ game-manager/
 │   │   ├── api.js                # Backend API client
 │   │   ├── storage.js            # chrome.storage helpers + types
 │   │   ├── csv.js                # CSV export builder
-│   │   └── native-host.js        # Native messaging client
+│   │   └── release-download.js   # chrome.downloads release helper
 │   └── assets/
 │       └── icons/                # Extension icons (generated)
-├── native-host/                  # Windows native messaging host
-│   ├── ninja-era-host.js         # Download, install scheduling, process check
-│   ├── ninja-era-host.bat        # Node.js launcher
-│   ├── com.ninjaera.gamemanager.json  # Manifest template
-│   └── install.ps1               # Registry + manifest installer
 ├── server/
 │   └── mock-server.js            # Development API server (port 3847)
 ├── scripts/
@@ -492,7 +383,6 @@ game-manager/
 |---------|-------------|
 | `npm run icons` | Generate extension PNG icons |
 | `npm run server` | Start mock API on port 3847 |
-| `npm run install-native-host` | Run native host installer (PowerShell) |
 
 ### Reloading after changes
 
@@ -528,37 +418,17 @@ The API server is unreachable. Verify:
 - API Base URL in Settings matches (`http://localhost:3847`)
 - No firewall blocking localhost
 
-### Native host not connected
+### Release download fails
 
-Settings page shows a red native host error. Fix:
-1. Ensure Node.js is installed: `node --version`
-2. Re-run the installer with your Extension ID:
-   ```powershell
-   cd native-host
-   .\install.ps1 -ExtensionId YOUR_EXTENSION_ID
-   ```
-3. Restart Chrome completely
-4. Check the log: `%ProgramData%\NinjaEra\GameManager\host.log`
+- Confirm `downloadUrl` in the API response is accessible
+- Check Chrome's download shelf or Downloads folder for `NinjaEra-setup.exe`
+- Check the service worker console (`chrome://extensions` → Inspect views: service worker) for errors
 
 ### Notifications not appearing
 
 - Verify Chrome notification permissions: `chrome://settings/content/notifications`
 - Ensure the extension has the `notifications` permission (check `manifest.json`)
 - Windows Focus Assist may suppress notifications
-
-### Release download fails
-
-- Confirm `downloadUrl` in the API response is accessible
-- If using checksum verification, ensure the SHA-256 hash matches the file
-- Check `%ProgramData%\NinjaEra\GameManager\host.log` for errors
-- Without the native host, the extension falls back to Chrome's download dialog
-
-### Reboot install did not run
-
-- Verify `NinjaEra-Update-On-Reboot.bat` exists in the Startup folder
-- Check `%ProgramData%\NinjaEra\GameManager\pending-install.json`
-- The script waits for `NinjaEra.exe` to close — if the game auto-starts, the install waits
-- Run the batch file manually to test (with the game closed)
 
 ### Side panel not opening
 

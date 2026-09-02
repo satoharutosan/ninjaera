@@ -42,6 +42,7 @@ import {
 } from "@/features/messages/activeConversationStore";
 import { appPerf } from "@/shared/perf";
 import { pageFromLocation, setPageInLocation } from "@/shared/routing";
+import { usePageSeo } from "@/shared/seo";
 import { BrandLogo } from "@/shared/BrandLogo";
 import { BRAND_LOGO_SRC, BRAND_NAME } from "@/shared/branding";
 import { getCachedUser, setCachedUser, clearAuthStorage, getStoredToken } from "@/shared/authStorage";
@@ -76,6 +77,7 @@ import BugReportsPage from "@/features/landing/BugReportsPage";
 import ServerStatusPage from "@/features/landing/ServerStatusPage";
 import PatchNotesPage from "@/features/landing/PatchNotesPage";
 import OrionQuestPage from "@/features/landing/OrionQuestPage";
+import DownloadPage from "@/features/landing/DownloadPage";
 
 /** Shared navbar badge — identical styling for notifications and messages (top-right). */
 function NavIconBadge({
@@ -472,7 +474,7 @@ function Footer({ setPage, onGoToDownload }: { setPage:(p:Page)=>void; onGoToDow
     { label: "Bug Reports", action: () => go("bugs") },
     { label: "Server Status", action: () => go("status") },
     { label: "Patch Notes", action: () => go("patches") },
-    { label: "Game", action: onGoToDownload },
+    { label: "Download", action: () => go("download") },
   ];
 
   return (
@@ -593,8 +595,8 @@ export default function App() {
       scrollToSection(SECTION_IDS.download);
       return;
     }
-    pendingSectionRef.current = SECTION_IDS.download;
-    setPage("home");
+    if (page === "download") return;
+    setPage("download");
   }, [page, setPage]);
 
   useEffect(() => {
@@ -654,10 +656,12 @@ export default function App() {
   const noFoot: Page[] = ["messages","login","signup","oauth-callback","admin","forgot-password","reset-password","verify-email"];
   const go = setPage;
 
+  usePageSeo(page);
+
   useEffect(() => {
     const onPopState = () => setPageState(pageFromLocation());
     window.addEventListener("popstate", onPopState);
-    if (!window.location.hash) setPageInLocation(pageFromLocation());
+    setPageInLocation(pageFromLocation());
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
 
@@ -1169,6 +1173,7 @@ export default function App() {
         <>
       {!noNav.includes(page) && <Navbar page={page} setPage={go} isDark={isDark} setIsDark={toggleTheme} loggedIn={loggedIn} user={user} userAvatar={userAvatar} notifs={notifs} setNotifs={setNotifs} messageBadge={msgUnread + dmRequestCount} isAdmin={user?.isAdmin} onLogout={handleLogout} />}
         {page==="home"      && <HomePage setPage={go} onGoToDownload={goToDownload} />}
+        {page==="download"  && <DownloadPage setPage={go} />}
         {page==="about"     && <AboutPage setPage={go} />}
         {page==="resources" && <ResourcesPage isTeamMember={user?.isTeamMember} isAdmin={user?.isAdmin} />}
         {page==="teamwork"  && <TeamworkPage loggedIn={loggedIn} setPage={go} onAddDM={addDM} />}

@@ -133,7 +133,7 @@ function renderRelease(data) {
     <div class="release-field"><div class="label">Installed</div><div class="value">v${rs.installedVersion}</div></div>
     <div class="release-field"><div class="label">Latest Available</div><div class="value">v${rs.latestVersion}</div></div>
     <div class="release-field"><div class="label">Last Checked</div><div class="value" style="font-size:13px">${rs.lastChecked ? formatTime(rs.lastChecked) : 'Never'}</div></div>
-    <div class="release-field"><div class="label">Download Status</div><div class="value" style="font-size:13px">${rs.downloadStatus}${rs.pendingInstall ? ' (reboot install)' : ''}</div></div>
+    <div class="release-field"><div class="label">Download Status</div><div class="value" style="font-size:13px">${rs.downloadStatus}</div></div>
   `;
   $('#release-notes').textContent = data.devStatus?.releaseNotes || 'No release notes available.';
 }

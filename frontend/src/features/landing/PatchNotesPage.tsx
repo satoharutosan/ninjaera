@@ -1,4 +1,3 @@
-import { useEffect } from "react";
 import { useC, SH1 } from "@/app/shared";
 import { PATCH_NOTES, type PatchNote } from "@/features/landing/patchNotes";
 
@@ -49,11 +48,6 @@ function PatchNoteCard({ note }: { note: PatchNote }) {
 
 function PatchNotesPage() {
   const C = useC();
-
-  useEffect(() => {
-    document.title = "Patch Notes · Ninja Era";
-    return () => { document.title = "Ninja Era"; };
-  }, []);
 
   return (
     <div className="pt-24 pb-16 px-4 min-h-screen" style={{ background: C.bg }}>

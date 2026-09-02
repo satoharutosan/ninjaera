@@ -1,103 +1,158 @@
 <!DOCTYPE html>
+
 <html lang="en">
+
 <head>
+
   <meta charset="UTF-8" />
+
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
   <title>Ninja Era Dev Manager — Settings</title>
+
   <link rel="preconnect" href="https://fonts.googleapis.com" />
+
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+
   <link rel="stylesheet" href="../popup/shared.css" />
+
   <link rel="stylesheet" href="options.css" />
+
 </head>
+
 <body>
+
   <div class="options-app">
+
     <header class="options-header">
+
       <div class="brand">
+
         <div class="brand-icon">🥷</div>
+
         <div>
+
           <h1>Settings</h1>
+
           <p class="subtitle">Ninja Era Dev Manager</p>
+
         </div>
+
       </div>
+
     </header>
 
+
+
     <main class="options-main">
+
       <section class="settings-section">
+
         <h2>Team Profile</h2>
+
         <div class="form-group">
+
           <label for="member-name">Your Name</label>
+
           <input type="text" id="member-name" placeholder="e.g. Alex Chen" />
+
         </div>
+
         <div class="form-group">
+
           <label for="member-role">Role</label>
+
           <select id="member-role">
+
             <option value="Developer">Developer</option>
+
             <option value="Designer">Designer</option>
+
             <option value="QA">QA Engineer</option>
+
             <option value="Lead">Tech Lead</option>
+
             <option value="PM">Project Manager</option>
+
           </select>
+
         </div>
+
       </section>
 
+
+
       <section class="settings-section">
+
         <h2>API Connection</h2>
+
         <div class="form-group">
+
           <label for="api-url">API Base URL</label>
+
           <input type="url" id="api-url" placeholder="https://ninjaera.up.railway.app" />
+
         </div>
+
         <div class="form-group">
+
           <label for="project-id">Project ID</label>
+
           <input type="text" id="project-id" value="ninja-era" />
+
         </div>
+
         <div class="connection-status" id="connection-status">Checking connection…</div>
+
       </section>
 
-      <section class="settings-section">
-        <h2>Release & Auto-Update</h2>
-        <div class="form-group checkbox-group">
-          <label>
-            <input type="checkbox" id="enable-native" checked />
-            Use native host for background downloads & reboot install
-          </label>
-        </div>
-        <div class="form-group">
-          <label for="game-process">Game Process Name</label>
-          <input type="text" id="game-process" value="NinjaEra.exe" />
-        </div>
-        <div class="form-group">
-          <label for="startup-path">Startup Install Path</label>
-          <input type="text" id="startup-path"
-            value="C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp" />
-        </div>
-        <div class="native-status" id="native-status"></div>
-        <p class="hint">
-          The native messaging host downloads releases in the background and schedules installation
-          on the next system reboot — never while the game is running.
-        </p>
-      </section>
+
 
       <section class="settings-section">
+
         <h2>Daily Report Reminder</h2>
+
         <div class="form-group checkbox-group">
+
           <label>
+
             <input type="checkbox" id="daily-reminder" checked />
+
             Enable daily progress report reminder
+
           </label>
+
         </div>
+
         <div class="form-group">
+
           <label for="reminder-time">Reminder Time</label>
+
           <input type="time" id="reminder-time" value="17:00" />
+
         </div>
+
       </section>
+
+
 
       <div class="form-actions">
+
         <button class="btn primary" id="btn-save">Save Settings</button>
+
         <span class="save-status" id="save-status"></span>
+
       </div>
+
     </main>
+
   </div>
+
   <script type="module" src="options.js"></script>
+
 </body>
+
 </html>
+

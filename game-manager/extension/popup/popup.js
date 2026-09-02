@@ -96,7 +96,10 @@ function renderStatusBanner(data) {
   const banner = $('#status-banner');
   const settings = data.settings || {};
   const syncStatus = data.syncStatus || {};
+  renderStatusBannerAsync(banner, settings, syncStatus);
+}
 
+async function renderStatusBannerAsync(banner, settings, syncStatus) {
   if (!settings.teamMemberName) {
     banner.hidden = false;
     banner.className = 'auth-banner';
@@ -138,7 +141,7 @@ function renderDashboard(data) {
   const rs = data.releaseState;
   let releaseMeta = 'Up to date';
   if (rs.downloadStatus === 'downloading') releaseMeta = `Downloading ${rs.downloadProgress}%`;
-  else if (rs.pendingInstall) releaseMeta = 'Install on reboot';
+  else if (rs.downloadStatus === 'completed') releaseMeta = 'Downloaded';
   else if (rs.downloadStatus === 'error') releaseMeta = 'Download failed';
   $('#release-status').textContent = releaseMeta;
 

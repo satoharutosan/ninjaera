@@ -19,10 +19,7 @@ import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import ArrowForwardIcon from "@mui/icons-material/ArrowForward";
 import GroupsIcon from "@mui/icons-material/Groups";
 import ForumIcon from "@mui/icons-material/Forum";
-import DownloadIcon from "@mui/icons-material/Download";
-import ComputerIcon from "@mui/icons-material/Computer";
-import PhoneAndroidIcon from "@mui/icons-material/PhoneAndroid";
-import PhoneIphoneIcon from "@mui/icons-material/PhoneIphone";
+import { GameDownloadGrid } from "@/features/landing/GameDownloadGrid";
 import LocationCityIcon from "@mui/icons-material/LocationCity";
 import SportsMartialArtsIcon from "@mui/icons-material/SportsMartialArts";
 import WorkspacesIcon from "@mui/icons-material/Workspaces";
@@ -60,20 +57,7 @@ import thumbCharKagiri from "@/imports/characters/kagiri_thumb.webp";
 import imgPvP from "@/imports/379a1912-653d-4824-8658-f27e0424fb77.webp";
 import imgCouncil from "@/imports/4360b9ce-e8c9-44c2-85fb-0ceb5225cede.webp";
 import { Page, useC, SH1, SH2, SH3, FilledBtn, Chip, OutlinedBtn } from "@/app/shared";
-import { api, type GameDownloadInfo } from "@/app/api";
-import { formatGameFileSize } from "@/shared/gameFileSize";
-import { toast } from "sonner";
-
-const PLATFORM_META: Record<string, { label: string; Icon: typeof ComputerIcon; reqs: string }> = {
-  windows: { label: "Windows", Icon: ComputerIcon, reqs: "Win 10/11 · 8GB RAM" },
-  android: { label: "Android", Icon: PhoneAndroidIcon, reqs: "Android 9.0+ · 4GB RAM" },
-  ios: { label: "iOS", Icon: PhoneIphoneIcon, reqs: "iOS 15+ · iPhone 12+" },
-};
-
-function formatDate(iso: string | null | undefined) {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
-}
+import { HOME_FAQ_SCHEMA, buildFaqJsonLd } from "@/shared/seo";
 
 const CHARACTERS = [
   { id:1, name:"Haruki", village:"Leaf", role:"Scout/Assassin", rarity:"Wind", clan:"Wind", color:"#3B4DB8", img:imgCharHaruki, thumb:thumbCharHaruki, bio:"Calm and observant. Movessilently like the wind. Values freedom and loyalty to his friends.", stats:{atk:89,def:80,spd:99,mgk:85}, abilities:["High Speed Movement","Hit & Run Tactics","Wind Techniques","Dual Blades"] },
@@ -109,14 +93,12 @@ const WORLD_ZONES = [
   { Icon:MilitaryTechIcon, title:"Guild Wars", desc:"Rally 50+ members to siege rival strongholds in weekend guild war events." },
 ];
 
-const FAQS = [
-  { q:"Is Ninja Era free to play?", a:"Yes! Ninja Era is free to download and play. Optional cosmetic packs are available but never affect gameplay balance." },
-  { q:"What platforms is the game available on?", a:"Ninja Era is available on Windows PC, Android, and iOS. Cross-platform play is fully supported." },
+const FAQS = HOME_FAQ_SCHEMA.concat([
   { q:"How often are updates released?", a:"Major content patches release every 6–8 weeks with smaller balance updates and events in between." },
   { q:"Is there a pay-to-win model?", a:"There is no subscription required. All premium purchases are cosmetic only — weapons, costumes, and emotes." },
   { q:"Can I play solo?", a:"Both! Most content is designed for solo play. Group content (raids, guild wars) is optional but rewards are higher." },
-  { q:"How do I contact support?", a:"Use the in-game ticket system or email support@ninjaera.aleeas.com. Our team responds within 24 hours." },
-];
+  { q:"How do I contact support?", a:"Use the in-game ticket system or email support@ninjaera.com. Our team responds within 24 hours." },
+]);
 const RARITY_COLOR: Record<string,string> = { Legendary:"#7D5260", Epic:"#6750A4", Rare:"#006688", Uncommon:"#386A20" };
 const AVATAR_COLORS = ["#6750A4","#B3261E","#7D5260","#386A20","#006688","#625B71","#4A4458"];
 // ── CHARACTER MODAL ──────────────────────────────────────────────────────────
@@ -223,23 +205,20 @@ function HomePage({ setPage, onGoToDownload }: { setPage:(p:Page)=>void; onGoToD
   const C = useC();
   const [sel, setSel] = useState<typeof CHARACTERS[0]|null>(null);
   const [faq, setFaq] = useState<number|null>(null);
-  const [gameDownloads, setGameDownloads] = useState<GameDownloadInfo[]>([]);
 
   useEffect(() => {
-    api.content.gameDownloads().then(r => setGameDownloads(r.downloads)).catch(() => {});
+    const id = "ninja-era-faq-jsonld";
+    let el = document.getElementById(id) as HTMLScriptElement | null;
+    if (!el) {
+      el = document.createElement("script");
+      el.id = id;
+      el.type = "application/ld+json";
+      document.head.appendChild(el);
+    }
+    el.textContent = buildFaqJsonLd(HOME_FAQ_SCHEMA);
+    return () => { el?.remove(); };
   }, []);
 
-  const handleGameDownload = async (platform: string, available: boolean) => {
-    if (!available) {
-      toast.info("No published build is available for this platform yet.");
-      return;
-    }
-    try {
-      await api.content.downloadGame(platform);
-    } catch {
-      toast.error("Download failed. Please try again.");
-    }
-  };
   return (
     <div style={{ background:C.bg }}>
       <style dangerouslySetInnerHTML={{ __html: WIND_STYLE }} />
@@ -256,10 +235,13 @@ function HomePage({ setPage, onGoToDownload }: { setPage:(p:Page)=>void; onGoToD
             <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full mb-6 text-xs font-medium" style={{ background:C.primaryCont, color:C.onPrimaryCont, fontFamily:"Roboto" }}>
               <FiberManualRecordIcon style={{ fontSize:8, color:C.primary }} /> NOW IN OPEN BETA
             </div>
-            <h1 className="hero-title-ninja text-7xl md:text-9xl font-light text-white leading-none mb-1" style={{ fontFamily:"'Trade Winds', cursive" }}>Ninja</h1>
-            <h1 className="hero-title-era text-5xl md:text-7xl font-black text-white leading-none mb-5" style={{ fontFamily:"'Trade Winds', cursive" }}>Era</h1>
+            <p className="sr-only">
+              Ninja Era — official anime MMORPG and ninja MMO RPG website. Free Japan fantasy MMORPG (NinjaEra) for Windows, Android, and iOS.
+            </p>
+            <h1 className="hero-title-ninja text-7xl md:text-9xl font-light text-white leading-none mb-1" style={{ fontFamily:"'Trade Winds', cursive" }} aria-hidden="true">Ninja</h1>
+            <h1 className="hero-title-era text-5xl md:text-7xl font-black text-white leading-none mb-5" style={{ fontFamily:"'Trade Winds', cursive" }} aria-hidden="true">Era</h1>
             <p className="text-lg font-light text-white/90 mb-2" style={{ fontFamily:"Roboto" }}>The World of Shinobi Awaits</p>
-            <p className="text-sm text-white/70 leading-relaxed mb-8 max-w-md" style={{ fontFamily:"Roboto" }}>Enter a living MMORPG world of ancient clans, forbidden jutsu, and endless conflict. Build your legend across five villages.</p>
+            <p className="text-sm text-white/70 leading-relaxed mb-8 max-w-md" style={{ fontFamily:"Roboto" }}>Enter a living anime MMORPG world of ancient clans, forbidden jutsu, and endless conflict. Build your legend across five villages in this Japan fantasy ninja MMO RPG.</p>
             <div className="flex flex-wrap gap-3">
               <button onClick={() => setPage("signup")} className="flex items-center gap-2 px-7 py-3 rounded-full text-sm font-medium text-white hover:shadow-lg transition-all" style={{ background:C.primary, fontFamily:"Roboto", boxShadow:SH2 }}>
                 <PlayArrowIcon style={{ fontSize:18 }} /> Play Now
@@ -467,35 +449,17 @@ function HomePage({ setPage, onGoToDownload }: { setPage:(p:Page)=>void; onGoToD
         <div className="max-w-7xl mx-auto px-6">
           <div className="text-center mb-14">
             <p className="text-xs font-medium tracking-widest uppercase mb-3" style={{ color:C.primary, fontFamily:"Roboto" }}>Get the Game</p>
-            <h2 className="text-3xl font-light" style={{ color:C.onSurface, fontFamily:"'Trade Winds', cursive" }}>Download <span className="font-medium">Free</span></h2>
+            <h2 className="text-3xl font-light mb-3" style={{ color:C.onSurface, fontFamily:"'Trade Winds', cursive" }}>Download <span className="font-medium">Ninja Era</span></h2>
+            <p className="text-sm max-w-xl mx-auto" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>
+              Official Ninja Era game download for Windows, Android, and iOS — free ninja MMORPG and open-world MMO RPG.
+            </p>
           </div>
-          <div className="grid md:grid-cols-3 gap-6 max-w-3xl mx-auto">
-            {(["windows", "android", "ios"] as const).map(platform => {
-              const meta = PLATFORM_META[platform];
-              const info = gameDownloads.find(d => d.platform === platform);
-              const available = info?.available ?? false;
-              return (
-                <div key={platform} className="rounded-3xl p-6 text-center hover:scale-[1.02] transition-all" style={{ background:C.surface, boxShadow:SH1 }}>
-                  <div className="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4" style={{ background:C.primaryCont }}><meta.Icon style={{ fontSize:28, color:C.primary }} /></div>
-                  <h3 className="font-medium text-base mb-1" style={{ color:C.onSurface, fontFamily:"Roboto" }}>{meta.label}</h3>
-                  {available ? (
-                    <>
-                      <p className="text-xs font-medium mb-1" style={{ color:C.primary, fontFamily:"Roboto Mono,monospace" }}>v{info?.version}</p>
-                      {/* <p className="text-xs mb-1" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>{formatGameFileSize(info?.fileSize, info?.fileSizeUnit)} · {formatDate(info?.publishedAt)}</p> */}
-                      <p className="text-xs mb-1" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>{formatDate(info?.publishedAt)}</p>
-                      <p className="text-[10px] mb-5" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>{meta.reqs}</p>
-                      <FilledBtn cls="w-full justify-center" onClick={() => handleGameDownload(platform, true)}><DownloadIcon style={{ fontSize:16 }} />Download</FilledBtn>
-                    </>
-                  ) : (
-                    <>
-                      <p className="text-xs mb-5" style={{ color:C.onSurfaceVar, fontFamily:"Roboto" }}>Currently unavailable</p>
-                      <OutlinedBtn cls="w-full justify-center opacity-60" onClick={() => handleGameDownload(platform, false)}>Unavailable</OutlinedBtn>
-                    </>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+          <GameDownloadGrid />
+          <p className="text-center mt-6">
+            <button type="button" className="text-sm underline" style={{ color:C.primary, fontFamily:"Roboto" }} onClick={() => setPage("download")}>
+              View full download page
+            </button>
+          </p>
         </div>
       </section>
 

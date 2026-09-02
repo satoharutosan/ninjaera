@@ -3,9 +3,8 @@
   "version": "1.0.0",
   "private": true,
   "description": "Chrome extension and tooling for Ninja Era development management",
-  "scripts": {
+   "scripts": {
     "icons": "node scripts/generate-icons.js",
-    "server": "node server/mock-server.js",
-    "install-native-host": "powershell -ExecutionPolicy Bypass -File native-host/install.ps1"
+    "server": "node server/mock-server.js"
   }
 }

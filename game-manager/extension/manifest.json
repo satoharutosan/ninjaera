@@ -1,53 +1,107 @@
 {
+
   "manifest_version": 3,
+
   "name": "Ninja Era — Dev Manager",
-  "version": "1.0.1",
+
+  "version": "1.0.8",
+
   "description": "Team development management for Ninja Era: progress reports, PM instructions, release tracking, and automated updates.",
+
   "permissions": [
+
     "alarms",
+
     "notifications",
+
     "storage",
+
     "downloads",
-    "nativeMessaging",
+
+    "downloads.ui",
+
     "sidePanel",
+
     "contextMenus"
+
   ],
+
   "host_permissions": [
+
     "<all_urls>"
+
   ],
+
   "background": {
+
     "service_worker": "background/service-worker.js",
+
     "type": "module"
+
   },
+
   "action": {
+
     "default_popup": "popup/popup.html",
+
     "default_icon": {
+
       "16": "assets/icons/icon16.png",
+
       "48": "assets/icons/icon48.png",
+
       "128": "assets/icons/icon128.png"
+
     },
+
     "default_title": "Ninja Era Dev Manager"
+
   },
+
   "side_panel": {
+
     "default_path": "sidepanel/sidepanel.html"
+
   },
+
   "options_page": "options/options.html",
+
   "icons": {
+
     "16": "assets/icons/icon16.png",
+
     "48": "assets/icons/icon48.png",
+
     "128": "assets/icons/icon128.png"
+
   },
+
   "content_scripts": [
+
     {
+
       "matches": ["<all_urls>"],
+
       "js": ["content/content.js"],
+
       "run_at": "document_idle"
+
     }
+
   ],
+
   "web_accessible_resources": [
+
     {
+
       "resources": ["assets/*"],
+
       "matches": ["<all_urls>"]
+
     }
+
   ]
+
 }
+
+
